@@ -64,6 +64,32 @@ struct SettingsView: View {
                     }
                 }
 
+                // 账号凭据
+                SettingsSection(title: "登录凭据") {
+                    Picker("保存位置", selection: Binding(
+                        get: { KeychainStore.storageMode },
+                        set: { newValue in
+                            KeychainStore.storageMode = newValue
+                            // 只清内存缓存，已保存的凭据保持不动；
+                            // 下次读取会按新位置加载，并自动把钥匙串里的旧凭据迁移过来
+                            KeychainStore.shared.invalidateCache()
+                        }
+                    )) {
+                        ForEach(KeychainStore.StorageMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    Text("钥匙串会把凭据绑定到 App 的代码签名，每次重新构建后签名变化，就会反复弹「输入密码以访问钥匙串」。选「本地文件」可彻底避免，代价是 Cookie 以明文存在本机。")
+                        .font(CTTypography.caption)
+                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    if KeychainStore.storageMode == .plaintextFile {
+                        Text("文件位置：\(PlaintextCredentialStore.shared.path)")
+                            .font(CTTypography.caption)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                            .textSelection(.enabled)
+                    }
+                }
+
                 // 性能
                 SettingsSection(title: L10n.Settings.performance) {
                     Picker(L10n.Settings.performanceMode, selection: $settings.settings.performanceMode) {
