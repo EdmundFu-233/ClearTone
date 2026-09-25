@@ -215,8 +215,7 @@ public final class HelperProcessManager: ObservableObject {
         while Date() < deadline {
             try Task.checkCancellation()
             if let healthy = try? await performHealthCheck(), healthy { return }
-            // 500ms 足够：15s 内 30 次探测足以覆盖 Node 冷启动
-            try await Task.sleep(for: .milliseconds(500))
+            try await Task.sleep(for: .milliseconds(300))
         }
         throw MusicError.helperProcessTimeout
     }
@@ -230,26 +229,11 @@ public final class HelperProcessManager: ObservableObject {
         return try await checkPort(port)
     }
 
-    /// 健康检查专用 session。
-    ///
-    /// 不能用 URLSession.shared：它保留默认 cookie 存储，会重新创建
-    /// ~/Library/HTTPStorages/com.cleartone.app/ 容器目录，而该目录会被
-    /// LaunchServices 误注册成 com.cleartone.app 这个 bundle，顶掉真正的
-    /// App 注册，导致 Finder/Dock 显示通用图标（已在 NeteaseProvider 规避，这里同样要规避）。
-    private static let healthSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.timeoutIntervalForRequest = 2
-        config.waitsForConnectivity = false
-        return URLSession(configuration: config)
-    }()
-
     private func checkPort(_ port: Int) async throws -> Bool {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/ct_health")!)
         request.setValue(authToken, forHTTPHeaderField: "X-CT-Token")
         request.timeoutInterval = 2
-        let (_, response) = try await Self.healthSession.data(for: request)
+        let (_, response) = try await URLSession.shared.data(for: request)
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
@@ -257,7 +241,7 @@ public final class HelperProcessManager: ObservableObject {
         healthCheckTask?.cancel()
         healthCheckTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: .seconds(15))
                 guard let self = self, !Task.isCancelled else { return }
                 // 检查进程是否仍在运行
                 let processAlive = self.process?.isRunning ?? false
