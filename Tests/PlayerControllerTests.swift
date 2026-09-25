@@ -131,7 +131,7 @@ final class PlayerControllerTests: XCTestCase {
     // 第二轮复核 #2：切歌开始时旧播放器必须停表，旧时钟不得写入新歌曲进度
     func testSwitchSongStopsOldTimeClock() async throws {
         _ = Self.storageIsolated
-        DemoProvider.generateDemoAudioIfNeeded()
+        await DemoProvider.ensureDemoAudio()
         let fileURL = DemoProvider.demoAudioDirectory().appendingPathComponent("tone_440.wav")
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw XCTSkip("演示音频生成失败")
@@ -168,7 +168,7 @@ final class PlayerControllerTests: XCTestCase {
     // 第二轮复核 #3（加载期边界）：ready 之前暂停，进入 ready 后不得自动出声
     func testPauseBeforeReadyPreventsAutoplay() async throws {
         _ = Self.storageIsolated
-        DemoProvider.generateDemoAudioIfNeeded()
+        await DemoProvider.ensureDemoAudio()
         let fileURL = DemoProvider.demoAudioDirectory().appendingPathComponent("tone_440.wav")
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw XCTSkip("演示音频生成失败")

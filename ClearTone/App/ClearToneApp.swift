@@ -8,11 +8,6 @@ struct ClearToneApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var settings = SettingsStore()
 
-    init() {
-        // 生成演示音频
-        DemoProvider.generateDemoAudioIfNeeded()
-    }
-
     var body: some Scene {
         WindowGroup {
             MainWindow()
@@ -25,6 +20,11 @@ struct ClearToneApp: App {
                     appDelegate.appState = appState
                     appDelegate.player = player
                     AudioCacheManager.shared.isEnabled = settings.settings.audioCacheEnabled
+                    // 演示音频生成放后台：6 个 30 秒 WAV 合成约 530 万次 sin()，
+                    // 放在 App.init 会阻塞主线程数秒导致白屏
+                    Task.detached(priority: .utility) {
+                        await DemoProvider.ensureDemoAudio()
+                    }
                     Task { @MainActor in
                         await appState.restoreLoginState()
                     }
@@ -118,9 +118,9 @@ public class AppState: ObservableObject {
     public var dataContextKey: String { "\(isLoggedIn)-\(isDemoMode)" }
 
     init() {
-        // 先读磁盘缓存，启动瞬间即可展示头像与红心
-        account = PersistenceStore.shared.loadCachedAccount()
-        applyLikedSongs(PersistenceStore.shared.loadCachedLikedSongs())
+        // 磁盘缓存的读取不在这里做：@StateObject 的初值在首帧前求值，
+        // 上千首 likedSongs 的 JSON 解码会造成启动停顿。改由 restoreLoginState()
+        // 在 onAppear 后异步填充（那里本来就有一处相同的读取，顺手合并）。
         // 任意请求触发会话失效时，统一清理登录态并提示重新登录
         sessionExpiryObserver = NotificationCenter.default.addObserver(
             forName: .clearToneSessionExpired, object: nil, queue: .main
@@ -155,6 +155,14 @@ public class AppState: ObservableObject {
     /// 启动时恢复登录态：有 cookie 时先用缓存立即恢复，再后台校验
     func restoreLoginState() async {
         guard !isLoggedIn else { return }
+        // 磁盘缓存统一在这里读一次：原先 init 与此处各读一遍（重复解码上千首 likedSongs）
+        if account == nil {
+            account = PersistenceStore.shared.loadCachedAccount()
+        }
+        if likedSongs.isEmpty {
+            applyLikedSongs(PersistenceStore.shared.loadCachedLikedSongs())
+        }
+
         let cookie = (try? KeychainStore.shared.load(for: .neteaseCookie)) ?? nil
         guard let cookie, !cookie.isEmpty else {
             // 无 cookie：清理可能残留的缓存登录态
@@ -162,9 +170,6 @@ public class AppState: ObservableObject {
             return
         }
 
-        if account == nil {
-            account = PersistenceStore.shared.loadCachedAccount()
-        }
         if account != nil {
             isLoggedIn = true
         }

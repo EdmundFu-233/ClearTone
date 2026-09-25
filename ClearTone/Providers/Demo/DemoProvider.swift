@@ -95,16 +95,36 @@ public actor DemoProvider: MusicProvider {
             .appendingPathComponent("ClearTone/DemoAudio", isDirectory: true)
     }
 
-    /// 生成测试音频文件（如果尚未生成）
-    public static func generateDemoAudioIfNeeded() {
-        let dir = demoAudioDirectory()
-        let files = ["tone_440.wav", "tone_1000.wav", "tone_5000.wav", "silence.wav", "sweep.wav", "noise.wav"]
-        for file in files {
-            let url = dir.appendingPathComponent(file)
-            if !FileManager.default.fileExists(atPath: url.path) {
-                DemoAudioGenerator.generate(type: file, to: url)
+    /// 演示音频文件名清单
+    public static let demoAudioFiles = [
+        "tone_440.wav", "tone_1000.wav", "tone_5000.wav", "silence.wav", "sweep.wav", "noise.wav",
+    ]
+
+    /// 确保演示音频已就绪，在后台线程执行。
+    ///
+    /// 原实现在 `App.init` 里同步调用：6 × 132 万样本、约 530 万次 sin()、
+    /// 约 32MB 写入全部阻塞主线程，首帧前会白屏数秒。
+    public static func ensureDemoAudio() async {
+        await withTaskGroup(of: Void.self) { group in
+            for file in demoAudioFiles {
+                group.addTask {
+                    generateDemoAudioIfNeeded(for: file)
+                }
             }
         }
+    }
+
+    /// 生成单个测试音频文件（已存在且非空则跳过）。
+    /// 暴露为 nonisolated 供测试直接调用。
+    public nonisolated static func generateDemoAudioIfNeeded(for file: String) {
+        let dir = demoAudioDirectory()
+        let url = dir.appendingPathComponent(file)
+        // 文件存在且有内容就认为已生成：避免每次启动都过一遍完整生成逻辑
+        if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > 44 {
+            return
+        }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        DemoAudioGenerator.generate(type: file, to: url)
     }
 
     // MARK: - MusicProvider 实现
@@ -254,29 +274,47 @@ public enum DemoAudioGenerator {
 
     private static func writeWAV(samples: [Float], sampleRate: Double, to url: URL) {
         let dataSize = samples.count * 2
-        let fileSize = 36 + dataSize
+        // WAV 头固定 44 字节；RIFF 字段按约定存「文件大小 - 8」= 36 + dataSize
+        let headerSize = 44
+        let fileSize = headerSize + dataSize
+        let riffSize = fileSize - 8
 
-        var data = Data()
-        // RIFF header
-        data.append(contentsOf: [0x52, 0x49, 0x46, 0x46]) // "RIFF"
-        withUnsafeBytes(of: UInt32(fileSize).littleEndian) { data.append(contentsOf: $0) }
-        data.append(contentsOf: [0x57, 0x41, 0x56, 0x45]) // "WAVE"
-        // fmt chunk
-        data.append(contentsOf: [0x66, 0x6D, 0x74, 0x20]) // "fmt "
-        withUnsafeBytes(of: UInt32(16).littleEndian) { data.append(contentsOf: $0) }
-        withUnsafeBytes(of: UInt16(1).littleEndian) { data.append(contentsOf: $0) } // PCM
-        withUnsafeBytes(of: UInt16(1).littleEndian) { data.append(contentsOf: $0) } // mono
-        withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { data.append(contentsOf: $0) }
-        withUnsafeBytes(of: UInt32(sampleRate * 2).littleEndian) { data.append(contentsOf: $0) } // byte rate
-        withUnsafeBytes(of: UInt16(2).littleEndian) { data.append(contentsOf: $0) } // block align
-        withUnsafeBytes(of: UInt16(16).littleEndian) { data.append(contentsOf: $0) } // bits
-        // data chunk
-        data.append(contentsOf: [0x64, 0x61, 0x74, 0x61]) // "data"
-        withUnsafeBytes(of: UInt32(dataSize).littleEndian) { data.append(contentsOf: $0) }
+        // 一次性分配：原先逐样本 append 会产生上百万次 Data 扩容拷贝。
+        // 头部与样本区都在同一个 withUnsafeMutableBytes 里写完，避免在块外操作裸指针。
+        var data = Data(count: fileSize)
+        data.withUnsafeMutableBytes { raw in
+            let base = raw.baseAddress!
 
-        for sample in samples {
-            let int16 = Int16(max(-1, min(1, sample)) * 32767)
-            withUnsafeBytes(of: int16.littleEndian) { data.append(contentsOf: $0) }
+            func put<T: FixedWidthInteger>(_ value: T, at offset: Int) {
+                var v = value.littleEndian
+                withUnsafeBytes(of: &v) { src in
+                    UnsafeMutableRawPointer(base + offset)
+                        .copyMemory(from: src.baseAddress!, byteCount: MemoryLayout<T>.size)
+                }
+            }
+            func putBytes(_ bytes: [UInt8], at offset: Int) {
+                let dst = UnsafeMutableRawPointer(base + offset).assumingMemoryBound(to: UInt8.self)
+                for (i, b) in bytes.enumerated() { dst[i] = b }
+            }
+            putBytes([0x52, 0x49, 0x46, 0x46], at: 0)      // "RIFF"
+            put(UInt32(riffSize), at: 4)
+            putBytes([0x57, 0x41, 0x56, 0x45], at: 8)      // "WAVE"
+            putBytes([0x66, 0x6D, 0x74, 0x20], at: 12)     // "fmt "
+            put(UInt32(16), at: 16)
+            put(UInt16(1), at: 20)                         // PCM
+            put(UInt16(1), at: 22)                         // mono
+            put(UInt32(sampleRate), at: 24)
+            put(UInt32(sampleRate * 2), at: 28)            // byte rate
+            put(UInt16(2), at: 32)                         // block align
+            put(UInt16(16), at: 34)                        // bits
+            putBytes([0x64, 0x61, 0x74, 0x61], at: 36)     // "data"
+            put(UInt32(dataSize), at: 40)
+
+            // 样本区批量转换写入，替代逐样本 append（偏移 44 对 Int16 是对齐的）
+            let dst = UnsafeMutableRawPointer(base + 44).assumingMemoryBound(to: Int16.self)
+            for (i, sample) in samples.enumerated() {
+                dst[i] = Int16(max(-1, min(1, sample)) * 32767)
+            }
         }
 
         try? data.write(to: url)

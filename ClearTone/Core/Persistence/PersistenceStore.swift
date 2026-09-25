@@ -39,7 +39,93 @@ public final class PersistenceStore: Sendable {
     }
 
     public func clearQueue() {
-        try? FileManager.default.removeItem(at: storageURL.appendingPathComponent("queue.json"))
+        try? FileManager.default.removeItem(at: queueFileURL)
+        Task { await PersistenceWriter.shared.reset() }
+    }
+
+    // MARK: - 后台合并写
+
+    /// 队列与最近播放的后台合并写入器。
+    ///
+    /// 原先 `saveQueue` 由 @MainActor 上的调用方同步执行：1000 首队列约 400KB JSON，
+    /// 每 5 秒一次主线程编码 + 原子写，用户感知为「进度条每 5 秒卡一下」。
+    /// 这里把编码与落盘挪到后台串行 actor，并用抖动窗口合并高频写入。
+    actor PersistenceWriter {
+        static let shared = PersistenceWriter()
+
+        private var pendingQueue: PersistedQueue?
+        private var pendingRecent: [Song]?
+        private var flushTask: Task<Void, Never>?
+        /// 抖动窗口：这段时间内的重复写入会被合并成一次落盘
+        private static let debounce: Duration = .milliseconds(800)
+        /// 单次待写快照的体积上限，超过则跳过（避免异常大的队列拖垮写入）
+        private static let maxBytes = 8 * 1024 * 1024
+
+        func schedule(queue: PersistedQueue) {
+            pendingQueue = queue
+            scheduleFlush()
+        }
+
+        func schedule(recentSongs: [Song]) {
+            pendingRecent = recentSongs
+            scheduleFlush()
+        }
+
+        /// 退出/切歌等需要立即落盘时调用
+        func flushNow() async {
+            flushTask?.cancel()
+            flushTask = nil
+            try? await writePending()
+        }
+
+        /// 「清空队列」用：丢弃所有待写内容，避免清空后又被旧快照写回来
+        func reset() {
+            flushTask?.cancel()
+            flushTask = nil
+            pendingQueue = nil
+            pendingRecent = nil
+        }
+
+        private func scheduleFlush() {
+            guard flushTask == nil else { return }
+            flushTask = Task {
+                try? await Task.sleep(for: Self.debounce)
+                guard !Task.isCancelled else { return }
+                try? await writePending()
+            }
+        }
+
+        private func writePending() async throws {
+            let queue = pendingQueue
+            let recent = pendingRecent
+            pendingQueue = nil
+            pendingRecent = nil
+            flushTask = nil
+            guard let queue, let recent else { return }
+            try await Task.detached(priority: .utility) {
+                try Self.writeSnapshots(queue: queue, recent: recent)
+            }.value
+        }
+
+        private static func writeSnapshots(queue: PersistedQueue, recent: [Song]) throws {
+            let queueData = try JSONEncoder().encode(queue)
+            if queueData.count <= maxBytes {
+                try queueData.write(to: PersistenceStore.shared.queueFileURL, options: [.atomic])
+            }
+            // 最近播放与设置同源，仍写 UserDefaults，保持与 loadRecentSongs 的读取路径一致
+            if let recentData = try? JSONEncoder().encode(recent), recentData.count <= maxBytes {
+                UserDefaults.standard.set(recentData, forKey: PersistenceStore.shared.settingKey(for: "recentSongs"))
+            }
+        }
+    }
+
+    /// 供后台写入器在非隔离上下文中使用（URL 是不可变值，读取本身线程安全）
+    fileprivate var queueFileURL: URL {
+        storageURL.appendingPathComponent("queue.json")
+    }
+
+    fileprivate func settingKey(for key: String) -> String {
+        "\(settingsKey).\(key)"
     }
 
     // MARK: - 设置（UserDefaults）

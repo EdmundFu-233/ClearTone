@@ -118,7 +118,9 @@ public final class PlayerController: ObservableObject {
         history.insert(song, at: 0)
         if history.count > 100 { history = Array(history.prefix(100)) }
         recentlyPlayed = history
-        PersistenceStore.shared.saveRecentSongs(history)
+        // 编码 + 落盘挪到后台：100 首 Song 的 JSON 编码在主线程是可见的尖峰，
+        // 且切歌瞬间会与 persistState 叠加
+        Task { await PersistenceStore.PersistenceWriter.shared.schedule(recentSongs: history) }
     }
 
     /// 启动一次播放。自动失败重试路径直接调用本方法（不重置失败计数）。
@@ -149,7 +151,7 @@ public final class PlayerController: ObservableObject {
         pendingRestoreTime = restoreTime
         pendingAutoplay = autoplay
 
-        persistState()
+        persistState(structureChanged: true)
         loadTask = Task { await loadAndPlay(song: song, generation: generation) }
     }
 
@@ -312,7 +314,7 @@ public final class PlayerController: ObservableObject {
             playbackState = .paused(songID: songID)
         }
         if currentSong != nil {
-            persistState()
+            persistState(structureChanged: false)
         }
         updateNowPlayingPlaybackState()
     }
@@ -391,32 +393,32 @@ public final class PlayerController: ObservableObject {
             isUserSeeking = false
             updateNowPlayingElapsedTime()
             if currentSong != nil {
-                persistState()
+                persistState(structureChanged: false)
             }
         }
     }
 
     public func setPlayMode(_ mode: PlayMode) {
         queue.mode = mode
-        persistState()
+        persistState(structureChanged: true)
     }
 
     // MARK: - 队列操作
 
     public func appendToQueue(_ song: Song) {
         queue.append(song)
-        persistState()
+        persistState(structureChanged: true)
     }
 
     public func insertNext(_ song: Song) {
         queue.insertNext(song)
-        persistState()
+        persistState(structureChanged: true)
     }
 
     public func removeFromQueue(itemID: UUID) {
         let wasCurrent = currentSong != nil && queue.currentItem?.id == itemID
         guard queue.remove(itemID: itemID) else { return }
-        persistState()
+        persistState(structureChanged: true)
         // 删除的是正在播放的条目：立即同步到新的当前歌曲，避免结束回调再推进一次导致跳歌
         guard wasCurrent else { return }
         if let next = queue.currentItem {
@@ -433,7 +435,7 @@ public final class PlayerController: ObservableObject {
 
     public func moveQueueItems(fromOffsets: IndexSet, toOffset: Int) {
         queue.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        persistState()
+        persistState(structureChanged: true)
     }
 
     public func jumpTo(itemID: UUID) {
@@ -448,7 +450,7 @@ public final class PlayerController: ObservableObject {
     public func setRequestedQuality(_ level: AudioQuality.QualityLevel) {
         guard requestedQuality != level else { return }
         requestedQuality = level
-        persistState()
+        persistState(structureChanged: true)
         // 当前歌曲按新音质重新拉流，保留进度与播放状态
         if let song = currentSong, playbackState.songID == song.id {
             let time = currentTime
@@ -518,8 +520,8 @@ public final class PlayerController: ObservableObject {
 
     // MARK: - 持久化
 
-    private func persistState() {
-        let data = PersistedQueue(
+    private func makeSnapshot() -> PersistedQueue {
+        PersistedQueue(
             items: queue.items,
             currentIndex: queue.currentIndex,
             mode: queue.mode,
@@ -528,20 +530,28 @@ public final class PlayerController: ObservableObject {
             isMuted: isMuted,
             requestedQuality: requestedQuality
         )
-        lastProgressSaveAt = Date()
-        PersistenceStore.shared.saveQueue(data)
     }
 
-    /// 播放进度节流保存（时间观察者高频调用，间隔内至多写盘一次）
+    /// 落盘走后台合并写：主线程只取不可变快照，编码与写文件都在后台 actor。
+    /// `structureChanged` 标注这次调用是否因队列结构变化（增删/重排/换歌/换模式/换音质）
+    /// 而来，进度更新与暂停不算结构变化 —— 便于将来进一步做差异化落盘。
+    private func persistState(structureChanged: Bool = false) {
+        lastProgressSaveAt = Date()
+        let snapshot = makeSnapshot()
+        Task { await PersistenceStore.PersistenceWriter.shared.schedule(queue: snapshot) }
+    }
+
+    /// 播放进度节流保存（时间观察者高频调用，间隔内至多落盘一次）
     private func persistProgressThrottled() {
         let now = Date()
         guard now.timeIntervalSince(lastProgressSaveAt) >= progressSaveInterval else { return }
-        persistState()
+        persistState(structureChanged: false)
     }
 
     /// 立即保存最新状态（退出、显式边界）
     public func persistNow() {
-        persistState()
+        persistState(structureChanged: true)
+        Task { await PersistenceStore.PersistenceWriter.shared.flushNow() }
     }
 
     private func loadPersistedState() -> Bool {
@@ -609,7 +619,7 @@ public final class PlayerController: ObservableObject {
         sameSongRetries = 0
         playbackState = .idle
         updateNowPlayingPlaybackState()
-        persistState()
+        persistState(structureChanged: true)
     }
 
     // MARK: - 系统媒体控制
