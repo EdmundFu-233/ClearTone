@@ -169,8 +169,19 @@ public final class PersistenceStore: Sendable {
         loadSetting(forKey: "cachedLikedSongs", as: [Song].self) ?? []
     }
 
+    /// 全量收藏 id（约 60KB）。心形状态的判断依据，必须与详情列表分开存：
+    /// 详情列表可能因分页/失败而不完整，id 集合不能受它影响。
+    public func saveCachedLikedSongIDs(_ ids: [String]) {
+        saveSetting(ids, forKey: "cachedLikedSongIDs")
+    }
+
+    public func loadCachedLikedSongIDs() -> [String] {
+        loadSetting(forKey: "cachedLikedSongIDs", as: [String].self) ?? []
+    }
+
     public func clearCachedLikedSongs() {
         removeSetting(forKey: "cachedLikedSongs")
+        removeSetting(forKey: "cachedLikedSongIDs")
     }
 
     /// 缓存用户歌单，冷启动时侧栏先渲染再后台刷新

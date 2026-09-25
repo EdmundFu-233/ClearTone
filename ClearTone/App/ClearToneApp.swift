@@ -119,6 +119,11 @@ public class AppState: ObservableObject {
     /// 会话失效后置位，UI 据此自动弹出登录
     @Published var needsReLogin = false
 
+    /// **全量**喜欢歌曲 id，仅用于判断心形状态。
+    ///
+    /// 必须与 likedSongs 分开维护：likedSongs 是「前若干首」的详情列表，
+    /// 早期两者都由 likedSongs 推导，导致 2808 首收藏里只有前 500 首能正确判断
+    /// 收藏状态，其余 2308 首永远显示未收藏。
     private var likedIDs: Set<String> = []
     private var hasLoadedLikes = false
     private let provider = NeteaseProvider.shared
@@ -170,7 +175,10 @@ public class AppState: ObservableObject {
             account = PersistenceStore.shared.loadCachedAccount()
         }
         if likedSongs.isEmpty {
-            applyLikedSongs(PersistenceStore.shared.loadCachedLikedSongs())
+            let cachedSongs = PersistenceStore.shared.loadCachedLikedSongs()
+            // 优先用全量 id 缓存；没有（旧版本遗留）才从列表推导
+            let cachedIDs = PersistenceStore.shared.loadCachedLikedSongIDs()
+            applyLikedSongs(cachedSongs, ids: cachedIDs.isEmpty ? nil : cachedIDs)
         }
 
         let cookie = (try? KeychainStore.shared.load(for: .neteaseCookie)) ?? nil
@@ -245,9 +253,16 @@ public class AppState: ObservableObject {
         guard isLoggedIn, !isDemoMode else { return }
         if hasLoadedLikes && !force { return }
         do {
-            let songs = try await provider.fetchLikedSongs()
+            // 先取全量 id（约 60KB）—— 心形状态靠它判断，必须完整
+            let ids = try await provider.fetchLikedSongIDs()
+            applyLikedSongs(PersistenceStore.shared.loadCachedLikedSongs(), ids: ids)
+            PersistenceStore.shared.saveCachedLikedSongIDs(ids)
             hasLoadedLikes = true
-            applyLikedSongs(songs)
+
+            // 详情列表随后加载，不阻塞心形状态
+            let songs = try await provider.fetchLikedSongs()
+            guard isLoggedIn, !isDemoMode else { return }
+            applyLikedSongs(songs, ids: ids)
             PersistenceStore.shared.saveCachedLikedSongs(songs)
         } catch {
             CTLog.general.error("加载喜欢的歌曲失败: \(CTLog.sanitize(error.localizedDescription))")
@@ -286,30 +301,56 @@ public class AppState: ObservableObject {
     }
 
     /// 切换收藏状态（乐观更新，失败回滚）。返回切换后的状态。
+    ///
+    /// 关键：收藏状态只增删**单个 id**，绝不能拿 likedSongs 重建 likedIDs。
+    /// 早期版本用 `applyLikedSongs(optimistic)` 顺带重建 likedIDs，
+    /// 而 likedSongs 只是一份详情列表，重建会把 likedIDs 压缩成列表的规模 ——
+    /// 用户有 2808 首收藏时 likedIDs 只剩几百项，于是排在列表之外的歌
+    /// 点心形「看起来没反应」，因为下一次 isLiked 仍然返回 false。
     @discardableResult
     func toggleLike(_ song: Song) async -> Bool {
         guard song.source == .netease, isLoggedIn, !isDemoMode else { return false }
         let wasLiked = likedIDs.contains(song.id)
-        let previous = likedSongs
+        let previousIDs = likedIDs
+        let previousSongs = likedSongs
 
+        // 乐观更新：状态集合增删单首，列表同步增删该曲
+        updateLikedID(song.id, isLiked: !wasLiked)
         var optimistic = likedSongs.filter { $0.id != song.id }
         if !wasLiked { optimistic.insert(song, at: 0) }
-        applyLikedSongs(optimistic)
+        likedSongs = optimistic
 
         do {
             try await provider.likeSong(id: song.id, like: !wasLiked)
+            PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs))
             PersistenceStore.shared.saveCachedLikedSongs(likedSongs)
             return !wasLiked
         } catch {
             CTLog.general.error("收藏操作失败: \(CTLog.sanitize(error.localizedDescription))")
-            applyLikedSongs(previous)
+            // 回滚：两处都要还原，否则状态与列表会不一致
+            likedIDs = previousIDs
+            likedSongs = previousSongs
+            likesVersion += 1
             return wasLiked
         }
     }
 
-    private func applyLikedSongs(_ songs: [Song]) {
+    /// 应用完整收藏数据：id 集合与详情列表一起更新
+    private func applyLikedSongs(_ songs: [Song], ids: [String]? = nil) {
         likedSongs = songs
-        likedIDs = Set(songs.map(\.id))
+        // 传入了权威 id 就用它；否则从当前列表推导（仅用于本地缓存这种
+        // 「只有列表没有 id」的场景）
+        likedIDs = ids.map(Set.init) ?? Set(songs.map(\.id))
+        likesVersion += 1
+    }
+
+    /// 单独更新收藏状态集合（列表不变），用于增删单首的场景
+    private func updateLikedID(_ songID: String, isLiked: Bool) {
+        if isLiked {
+            likedIDs.insert(songID)
+        } else {
+            likedIDs.remove(songID)
+        }
         likesVersion += 1
     }
 

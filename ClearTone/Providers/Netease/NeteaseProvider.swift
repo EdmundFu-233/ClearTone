@@ -478,21 +478,45 @@ public actor NeteaseProvider: MusicProvider {
         return playlists.map { mapPlaylist($0) }
     }
 
-    public func fetchLikedSongs() async throws -> [Song] {
+    /// 喜欢列表的**全量**歌曲 id。
+    ///
+    /// 这是判断「心形是否点亮」的唯一依据，必须完整：早期实现只取前 500 个 id
+    /// 去查详情，导致 likedIDs 只有 500 项，排在 501 名之后的歌被误判为未收藏，
+    /// 表现为「点了收藏没反应 / 加不进去」。
+    /// 这里只取 id（2808 个约 60KB），很轻，不需要 song/detail。
+    public func fetchLikedSongIDs() async throws -> [String] {
         guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { throw MusicError.notLoggedIn }
         guard let userID = try KeychainStore.shared.load(for: .neteaseUserID) else { throw MusicError.notLoggedIn }
-
-        // 先获取喜欢列表 ID
         let data = try await request("/likelist", query: ["uid": userID], cookie: cookie, cacheTTL: 60)
         let json = try parseJSON(data)
         guard let ids = json["ids"] as? [Int64] else { throw MusicError.invalidResponse }
-        guard !ids.isEmpty else { return [] } // 没有喜欢的歌曲：避免发出 ids= 的无效请求
-        let idStrings = ids.prefix(500).map { String($0) } // 限制数量，避免过长
+        return ids.map(String.init)
+    }
 
-        let detailData = try await request("/song/detail", query: ["ids": idStrings.joined(separator: ",")], cookie: cookie, cacheTTL: 300)
-        let detailJSON = try parseJSON(detailData)
-        guard let songs = detailJSON["songs"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-        return songs.compactMap { mapSong($0) }
+    /// `/song/detail` 单次 ids 的上限，拼接过长会超出 URL 长度限制
+    private static let detailBatchSize = 500
+
+    /// 喜欢列表的完整曲目（分批拉取，用于列表展示）。
+    /// 2808 首约 6 批；List 是懒加载的，不会一次性构建所有行。
+    public func fetchLikedSongs() async throws -> [Song] {
+        let idStrings = try await fetchLikedSongIDs()
+        guard !idStrings.isEmpty else { return [] }
+        let cookie = try KeychainStore.shared.load(for: .neteaseCookie)
+
+        var result: [Song] = []
+        result.reserveCapacity(idStrings.count)
+        // 保持 /likelist 的 id 顺序 —— 那就是用户的收藏时间序
+        for start in stride(from: 0, to: idStrings.count, by: Self.detailBatchSize) {
+            let end = min(start + Self.detailBatchSize, idStrings.count)
+            let batch = Array(idStrings[start..<end])
+            let detailData = try await request(
+                "/song/detail", query: ["ids": batch.joined(separator: ",")],
+                cookie: cookie, cacheTTL: 300
+            )
+            guard let songs = (try parseJSON(detailData)["songs"] as? [[String: Any]]) else { continue }
+            result.append(contentsOf: songs.compactMap { mapSong($0) })
+        }
+        return result
     }
 
     public func likeSong(id: String, like: Bool) async throws {
