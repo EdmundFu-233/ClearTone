@@ -26,6 +26,8 @@ public final class PlayerController: ObservableObject {
     @Published public private(set) var actualQuality: AudioQuality?
     /// 当前播放是否来自本地音频缓存
     @Published public private(set) var isCurrentFromCache = false
+    /// 当前播放源是否可挂频谱 tap（本地文件/缓存/演示音频）
+    private var isSpectrumEligible = false
 
     /// 播放进度。
     ///
@@ -240,6 +242,10 @@ public final class PlayerController: ObservableObject {
         // 只解绑当前 item，播放器实例复用（切歌延迟与 CPU 峰值都更低）
         detachCurrentItem()
 
+        // 频谱 tap：只对本地文件/缓存/演示音频挂载。远程 HTTPS 流媒体取不到
+        // 可靠的音频回调（MTAudioProcessingTap 的真实限制），回退到环境动画。
+        isSpectrumEligible = url.isFileURL
+
         let item = AVPlayerItem(url: url)
         playerItem = item
         if let player {
@@ -267,6 +273,8 @@ public final class PlayerController: ObservableObject {
                             self.playbackState.songID == song.id else { break }
                     // 真正进入播放，连续失败计数清零
                     self.consecutiveFailures = 0
+                    // 此时 item 的音轨信息才可用，挂频谱 tap
+                    _ = SpectrumAnalyzer.shared.attach(to: item, remoteSource: !self.isSpectrumEligible)
                     self.startAudio(generation: generation, songID: song.id)
                 case .failed:
                     self.handlePlayError(item.error ?? MusicError.unknown("播放失败"), for: song)
@@ -753,6 +761,8 @@ public final class PlayerController: ObservableObject {
         seekTask?.cancel()
         isUserSeeking = false
         // 停止播放是彻底边界：销毁播放器实例，避免空转的解码器与音频会话
+        SpectrumAnalyzer.shared.detach()
+        isSpectrumEligible = false
         teardownPlayer()
         currentSong = nil
         duration = 0

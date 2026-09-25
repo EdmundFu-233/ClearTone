@@ -22,7 +22,9 @@ struct NowPlayingView: View {
         Color(hex: 0x1a1a2e), Color(hex: 0x16213e), Color(hex: 0x0f3460),
         Color(hex: 0x533483), Color(hex: 0xe94560)
     ]
-      @State private var spectrum: [Float] = Array(repeating: 0, count: 64)
+      @State private var spectrum: [Float] = Array(repeating: 0, count: SpectrumProcessor.bandCount)
+      /// 从 tap 拉取频谱的定时器（30Hz 足够顺滑）
+      @State private var spectrumTimer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
       @State private var isAnimating = true
       @State private var lyricsTask: Task<Void, Never>?
       /// App 是否在前台。原先 isAnimating 声明后从未被置为 false，
@@ -229,6 +231,13 @@ struct NowPlayingView: View {
             if index != currentLineIndex {
                 currentLineIndex = index
             }
+        }
+        // 30Hz 拉取频谱。tap 回调在实时音频线程上做 FFT，
+        // 这里只在主线程读它的快照，不参与计算。
+        .onReceive(spectrumTimer) { _ in
+            guard settings.settings.spectrumMode != .off, SpectrumAnalyzer.shared.isAttached else { return }
+            let bands = SpectrumAnalyzer.shared.currentBands()
+            if bands != spectrum { spectrum = bands }
         }
     }
 
