@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# 本地生成的工程文件（由 project.yml 经 xcodegen generate 生成）
+ClearTone.xcodeproj/
+
+# 辅助进程运行时（体积约 169MB，不入库）
+ClearTone/Resources/HelperRuntime/
+Resources/HelperRuntime/
+
+# 构建产物
+DerivedData/
+*.app/
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+.DS_Store

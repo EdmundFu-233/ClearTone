@@ -1,0 +1,90 @@
+name: ClearTone
+options:
+  bundleIdPrefix: com.cleartone
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+targets:
+  ClearTone:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ClearTone
+        excludes:
+          - "Resources/HelperRuntime/**"
+      - path: ClearTone/Resources/HelperRuntime
+        buildPhase: resources
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.app
+        PRODUCT_NAME: 澄音
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        # 用稳定的开发证书签名（而非 ad-hoc）：签名身份固定后，
+        # 钥匙串"始终允许"授权可跨重建保持，不再每次启动都要输密码
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ML3D4RN65N
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 ClearTone"
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.music"
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    entitlements:
+      path: ClearTone/ClearTone.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+    dependencies: []
+
+  ClearToneTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+      - path: ClearTone
+        excludes:
+          - "Resources/HelperRuntime/**"
+          - "App/ClearToneApp.swift"
+          - "App/MainWindow.swift"
+          - "App/PlayerBarView.swift"
+          - "App/MiniPlayerView.swift"
+          - "App/AppCommands.swift"
+          - "Features/**"
+          - "Rendering/AmbientBackgroundRenderer.swift"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.tests
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ML3D4RN65N
+
+schemes:
+  ClearTone:
+    build:
+      targets:
+        ClearTone: all
+        ClearToneTests: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ClearToneTests
+    archive:
+      config: Release
