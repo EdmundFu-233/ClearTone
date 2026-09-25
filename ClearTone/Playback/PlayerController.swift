@@ -26,8 +26,6 @@ public final class PlayerController: ObservableObject {
     @Published public private(set) var actualQuality: AudioQuality?
     /// 当前播放是否来自本地音频缓存
     @Published public private(set) var isCurrentFromCache = false
-    /// 当前播放源是否可挂频谱 tap（本地文件/缓存/演示音频）
-    private var isSpectrumEligible = false
 
     /// 播放进度。
     ///
@@ -242,10 +240,6 @@ public final class PlayerController: ObservableObject {
         // 只解绑当前 item，播放器实例复用（切歌延迟与 CPU 峰值都更低）
         detachCurrentItem()
 
-        // 频谱 tap：只对本地文件/缓存/演示音频挂载。远程 HTTPS 流媒体取不到
-        // 可靠的音频回调（MTAudioProcessingTap 的真实限制），回退到环境动画。
-        isSpectrumEligible = url.isFileURL
-
         // 顺序至关重要：**先确保播放器存在，再挂齐所有观察者，最后才把 item 交进去。**
         // 反过来（先 replaceCurrentItem 再挂 KVO）会丢事件：复用一个已热起来的
         // AVPlayer 时，replaceCurrentItem 会立刻开始加载，本地文件或热连接下
@@ -374,8 +368,16 @@ public final class PlayerController: ObservableObject {
             guard playerItem === item, playbackState.songID == song.id else { return }
             // 真正进入播放，连续失败计数清零
             consecutiveFailures = 0
-            // 此时 item 的音轨信息才可用，挂频谱 tap
-            _ = SpectrumAnalyzer.shared.attach(to: item, remoteSource: !isSpectrumEligible)
+            // 注意：这里**不要**再挂 MTAudioProcessingTap。
+            // 曾在 readyToPlay 里给本地文件挂频谱 tap，导致播放卡在
+            // waitingToPlayAtSpecifiedRate（界面显示「缓冲中」）。原因有二：
+            // 1) 纯 Swift 无法安全实现该 tap —— MTAudioProcessingTapStorage 这个 C 结构体
+            //    在 SDK 头文件里不存在，GetStorage 返回的是 void** 而非 handler 指针，
+            //    之前那版把它当 handler 指针解引用，在音频实时线程上读野指针；
+            // 2) 即便类型正确，在 KVO 回调里创建 tap 会触发音频管线重新协商格式，
+            //    对 48kHz OPUS/CAF 这类缓存文件尤其不稳。
+            // 频谱的 FFT 数学部分（SpectrumProcessor）已修好并有测试，
+            // 但在拿到可靠的挂载方式之前，宁可不做也不能牺牲播放。
             startAudio(generation: generation, songID: song.id)
         case .failed:
             handlePlayError(item.error ?? MusicError.unknown("播放失败"), for: song)
@@ -776,8 +778,6 @@ public final class PlayerController: ObservableObject {
         seekTask?.cancel()
         isUserSeeking = false
         // 停止播放是彻底边界：销毁播放器实例，避免空转的解码器与音频会话
-        SpectrumAnalyzer.shared.detach()
-        isSpectrumEligible = false
         teardownPlayer()
         currentSong = nil
         duration = 0

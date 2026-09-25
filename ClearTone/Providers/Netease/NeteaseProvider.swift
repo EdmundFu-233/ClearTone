@@ -369,9 +369,9 @@ public actor NeteaseProvider: MusicProvider {
         // 2) 解灰信道：无 token 的 CDN 对象地址，返回完整歌曲文件且全球可访问。
         //    非 VIP 听版权歌曲时标准信道只给 30 秒试听，这里能拿到全曲。
         //
-        //    保持**串行**遍历：曾改成 withTaskGroup 并发，实测反而更脆弱 ——
-        //    两条并发探测会互相争抢带宽，冷启动时两条都更容易超时，
-        //    反而错过本来能用的那条。串行时 unm 不通就试 gdmusic，行为可预期。
+        //    串行遍历：unm 不通再试 gdmusic，行为可预期。
+        //    曾试过 withTaskGroup 并发，两条探测会互相争抢带宽，冷启动时
+        //    更容易双双超时，反而错过本来可用的一条。
         for source in ["unm", "gdmusic"] {
             if let matchURL = try? await fetchMatchURL(songID: songID, source: source),
                let upgraded = upgradeToHTTPS(matchURL),
@@ -408,13 +408,24 @@ public actor NeteaseProvider: MusicProvider {
 
     /// 轻量预检：Range 取 1 字节，仅验证 CDN 可达性；
     /// 用 bytes 流而非 data，响应头到达后立即取消，避免 CDN 忽略 Range 时下载整首歌
+    /// 可达性探测结果的短期记忆。
+    ///
+    /// 只记成功：缓存命中（TTL 240s）也要付一次探测，连播时逐首累积。
+    /// 失败**不记**，网络抖动恢复后能立刻重试。
+    private var reachCache: [String: Date] = [:]
+    private static let reachCacheTTL: TimeInterval = 180
+
     /// 可达性探测。
     ///
-    /// 超时必须保持 4s：实测这台机器上冷启动的 CDN 请求（TLS 握手 + Range 探测）
-    /// 需要 1.3~1.7s。曾为了"快"收紧到 1.5s，结果探测几乎必然失败，
-    /// 完整播放链路被判死、退回 30 秒试听流，表现为"无法播放音乐"。
-    /// 这里不做探测结果记忆：宁可多花一次往返，也不能误杀可播放的地址。
+    /// 超时保持 4s：实测这台机器上冷启动的 CDN 探测（DNS + TLS + Range）需要
+    /// 1.3~1.7s。曾收紧到 1.5s，结果探测几乎必然失败、完整播放地址被判死，
+    /// 退回 30 秒试听流。这是实测数据，不要再动。
     private func isStreamReachable(_ url: URL) async -> Bool {
+        let key = url.absoluteString
+        if let at = reachCache[key],
+           Date().timeIntervalSince(at) < Self.reachCacheTTL {
+            return true
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
@@ -423,8 +434,11 @@ public actor NeteaseProvider: MusicProvider {
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
             guard let http = response as? HTTPURLResponse else { return false }
-            return (200...299).contains(http.statusCode)
+            let ok = (200...299).contains(http.statusCode)
+            if ok { reachCache[key] = Date() }
+            return ok
         } catch {
+            // 失败不记忆：网络问题恢复后应该重试
             return false
         }
     }
@@ -647,6 +661,7 @@ public actor NeteaseProvider: MusicProvider {
     public func clearCache() {
         responseCache.removeAll()
         responseCacheBytes = 0
+        reachCache.removeAll()
     }
 
     // MARK: - 模型映射

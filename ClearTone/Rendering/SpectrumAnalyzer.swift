@@ -7,6 +7,21 @@ import MediaToolbox
 
 /// 频谱处理器：vDSP 实数 FFT（R2R），输出 64 条对数频带。
 ///
+/// ## 当前状态：FFT 数学部分可用，但**尚未接入音频**
+///
+/// 曾尝试用 `MTAudioProcessingTap` 把本地文件（演示音频 / 96kbps OPUS 缓存）
+/// 的音频接进来，结果播放卡在 `waitingToPlayAtSpecifiedRate`（界面显示「缓冲中」）。
+/// 两个原因：
+/// 1. `MTAudioProcessingTapStorage` 这个 C 结构体在 SDK 头文件里根本不存在，
+///    `MTAudioProcessingTapGetStorage` 返回的是 `void**` 而非 handler 指针，
+///    纯 Swift 里无法安全地把 handler 传进实时音频回调；
+/// 2. 即便类型正确，在 KVO 回调里创建 tap 会触发音频管线重新协商格式，
+///    对 48kHz OPUS/CAF 缓存文件尤其不稳。
+///
+/// 所以这里只保留已经修好并有测试覆盖的 FFT 处理器（实时线程安全、采样率正确），
+/// 等拿到可靠的接入方式（例如用 ObjC 封装或改用 AVAssetReader 离线分析）再接。
+/// 在那之前，界面回退到环境动画 —— 播放稳定比频谱重要得多。
+///
 /// ## 实时线程约束（本文件最重要的部分）
 ///
 /// `MTAudioProcessingTap` 的回调运行在**实时音频线程**上。实时线程上的堆分配是明确
@@ -171,137 +186,3 @@ final class SpectrumProcessor: @unchecked Sendable {
 }
 
 /// tap 回调与 `MTAudioProcessingTapStorage.clientInfo` 之间的桥。
-/// 必须被 storage 强引用持有，否则音频线程回调时已释放。
-final class SpectrumTapHandler: @unchecked Sendable {
-    let processor: SpectrumProcessor
-    private let isDetached = OSAllocatedUnfairLock(initialState: false)
-
-    init(processor: SpectrumProcessor) { self.processor = processor }
-
-    func detach() { isDetached.withLock { $0 = true } }
-
-    /// 供 C 回调调用。零分配。
-    @inline(__always)
-    func handle(audioBufferList: UnsafeMutablePointer<AudioBufferList>) {
-        if isDetached.withLock({ $0 }) { return }
-        let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
-        guard let first = abl.first, let mData = first.mData, first.mDataByteSize > 0 else { return }
-        let sampleCount = Int(first.mDataByteSize) / MemoryLayout<Float>.size
-        processor.process(samples: mData.assumingMemoryBound(to: Float.self), count: sampleCount)
-    }
-}
-
-/// 频谱分析器（管理侧）。
-///
-/// 覆盖范围：本地文件、演示音频、以及已缓存的 OPUS 文件。
-/// 远程 HTTPS 流媒体取不到可靠的 tap 回调，`attach(to:remoteSource:)` 抛错，
-/// 界面回退到环境动画 —— 这一点是 AVFoundation 的真实限制，不是偷懒。
-@MainActor
-public final class SpectrumAnalyzer {
-    public static let shared = SpectrumAnalyzer()
-
-    private var processor: SpectrumProcessor?
-    private var handler: SpectrumTapHandler?
-
-    public private(set) var isAttached = false
-    public private(set) var unavailableReason: String?
-
-    private init() {}
-
-    /// 采样率决定频带边界；返回是否成功挂载
-    @discardableResult
-    public func attach(to playerItem: AVPlayerItem, remoteSource: Bool) -> Bool {
-        detach()
-        guard !remoteSource else {
-            unavailableReason = "远程流媒体无法可靠取到音频回调，已回退到环境动画"
-            isAttached = false
-            return false
-        }
-        guard let track = playerItem.asset.tracks(withMediaType: .audio).first,
-              let rawDesc = track.formatDescriptions.first else {
-            unavailableReason = "该播放项没有可用音轨"
-            isAttached = false
-            return false
-        }
-        // formatDescriptions 是 [Any]，元素实际是 CMFormatDescription（CMAudioFormatDescription 的别名）
-        let desc = rawDesc as! CMAudioFormatDescription
-        guard let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(desc) else {
-            unavailableReason = "音轨缺少 ASBD 描述"
-            isAttached = false
-            return false
-        }
-        var asbd = asbdPtr.pointee
-        let sampleRate = asbd.mSampleRate > 0 ? asbd.mSampleRate : 48_000
-
-        let processor = SpectrumProcessor(sampleRate: sampleRate)
-        let handler = SpectrumTapHandler(processor: processor)
-        // 强引用 handler，防止音频线程回调时已释放
-        self.processor = processor
-        self.handler = handler
-
-        // 用官方推荐的 callbacks 接口：`MTAudioProcessingTapStorage` 这个 C 结构体
-        // 在 Swift overlay 里根本没有导出（xcrun swiftc 报 cannot find type），
-        // 只能用 MTAudioProcessingTapCallbacks，通过 clientInfo 传递 handler 指针。
-        let clientInfo = Unmanaged.passUnretained(handler).toOpaque()
-        var callbacks = MTAudioProcessingTapCallbacks(
-            version: 0,
-            clientInfo: clientInfo,
-            // init 回调里把 handler 指针存进 tap storage，process 回调直接取回。
-            // 绝不在实时线程 allocate：storage 由系统分配，读写它不产生堆分配。
-            init: { _, clientInfo, tapStorageOut in
-                tapStorageOut.pointee = clientInfo
-            },
-            finalize: { _ in },
-            prepare: { _, _, _ in },
-            unprepare: { _ in },
-            process: { tap, numberFrames, _, bufferListInOut, numberFramesOut, _ in
-                // MTAudioProcessingTapGetStorage 是单参数返回 void*（C 签名如此）
-                let info = MTAudioProcessingTapGetStorage(tap)
-                Unmanaged<SpectrumTapHandler>.fromOpaque(info)
-                    .takeUnretainedValue()
-                    .handle(audioBufferList: bufferListInOut)
-                numberFramesOut.pointee = numberFrames
-            }
-        )
-
-        var tapRef: MTAudioProcessingTap?
-        let status = MTAudioProcessingTapCreate(
-            kCFAllocatorDefault, &callbacks,
-            MTAudioProcessingTapCreationFlags(kMTAudioProcessingTapCreationFlag_PostEffects),
-            &tapRef
-        )
-        guard status == noErr, let tap = tapRef else {
-            unavailableReason = "创建音频处理 tap 失败 (code \(status))"
-            isAttached = false
-            self.processor = nil
-            self.handler = nil
-            return false
-        }
-
-        // tap 挂在 audio mix 的 **input parameters** 上（不是 AVMutableAudioMix 本身）
-        let params = AVMutableAudioMixInputParameters(track: track)
-        params.audioTapProcessor = tapRef
-        if let mix = playerItem.audioMix as? AVMutableAudioMix {
-            mix.inputParameters = [params]
-        } else {
-            let mix = AVMutableAudioMix()
-            mix.inputParameters = [params]
-            playerItem.audioMix = mix
-        }
-        isAttached = true
-        unavailableReason = nil
-        return true
-    }
-
-    public func detach() {
-        if let handler { handler.detach() }
-        processor = nil
-        handler = nil
-        isAttached = false
-    }
-
-    /// UI 定时读取（NowPlayingView 的 timer 调它）
-    public func currentBands() -> [Float] {
-        processor?.latestBands ?? Array(repeating: 0, count: SpectrumProcessor.bandCount)
-    }
-}
