@@ -367,14 +367,27 @@ public actor NeteaseProvider: MusicProvider {
         }
 
         // 2) 解灰信道：无 token 的 CDN 对象地址，返回完整歌曲文件且全球可访问。
-        //    非 VIP 听版权歌曲时标准信道只给 30 秒试听，这里能拿到全曲
-        for source in ["unm", "gdmusic"] {
-            if let matchURL = try? await fetchMatchURL(songID: songID, source: source),
-               let upgraded = upgradeToHTTPS(matchURL),
-               await isStreamReachable(upgraded) {
-                let fallbackQuality = AudioQuality(level: .unknown, bitrate: nil, sampleRate: nil, bitDepth: nil, isActual: true)
-                return PlayableURL(url: upgraded, quality: fallbackQuality)
+        //    非 VIP 听版权歌曲时标准信道只给 30 秒试听，这里能拿到全曲。
+        //    两路并发：原先串行 for 循环里 try? 会吞掉错误再等满超时才进下一路，
+        //    最坏 2×(15+4) 秒；并发后约一半。
+        var fallbackURL: URL?
+        await withTaskGroup(of: URL?.self) { group in
+            for source in ["unm", "gdmusic"] {
+                group.addTask { [weak self] in
+                    guard let self,
+                          let matchURL = try? await self.fetchMatchURL(songID: songID, source: source),
+                          let upgraded = self.upgradeToHTTPS(matchURL),
+                          await self.isStreamReachable(upgraded) else { return nil }
+                    return upgraded
+                }
             }
+            for await candidate in group {
+                if let candidate, fallbackURL == nil { fallbackURL = candidate }
+            }
+        }
+        if let fallbackURL {
+            let fallbackQuality = AudioQuality(level: .unknown, bitrate: nil, sampleRate: nil, bitDepth: nil, isActual: true)
+            return PlayableURL(url: fallbackURL, quality: fallbackQuality)
         }
 
         // 3) 最后兜底：原样返回标准地址，交给 AVPlayer 再试（避免预检误杀）。
@@ -396,24 +409,39 @@ public actor NeteaseProvider: MusicProvider {
         return url
     }
 
-    private func upgradeToHTTPS(_ url: URL) -> URL? {
+    /// 纯字符串处理，可在 actor 外的并发子任务里调用
+    private nonisolated func upgradeToHTTPS(_ url: URL) -> URL? {
         guard url.scheme?.lowercased() == "http" else { return url }
         return URL(string: url.absoluteString.replacingOccurrences(of: "http://", with: "https://", options: .anchored))
     }
 
     /// 轻量预检：Range 取 1 字节，仅验证 CDN 可达性；
     /// 用 bytes 流而非 data，响应头到达后立即取消，避免 CDN 忽略 Range 时下载整首歌
+    /// 可达性探测结果记忆：缓存命中时（TTL 240s）也要付一次 4s 探测，
+    /// 连播时会把这 4s 一首首累积起来。同一 URL 短时间内只探一次。
+    private var reachCache: [String: (ok: Bool, at: Date)] = [:]
+    private static let reachCacheTTL: TimeInterval = 120
+
     private func isStreamReachable(_ url: URL) async -> Bool {
+        let key = url.absoluteString
+        if let cached = reachCache[key],
+           Date().timeIntervalSince(cached.at) < Self.reachCacheTTL {
+            return cached.ok
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        request.timeoutInterval = 4
+        // Range 1 字节探测不需要 4s 容忍，1.5s 足够判定可达性
+        request.timeoutInterval = 1.5
         do {
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
             guard let http = response as? HTTPURLResponse else { return false }
-            return (200...299).contains(http.statusCode)
+            let ok = (200...299).contains(http.statusCode)
+            reachCache[key] = (ok, Date())
+            return ok
         } catch {
+            // 失败不记忆：网络问题恢复后应该重试
             return false
         }
     }
@@ -636,6 +664,7 @@ public actor NeteaseProvider: MusicProvider {
     public func clearCache() {
         responseCache.removeAll()
         responseCacheBytes = 0
+        reachCache.removeAll()
     }
 
     // MARK: - 模型映射
