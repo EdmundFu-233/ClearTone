@@ -246,41 +246,25 @@ public final class PlayerController: ObservableObject {
         // 可靠的音频回调（MTAudioProcessingTap 的真实限制），回退到环境动画。
         isSpectrumEligible = url.isFileURL
 
-        let item = AVPlayerItem(url: url)
-        playerItem = item
-        if let player {
-            // 复用实例换源；没有实例时（冷启动首播）才懒建
-            player.replaceCurrentItem(with: item)
-        } else {
-            player = AVPlayer(playerItem: item)
+        // 顺序至关重要：**先确保播放器存在，再挂齐所有观察者，最后才把 item 交进去。**
+        // 反过来（先 replaceCurrentItem 再挂 KVO）会丢事件：复用一个已热起来的
+        // AVPlayer 时，replaceCurrentItem 会立刻开始加载，本地文件或热连接下
+        // item 可能在 KVO 挂上之前就变成 .readyToPlay，于是 readyToPlay 回调
+        // 永远不会送达，startAudio 不执行、player.play() 从不调用 —— 表现就是没声音。
+        if player == nil {
+            player = AVPlayer()
         }
         player?.volume = volume
         player?.isMuted = isMuted
+
+        let item = AVPlayerItem(url: url)
+        playerItem = item
 
         // 状态监听
         statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in
                 guard let self = self, generation == self.currentGeneration else { return }
-                switch item.status {
-                case .readyToPlay:
-                      // （self 已由外层 guard 解包）只校验 item 身份与歌单身份，
-                      // **不校验状态枚举**。原先要求状态为 .loading，而用户在加载窗口内
-                      // 点暂停时 pause() 已把状态改成 .paused，于是这个分支不进入：
-                      // 恢复进度的 seek 被静默丢弃（之后从头开始播），
-                      // 且 updateNowPlayingInfo 不会被调用，系统媒体控制
-                      // （锁屏/控制中心/耳机）继续显示上一首的标题与封面。
-                      guard self.playerItem === item,
-                            self.playbackState.songID == song.id else { break }
-                    // 真正进入播放，连续失败计数清零
-                    self.consecutiveFailures = 0
-                    // 此时 item 的音轨信息才可用，挂频谱 tap
-                    _ = SpectrumAnalyzer.shared.attach(to: item, remoteSource: !self.isSpectrumEligible)
-                    self.startAudio(generation: generation, songID: song.id)
-                case .failed:
-                    self.handlePlayError(item.error ?? MusicError.unknown("播放失败"), for: song)
-                default:
-                    break
-                }
+                self.handleItemStatus(item, song: song, generation: generation)
             }
         }
 
@@ -363,9 +347,40 @@ public final class PlayerController: ObservableObject {
                 self.timePublisher.send(time.seconds)
                 // 不在这里调 updateNowPlayingElapsedTime()：写 nowPlayingInfo 字典会触发
                 // COW + 序列化 + 到 mediaremote 的 XPC，2Hz 持续唤醒。系统会根据
-                // PlaybackRate 自行外推进度，只在 seek 完成后同步一次即可。
+                // PlaybackRate 自行外推，只在 seek 完成后同步一次即可。
                 self.persistProgressThrottled()
             }
+        }
+
+        // 观察者全部挂好，现在才把 item 交给播放器开始加载
+        player?.replaceCurrentItem(with: item)
+
+        // 兜底：挂观察者的瞬间 item 可能已经是 ready（极快的本地文件 / 热连接）。
+        // KVO 不会补发历史值，所以这里同步检查一次，避免漏掉 readyToPlay。
+        if item.status == .readyToPlay {
+            handleItemStatus(item, song: song, generation: generation)
+        }
+    }
+
+    /// 处理播放项状态变化。抽成方法以便 KVO 回调与同步兜底检查共用同一条路径。
+    private func handleItemStatus(_ item: AVPlayerItem, song: Song, generation: UInt) {
+        switch item.status {
+        case .readyToPlay:
+            // 只校验 item 身份与歌单身份，**不校验状态枚举**。原先要求状态为 .loading，
+            // 而用户在加载窗口内点暂停时 pause() 已把状态改成 .paused，
+            // 于是这个分支不进入：恢复进度的 seek 被静默丢弃（之后从头开始播），
+            // 且 updateNowPlayingInfo 不会被调用，系统媒体控制（锁屏/控制中心/耳机）
+            // 继续显示上一首的标题与封面。
+            guard playerItem === item, playbackState.songID == song.id else { return }
+            // 真正进入播放，连续失败计数清零
+            consecutiveFailures = 0
+            // 此时 item 的音轨信息才可用，挂频谱 tap
+            _ = SpectrumAnalyzer.shared.attach(to: item, remoteSource: !isSpectrumEligible)
+            startAudio(generation: generation, songID: song.id)
+        case .failed:
+            handlePlayError(item.error ?? MusicError.unknown("播放失败"), for: song)
+        default:
+            break
         }
     }
 
