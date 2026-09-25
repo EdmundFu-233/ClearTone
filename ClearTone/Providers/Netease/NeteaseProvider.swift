@@ -99,7 +99,7 @@ public actor NeteaseProvider: MusicProvider {
             clearCache()
         }
         let cookie = (try? KeychainStore.shared.load(for: .neteaseCookie)) ?? nil
-        _ = try await request("/logout", cookie: cookie)
+        _ = try await request("/logout", cookie: cookie, method: "POST")
     }
 
     public func fetchAccountInfo() async throws -> AccountInfo? {
@@ -521,7 +521,10 @@ public actor NeteaseProvider: MusicProvider {
 
     public func likeSong(id: String, like: Bool) async throws {
         guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { throw MusicError.notLoggedIn }
-        let data = try await request("/like", query: ["id": id, "like": like ? "true" : "false"], cookie: cookie)
+        // 必须用 POST：用 GET 调 /like 网易云会返回
+        // code 524「当前环境异常，已取消喜欢」，表现为「点收藏没反应」
+        let data = try await request("/like", query: ["id": id, "like": like ? "true" : "false"],
+                                     cookie: cookie, method: "POST")
         let json = try parseJSON(data)
         guard let code = json["code"] as? Int, code == 200 else {
             throw MusicError.apiError(code: json["code"] as? Int ?? -1, message: json["message"] as? String ?? "操作失败")
@@ -550,15 +553,33 @@ public actor NeteaseProvider: MusicProvider {
 
     // MARK: - 网络请求基础
 
-    private func request(_ path: String, query: [String: String] = [:], cookie: String? = nil, cacheTTL: TimeInterval? = nil) async throws -> Data {
+    /// 发起请求。
+    ///
+    /// `method` 默认 GET。**写操作必须显式传 "POST"**：
+    /// 网易云对 `/like` 这类写接口用 GET 调用时会返回
+    /// `code: 524 / 当前环境异常，已取消喜欢` —— 同一首歌、同一 cookie，
+    /// POST 返回 200 而 GET 返回 524。请求方法错了会被当成风控请求而静默拒绝。
+    private func request(
+        _ path: String,
+        query: [String: String] = [:],
+        cookie: String? = nil,
+        cacheTTL: TimeInterval? = nil,
+        method: String = "GET"
+    ) async throws -> Data {
         let cacheKey = Self.cacheKey(path: path, query: query, hasCookie: !(cookie ?? "").isEmpty)
-        if let ttl = cacheTTL, ttl > 0, let entry = responseCache[cacheKey], entry.expiresAt > Date() {
+        // 写操作永远不读缓存
+        if method == "GET", let ttl = cacheTTL, ttl > 0,
+           let entry = responseCache[cacheKey], entry.expiresAt > Date() {
             return entry.data
         }
 
         try await helper.startIfNeeded()
         let url = try await helper.makeURL(path: path, query: query)
         var request = URLRequest(url: url)
+        request.httpMethod = method
+        if method == "POST" {
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        }
         await helper.applyAuth(to: &request)
 
         // 通过 query 传递 cookie（辅助进程转发到网易云）
@@ -585,7 +606,7 @@ public actor NeteaseProvider: MusicProvider {
                (json["code"] as? Int) == 301 {
                 throw sessionExpiredError()
             }
-            if let ttl = cacheTTL, ttl > 0 {
+            if method == "GET", let ttl = cacheTTL, ttl > 0 {
                 responseCacheBytes += data.count - (responseCache[cacheKey]?.data.count ?? 0)
                 responseCache[cacheKey] = CacheEntry(data: data, expiresAt: Date().addingTimeInterval(ttl))
                 enforceResponseCacheLimits()
