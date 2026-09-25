@@ -5,6 +5,8 @@ struct MiniPlayerView: View {
     @EnvironmentObject var player: PlayerController
     @EnvironmentObject var settings: SettingsStore
     @Environment(\.colorScheme) var colorScheme
+    /// 进度条是否正在被拖动
+    @State private var isDragging = false
 
     var body: some View {
         VStack(spacing: CTSpacing.sm) {
@@ -31,16 +33,36 @@ struct MiniPlayerView: View {
                 Spacer()
             }
 
-            // 进度条
+            // 进度条。局部订阅播放进度，拖动中只预览、抬手才提交。
             ProgressSlider(
                 value: Binding(
                     get: { player.currentTime },
-                    set: { player.seek(to: $0) }
+                    set: { newValue in
+                        isDragging ? player.previewSeek(to: newValue) : player.commitSeek(to: newValue)
+                    }
                 ),
                 maximum: max(player.duration, 1),
-                buffered: player.bufferedTime
+                buffered: player.bufferedTime,
+                onEditingChanged: { isDragging = $0 }
             )
             .frame(height: 3)
+            .observingPlaybackTime(player) { currentTime in
+                ProgressSlider(
+                    value: Binding(
+                        get: { currentTime },
+                        set: { newValue in
+                            isDragging ? player.previewSeek(to: newValue) : player.commitSeek(to: newValue)
+                        }
+                    ),
+                    maximum: max(player.duration, 1),
+                    buffered: player.bufferedTime,
+                    onEditingChanged: { isDragging = $0 }
+                )
+                .frame(height: 3)
+            }
+            .onChange(of: isDragging) { _, dragging in
+                if !dragging { player.commitSeek(to: player.currentTime) }
+            }
 
             // 控制
             HStack {

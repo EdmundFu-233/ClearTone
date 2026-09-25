@@ -11,7 +11,6 @@ public final class PlayerController: ObservableObject {
 
     // MARK: - Published State
     @Published public private(set) var playbackState: PlaybackState = .idle
-    @Published public private(set) var currentTime: TimeInterval = 0
     @Published public private(set) var duration: TimeInterval = 0
     @Published public var volume: Float = 0.8 {
         didSet { player?.volume = volume }
@@ -27,9 +26,22 @@ public final class PlayerController: ObservableObject {
     @Published public private(set) var actualQuality: AudioQuality?
     /// 当前播放是否来自本地音频缓存
     @Published public private(set) var isCurrentFromCache = false
-    @Published public private(set) var bufferedTime: TimeInterval = 0
 
-    /// 高频时钟与低频 UI 状态分离：currentTime 更新通过 timer，view 按需订阅
+    /// 播放进度。
+    ///
+    /// 刻意**不是** @Published：SwiftUI 对 ObservableObject 只订阅合并后的 objectWillChange，
+    /// 没有属性级追踪 —— 任何 @Published 变化都会让所有 @EnvironmentObject 持有者
+    /// 的整个 body 重算（PlayerBar / NowPlaying / QueuePanel / MiniPlayer / 侧栏…）。
+    /// 高频进度若走 @Published，2Hz 就能把整棵视图树重算一遍。
+    /// 视图侧用 `PlaybackTimeObserver` 订阅 `timePublisher` 驱动局部 @State。
+    public private(set) var currentTime: TimeInterval = 0
+
+    /// 已缓冲位置。同样不是 @Published：网络抖动时它可达数十 Hz，
+    /// 而唯一用途是一个 tooltip，之前的每次更新都是纯浪费的重绘。
+    public private(set) var bufferedTime: TimeInterval = 0
+
+    /// 高频时钟：currentTime 每次变化都从这里发出，视图按需订阅。
+    /// 播放中 2Hz，拖动时可达 60Hz+，但只影响订阅者，不牵动整棵树。
     public let timePublisher = PassthroughSubject<TimeInterval, Never>()
 
     // MARK: - Private
@@ -52,6 +64,17 @@ public final class PlayerController: ObservableObject {
     private var retrySongID: String = ""
     private var sameSongRetries = 0
     private var seekTask: Task<Void, Never>?
+    /// 单调递增的 seek 令牌。已提交给 AVFoundation 的 seek 无法撤销，
+    /// 只能靠它让过期回调自行放弃写回。
+    private var seekToken: UInt64 = 0
+    /// 封面下载任务，切歌时取消，避免旧封面白跑一遍网络
+    private var artworkTask: Task<Void, Never>?
+    /// 缓冲位置的节流发布时间
+    private var lastBufferPublishAt = Date.distantPast
+    /// 记录一个 target，deinit 时统一回收
+    private func keepRemoteTarget(_ command: MPRemoteCommand, _ token: Any) {
+        remoteCommandBox.add(command: command, token: token)
+    }
     private var isUserSeeking = false
     private var autoAdvanceTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
@@ -75,6 +98,18 @@ public final class PlayerController: ObservableObject {
         if restored, settings?.resumePlaybackOnLaunch == true {
             beginRestoredPlayback(autoplay: false)
         }
+    }
+
+    /// (所属 command, target token) 的容器。
+    /// Swift 6 下 `deinit` 是 nonisolated 的，不能直接访问 PlayerController 的隔离存储，
+    /// 所以放进一个独立的不可变快照盒子里。
+    private let remoteCommandBox = RemoteCommandBox()
+
+    deinit {
+        // 单例下 init 只跑一次，但重建实例时若不摘掉 target，
+        // 同一个按键会触发 N 次（音量跳变、连播 N 首）。
+        // removeTarget 定义在 MPRemoteCommand 上，所以要连同所属 command 一起保存。
+        remoteCommandBox.removeAllTargets()
     }
 
     // MARK: - 公共配置
@@ -225,10 +260,14 @@ public final class PlayerController: ObservableObject {
             }
         }
 
-        // 缓冲监听
+        // 缓冲监听。loadedTimeRanges 在网络抖动时可达数十 Hz，
+        // 这里做 1 秒节流：唯一消费方是一个 tooltip，不需要那么精确。
         bufferObserver = item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in
                 guard let self = self, generation == self.currentGeneration else { return }
+                let now = Date()
+                guard now.timeIntervalSince(self.lastBufferPublishAt) >= 1 else { return }
+                self.lastBufferPublishAt = now
                 if let range = item.loadedTimeRanges.first?.timeRangeValue {
                     self.bufferedTime = range.start.seconds + range.duration.seconds
                 }
@@ -266,7 +305,9 @@ public final class PlayerController: ObservableObject {
                       !self.isUserSeeking, self.currentSong != nil else { return }
                 self.currentTime = time.seconds
                 self.timePublisher.send(time.seconds)
-                self.updateNowPlayingElapsedTime()
+                // 不在这里调 updateNowPlayingElapsedTime()：写 nowPlayingInfo 字典会触发
+                // COW + 序列化 + 到 mediaremote 的 XPC，2Hz 持续唤醒。系统会根据
+                // PlaybackRate 自行外推进度，只在 seek 完成后同步一次即可。
                 self.persistProgressThrottled()
             }
         }
@@ -382,20 +423,46 @@ public final class PlayerController: ObservableObject {
         play(song: item.song)
     }
 
-    public func seek(to time: TimeInterval) {
-        seekTask?.cancel()
+    /// 拖动过程中的预览：只更新 UI 时间，不提交 seek。
+    ///
+    /// 原实现在 Slider 的每帧（60~120Hz）都提交一次零容差精确 seek。
+    /// `.zero` 容差意味着不能用关键帧近似，必须从邻近关键帧重新解码；
+    /// 而 `Task.cancel()` 撤不回已提交给 AVFoundation 的 seek，
+    /// 于是拖动过程中会累积 N 个已执行请求 —— 音频断续、耗电飙升，
+    /// 最终 currentTime 取决于哪个 completion 最后返回。
+    public func previewSeek(to time: TimeInterval) {
         isUserSeeking = true
         currentTime = time
+        timePublisher.send(time)
+    }
 
-        seekTask = Task {
+    /// 拖动结束：提交一次精确 seek
+    public func commitSeek(to time: TimeInterval) {
+        isUserSeeking = true
+        currentTime = time
+        timePublisher.send(time)
+        // 单调递增的令牌替代 Task.cancel()：已提交的 seek 无法撤销，
+        // 只能让旧回调自己发现"我不是最新的"而放弃写回
+        seekToken &+= 1
+        let token = seekToken
+        seekTask?.cancel()
+        seekTask = Task { [weak self] in
+            guard let self else { return }
             let cmTime = CMTime(seconds: time, preferredTimescale: 600)
-            await player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
-            isUserSeeking = false
-            updateNowPlayingElapsedTime()
-            if currentSong != nil {
-                persistState(structureChanged: false)
+            await self.player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            // 只有最新一次 seek 才允许改状态
+            guard token == self.seekToken, !Task.isCancelled else { return }
+            self.isUserSeeking = false
+            self.updateNowPlayingElapsedTime()
+            if self.currentSong != nil {
+                self.persistState(structureChanged: false)
             }
         }
+    }
+
+    /// 保留旧接口：内部按"预览 + 立即提交"处理，供键盘/菜单等一次性跳转使用
+    public func seek(to time: TimeInterval) {
+        commitSeek(to: time)
     }
 
     public func setPlayMode(_ mode: PlayMode) {
@@ -626,32 +693,33 @@ public final class PlayerController: ObservableObject {
 
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
-
-        center.playCommand.addTarget { [weak self] _ in
+        // (command, token) 必须成对保存：removeTarget 定义在 MPRemoteCommand 上。
+        // 否则将来若重建实例（或测试反复访问），同一按键会触发 N 次
+        keepRemoteTarget(center.playCommand, center.playCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.resume() }
             return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in
+        })
+        keepRemoteTarget(center.pauseCommand, center.pauseCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.pause() }
             return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+        })
+        keepRemoteTarget(center.togglePlayPauseCommand, center.togglePlayPauseCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.togglePlayPause() }
             return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
+        })
+        keepRemoteTarget(center.nextTrackCommand, center.nextTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.next() }
             return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
+        })
+        keepRemoteTarget(center.previousTrackCommand, center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.previous() }
             return .success
-        }
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+        })
+        keepRemoteTarget(center.changePlaybackPositionCommand, center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            Task { @MainActor in self?.seek(to: event.positionTime) }
+            Task { @MainActor in self?.commitSeek(to: event.positionTime) }
             return .success
-        }
+        })
     }
 
     /// 封面回调必须 nonisolated：MediaPlayer 在内部队列（*/accessQueue）同步调用它，
@@ -672,19 +740,25 @@ public final class PlayerController: ObservableObject {
         ]
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
-        guard let coverURL = song.coverURL else { return }
-        // 异步封面：仅在歌曲未变时写入，避免快速切歌时旧封面/旧信息覆盖新歌曲
-        let songID = song.id
-        let generation = currentGeneration
-        Task {
-            guard let data = try? await URLSession.shared.data(from: coverURL).0,
-                  let image = NSImage(data: data) else { return }
-            guard self.currentSong?.id == songID, generation == self.currentGeneration else { return }
-            let handler = Self.makeArtworkRequestHandler(image: image)
-            let artwork = MPMediaItemArtwork(boundsSize: image.size, requestHandler: handler)
-            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtwork] = artwork
-        }
-    }
+          guard let coverURL = song.coverURL else { return }
+          // 异步封面：仅在歌曲未变时写入，避免快速切歌时旧封面/旧信息覆盖新歌曲。
+          // 复用 CoverLoader（已有 NSCache + 磁盘缓存 + 在途去重），
+          // 原先走 URLSession.shared 是主线程解码 + 无缓存 + 无取消，
+          // 快速切歌 10 次会有 10 个并发下载都跑完。
+          let songID = song.id
+          let generation = currentGeneration
+          artworkTask?.cancel()
+          artworkTask = Task { [weak self] in
+              guard let image = await CoverLoader.shared.load(url: coverURL, pointSize: 600),
+                    !Task.isCancelled else { return }
+              guard let self,
+                    self.currentSong?.id == songID,
+                    generation == self.currentGeneration else { return }
+              let handler = Self.makeArtworkRequestHandler(image: image)
+              let artwork = MPMediaItemArtwork(boundsSize: image.size, requestHandler: handler)
+              MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtwork] = artwork
+          }
+      }
 
     private func updateNowPlayingElapsedTime() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
@@ -706,4 +780,27 @@ struct PersistedQueue: Codable {
     var volume: Float
     var isMuted: Bool
     var requestedQuality: AudioQuality.QualityLevel
+}
+
+/// MPRemoteCommand target 的持有者。
+///
+/// 单独抽出来是因为 Swift 6 下 `deinit` 是 nonisolated 的，无法直接访问
+/// `@MainActor` 隔离的存储属性；这个盒子是不可变的快照 + 内部加锁的注册表。
+private final class RemoteCommandBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(MPRemoteCommand, Any)] = []
+
+    func add(command: MPRemoteCommand, token: Any) {
+        lock.lock()
+        storage.append((command, token))
+        lock.unlock()
+    }
+
+    func removeAllTargets() {
+        lock.lock()
+        let snapshot = storage
+        storage.removeAll()
+        lock.unlock()
+        for (command, token) in snapshot { command.removeTarget(token) }
+    }
 }

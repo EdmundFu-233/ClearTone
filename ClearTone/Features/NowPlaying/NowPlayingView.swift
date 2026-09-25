@@ -134,27 +134,19 @@ struct NowPlayingView: View {
                         }
                         .foregroundStyle(.white)
 
-                        // 进度
+                        // 进度。局部订阅播放进度，拖动中只预览、抬手才提交。
                         VStack(spacing: CTSpacing.xs) {
-                            ProgressSlider(
-                                value: Binding(
-                                    get: { player.currentTime },
-                                    set: { player.seek(to: $0) }
-                                ),
-                                maximum: max(player.duration, 1),
-                                buffered: player.bufferedTime
-                            )
-                            .frame(height: 4)
-
-                            HStack {
-                                Text(formatTime(player.currentTime))
-                                Spacer()
-                                Text(formatTime(player.duration))
-                            }
-                            .font(CTTypography.caption)
-                            .foregroundStyle(.white.opacity(0.7))
+                            nowPlayingProgress(time: 0)
                         }
                         .frame(width: min(geometry.size.width * 0.35, 400))
+                        .observingPlaybackTime(player) { currentTime in
+                            VStack(spacing: CTSpacing.xs) {
+                                nowPlayingProgress(time: currentTime)
+                            }
+                        }
+                        .onChange(of: isProgressDragging) { _, dragging in
+                            if !dragging { player.commitSeek(to: player.currentTime) }
+                        }
 
                         Spacer()
                     }
@@ -268,6 +260,33 @@ struct NowPlayingView: View {
         case .netease:
             return try await NeteaseProvider.shared.fetchLyrics(songID: song.id)
         }
+    }
+
+    /// 进度条是否正在被拖动
+    @State private var isProgressDragging = false
+
+    @ViewBuilder
+    private func nowPlayingProgress(time: TimeInterval) -> some View {
+        ProgressSlider(
+            value: Binding(
+                get: { time },
+                set: { newValue in
+                    isProgressDragging ? player.previewSeek(to: newValue) : player.commitSeek(to: newValue)
+                }
+            ),
+            maximum: max(player.duration, 1),
+            buffered: player.bufferedTime,
+            onEditingChanged: { isProgressDragging = $0 }
+        )
+        .frame(height: 4)
+
+        HStack {
+            Text(formatTime(time))
+            Spacer()
+            Text(formatTime(player.duration))
+        }
+        .font(CTTypography.caption)
+        .foregroundStyle(.white.opacity(0.7))
     }
 
     private func formatTime(_ time: TimeInterval) -> String {

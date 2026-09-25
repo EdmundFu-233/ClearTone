@@ -123,30 +123,55 @@ struct PlayerBarView: View {
                     .opacity(0)
             }
 
-            // 进度条
-            HStack(spacing: CTSpacing.sm) {
-                Text(formatTime(player.currentTime))
-                    .font(CTTypography.caption)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                    .monospacedDigit()
+            // 进度条。用 observingPlaybackTime 局部订阅：播放进度 2Hz 变化
+            // 不再牵动整棵视图树，只有这一小段重算。
+            // 拖动中只更新 UI 时间（previewSeek），抬手才提交一次精确 seek（commitSeek）——
+            // 原先每帧都提交零容差 seek，而 Task.cancel 撤不回已提交给 AVFoundation 的请求。
+            progressContent(time: 0)
+                .frame(minWidth: 230, maxWidth: .infinity)
+                .observingPlaybackTime(player) { currentTime in
+                    progressContent(time: currentTime)
+                }
+                .onChange(of: progressIsDragging) { _, dragging in
+                    // 抬手：把预览位置真正提交给播放器
+                    if !dragging { player.commitSeek(to: player.currentTime) }
+                }
+        }
+    }
 
-                ProgressSlider(
-                    value: Binding(
-                        get: { player.currentTime },
-                        set: { player.seek(to: $0) }
-                    ),
-                    maximum: max(player.duration, 1),
-                    buffered: player.bufferedTime
-                )
-                .frame(height: 22)
-                .disabled(player.currentSong == nil)
+    /// 进度条是否正在被拖动
+    @State private var progressIsDragging = false
 
-                Text(formatTime(player.duration))
-                    .font(CTTypography.caption)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                    .monospacedDigit()
-            }
-            .frame(minWidth: 230, maxWidth: .infinity)
+    @ViewBuilder
+    private func progressContent(time: TimeInterval) -> some View {
+        HStack(spacing: CTSpacing.sm) {
+            Text(formatTime(time))
+                .font(CTTypography.caption)
+                .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                .monospacedDigit()
+
+            ProgressSlider(
+                value: Binding(
+                    get: { time },
+                    set: { newValue in
+                        if progressIsDragging {
+                            player.previewSeek(to: newValue)
+                        } else {
+                            player.commitSeek(to: newValue)
+                        }
+                    }
+                ),
+                maximum: max(player.duration, 1),
+                buffered: player.bufferedTime,
+                onEditingChanged: { progressIsDragging = $0 }
+            )
+            .frame(height: 22)
+            .disabled(player.currentSong == nil)
+
+            Text(formatTime(player.duration))
+                .font(CTTypography.caption)
+                .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                .monospacedDigit()
         }
     }
 
@@ -295,10 +320,12 @@ struct ProgressSlider: View {
     @Binding var value: TimeInterval
     var maximum: TimeInterval
     var buffered: TimeInterval
+    /// 拖动开始/结束回调。用于区分"拖动中只更新 UI"与"抬手才提交 seek"。
+    var onEditingChanged: (Bool) -> Void = { _ in }
     @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
-        Slider(value: $value, in: 0...max(maximum, 1))
+        Slider(value: $value, in: 0...max(maximum, 1), onEditingChanged: onEditingChanged)
             .tint(CTColors.accent(for: colorScheme))
             .help("已缓冲 \(Int(max(0, buffered))) 秒")
             .accessibilityLabel("播放进度")
