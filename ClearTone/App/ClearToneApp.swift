@@ -106,6 +106,16 @@ public class AppState: ObservableObject {
     @Published public private(set) var likedSongs: [Song] = []
     /// 收藏状态版本号：每次变化自增，驱动依赖视图刷新
     @Published public private(set) var likesVersion: Int = 0
+
+    /// 用户歌单。
+    ///
+    /// 原先 `SidebarView` 与 `MyMusicView` 各自持有一份并各自读/写同一个
+    /// 缓存 key：同一份数据被解码两次、写两次，两处可能显示不同内容
+    /// （一方失败回退缓存、一方拿到新数据）。这里作为唯一 owner。
+    @Published public private(set) var userPlaylists: [Playlist] = []
+    @Published public private(set) var isLoadingUserPlaylists = false
+    /// 加载代次：切换账号/演示模式时旧请求不得写入
+    private var userPlaylistsToken = UUID()
     /// 会话失效后置位，UI 据此自动弹出登录
     @Published var needsReLogin = false
 
@@ -242,6 +252,37 @@ public class AppState: ObservableObject {
         } catch {
             CTLog.general.error("加载喜欢的歌曲失败: \(CTLog.sanitize(error.localizedDescription))")
         }
+    }
+
+    /// 加载用户歌单（侧栏与「我的音乐」共用这一个数据源）。
+    ///
+    /// 先用本地缓存立即填充避免空白，再拉网络。带代次令牌，
+    /// 切换账号/演示模式后旧请求返回会被丢弃，不会串号。
+    func loadUserPlaylists() async {
+        let token = UUID()
+        userPlaylistsToken = token
+        guard isLoggedIn, !isDemoMode else {
+            userPlaylists = []
+            return
+        }
+        if userPlaylists.isEmpty {
+            let cached = PersistenceStore.shared.loadCachedUserPlaylists()
+            guard userPlaylistsToken == token, !Task.isCancelled else { return }
+            userPlaylists = cached
+        }
+        isLoadingUserPlaylists = userPlaylists.isEmpty
+        do {
+            let loaded = try await provider.fetchUserPlaylists()
+            guard userPlaylistsToken == token, !Task.isCancelled else { return }
+            userPlaylists = loaded
+            PersistenceStore.shared.saveCachedUserPlaylists(loaded)
+        } catch {
+            guard userPlaylistsToken == token else { return }
+            // 失败时保留缓存内容，避免侧栏闪空
+            CTLog.general.error("加载歌单失败: \(CTLog.sanitize(error.localizedDescription))")
+        }
+        guard userPlaylistsToken == token else { return }
+        isLoadingUserPlaylists = false
     }
 
     /// 切换收藏状态（乐观更新，失败回滚）。返回切换后的状态。

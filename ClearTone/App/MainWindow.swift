@@ -59,16 +59,11 @@ struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) var colorScheme
 
-    // 初值不能在这里读盘：@State 的默认值表达式在每次 View 结构体构造时都会求值
-    // （只有第一次结果被保留），而 MainWindow 会因播放进度每 0.5s 重建一次，
-    // 那样等于每 0.5s 白做一次 UserDefaults 读 + JSON 解码。改为在 .task 里读。
-    @State private var userPlaylists: [Playlist] = []
-    @State private var isLoadingPlaylists = false
-    /// 加载代次：切换账号/演示模式时旧 load() 可能已跨过 await 恢复，
-    //  不校验就会把上一个账号的歌单写进侧栏
-    @State private var loadToken = UUID()
-
-    private let provider = NeteaseProvider.shared
+    // 歌单数据与加载态统一由 AppState 持有：
+    // 原先 SidebarView 与 MyMusicView 各存一份并各自读/写同一个缓存 key，
+    // 同一份数据被解码两次写两次，两处可能显示不同内容。
+    // 初值也不在这里读盘：@State 的默认值表达式在每次 View 结构体构造时都会求值
+    // （只有第一次结果被保留），而 MainWindow 会因播放进度频繁重建。
 
     var body: some View {
         List(selection: $appState.currentPage) {
@@ -92,7 +87,7 @@ struct SidebarView: View {
 
             Section(L10n.Sidebar.playlists) {
                 if appState.isLoggedIn && !appState.isDemoMode {
-                    if isLoadingPlaylists {
+                    if appState.isLoadingUserPlaylists {
                         HStack(spacing: CTSpacing.sm) {
                             ProgressView()
                                 .controlSize(.small)
@@ -101,12 +96,12 @@ struct SidebarView: View {
                                 .foregroundStyle(CTColors.textSecondary(for: colorScheme))
                             Spacer()
                         }
-                    } else if userPlaylists.isEmpty {
+                    } else if appState.userPlaylists.isEmpty {
                         Text("暂无歌单")
                             .foregroundStyle(CTColors.textSecondary(for: colorScheme))
                             .font(CTTypography.caption)
                     } else {
-                        ForEach(userPlaylists) { playlist in
+                        ForEach(appState.userPlaylists) { playlist in
                             Button {
                                 appState.selectedPlaylistID = playlist.id
                                 appState.currentPage = .playlistDetail
@@ -148,36 +143,7 @@ struct SidebarView: View {
             .background(CTColors.panel(for: colorScheme))
         }
         .background(CTColors.panel(for: colorScheme))
-        .task(id: appState.dataContextKey) { await loadPlaylists() }
-    }
-
-    private func loadPlaylists() async {
-        let token = UUID()
-        loadToken = token
-        guard appState.isLoggedIn, !appState.isDemoMode else {
-            userPlaylists = []
-            return
-        }
-        // 先用本地缓存立即填充，避免侧栏空白等待网络
-        if userPlaylists.isEmpty {
-            let cached = PersistenceStore.shared.loadCachedUserPlaylists()
-            guard loadToken == token, !Task.isCancelled else { return }
-            userPlaylists = cached
-        }
-        isLoadingPlaylists = userPlaylists.isEmpty
-        do {
-            let playlists = try await provider.fetchUserPlaylists()
-            // 切账号/退出演示后旧请求才返回，丢弃以免串号并污染缓存
-            guard loadToken == token, !Task.isCancelled else { return }
-            userPlaylists = playlists
-            PersistenceStore.shared.saveCachedUserPlaylists(playlists)
-        } catch {
-            guard loadToken == token else { return }
-            // 失败时保留缓存内容，避免侧栏闪空
-            CTLog.general.error("加载歌单失败: \(CTLog.sanitize(error.localizedDescription))")
-        }
-        guard loadToken == token else { return }
-        isLoadingPlaylists = false
+        .task(id: appState.dataContextKey) { await appState.loadUserPlaylists() }
     }
 }
 
@@ -483,14 +449,7 @@ struct MyMusicView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) var colorScheme
 
-    @State private var playlists: [Playlist] = PersistenceStore.shared.loadCachedUserPlaylists()
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    /// 加载代次：切换账号/演示模式时旧 load() 可能已跨过 await 恢复，
-    /// 不校验就会把上一个账号的歌单写进来
-    @State private var loadToken = UUID()
-
-    private let provider = NeteaseProvider.shared
+    // 歌单数据由 AppState 统一持有（与 SidebarView 共用同一份，见 AppState.userPlaylists）
 
     var body: some View {
         VStack(spacing: 0) {
@@ -501,12 +460,10 @@ struct MyMusicView: View {
                 EmptyStateView(icon: "music.note.list", title: "我的音乐", message: "登录后查看你的歌单")
             } else if appState.isDemoMode {
                 EmptyStateView(icon: "music.note.list", title: "我的音乐", message: "演示模式暂无歌单")
-            } else if isLoading {
+            } else if appState.isLoadingUserPlaylists {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = errorMessage {
-                ErrorView(message: error, retryAction: { Task { await load() } })
-            } else if playlists.isEmpty {
+            } else if appState.userPlaylists.isEmpty {
                 EmptyStateView(icon: "music.note.list", title: "我的歌单", message: "还没有创建歌单")
             } else {
                 ScrollView {
@@ -515,7 +472,7 @@ struct MyMusicView: View {
                         LikedPlaylistCard(count: appState.likedSongs.count) {
                             appState.currentPage = .liked
                         }
-                        ForEach(playlists) { playlist in
+                        ForEach(appState.userPlaylists) { playlist in
                             PlaylistCardView(playlist: playlist) {
                                 appState.selectedPlaylistID = playlist.id
                                 appState.currentPage = .playlistDetail
@@ -534,27 +491,9 @@ struct MyMusicView: View {
     }
 
     private func load() async {
-        let token = UUID()
-        loadToken = token
-        guard appState.isLoggedIn, !appState.isDemoMode else {
-            playlists = []
-            return
-        }
-        isLoading = true
-        errorMessage = nil
+        // 喜欢的歌曲仍由 AppState 维护；歌单也一并委托给它，与侧栏共享同一份数据
         await appState.loadLikedSongs()
-        do {
-            let loaded = try await provider.fetchUserPlaylists()
-            // 切账号/退出登录后旧请求才返回，丢弃以免串号
-            guard loadToken == token, !Task.isCancelled else { return }
-            playlists = loaded
-            PersistenceStore.shared.saveCachedUserPlaylists(loaded)
-        } catch {
-            guard loadToken == token else { return }
-            errorMessage = error.localizedDescription
-        }
-        guard loadToken == token else { return }
-        isLoading = false
+        await appState.loadUserPlaylists()
     }
 }
 
