@@ -9,7 +9,10 @@ public final class PersistenceStore: Sendable {
 
     private init() {}
 
-    private var storageURL: URL {
+    /// 建目录只做一次：原先是计算属性，每次访问都执行一次 mkdir 系统调用，
+    /// 而 saveQueue 每 5 秒就会被调用一次。
+    /// 用 let + 一次性求值，也保证单元测试通过环境变量注入的目录能被缓存住。
+    private let storageURL: URL = {
         let dir: URL
         // 单元测试可通过环境变量把持久化隔离到临时目录，避免覆盖开发机的真实队列
         let override = getenv("CLEARTONE_TEST_STORAGE_DIR").map { String(cString: $0) }
@@ -21,7 +24,7 @@ public final class PersistenceStore: Sendable {
         }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
-    }
+    }()
 
     func saveQueue(_ queue: PersistedQueue) {
         let url = storageURL.appendingPathComponent("queue.json")

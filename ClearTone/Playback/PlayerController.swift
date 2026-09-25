@@ -43,7 +43,7 @@ public final class PlayerController: ObservableObject {
 
     private var provider: MusicProvider = NeteaseProvider.shared
     private var localProvider = LocalProvider()
-    private var demoProvider = DemoProvider()
+    private var demoProvider = DemoProvider.shared
 
     private var currentGeneration: UInt = 0
     private var consecutiveFailures: Int = 0
@@ -547,7 +547,10 @@ public final class PlayerController: ObservableObject {
     private func loadPersistedState() -> Bool {
         guard let data = PersistenceStore.shared.loadQueue() else { return false }
         queue.items = data.items
-        queue.currentIndex = min(data.currentIndex, data.items.count - 1)
+        // 上下限都要夹：items 为空时 count-1 == -1，原先只夹上限会得到 -2 之类的非法下标
+        queue.currentIndex = data.items.isEmpty
+            ? -1
+            : max(0, min(data.currentIndex, data.items.count - 1))
         queue.mode = data.mode
         volume = data.volume
         isMuted = data.isMuted

@@ -5,6 +5,10 @@ public actor DemoProvider: MusicProvider {
     public let identifier = "demo"
     public let displayName = "演示模式"
 
+    /// 全局共享实例：init 里会 mkdir 并构造 20 个 Song，
+    /// 若每个 View 各建一个实例，视图每次重建都会重做一遍（视图会因播放进度频繁重建）
+    public static let shared = DemoProvider()
+
     private let demoSongs: [Song]
     private let demoPlaylists: [Playlist]
 

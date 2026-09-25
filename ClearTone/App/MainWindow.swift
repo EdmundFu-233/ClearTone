@@ -59,8 +59,14 @@ struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) var colorScheme
 
-    @State private var userPlaylists: [Playlist] = PersistenceStore.shared.loadCachedUserPlaylists()
+    // 初值不能在这里读盘：@State 的默认值表达式在每次 View 结构体构造时都会求值
+    // （只有第一次结果被保留），而 MainWindow 会因播放进度每 0.5s 重建一次，
+    // 那样等于每 0.5s 白做一次 UserDefaults 读 + JSON 解码。改为在 .task 里读。
+    @State private var userPlaylists: [Playlist] = []
     @State private var isLoadingPlaylists = false
+    /// 加载代次：切换账号/演示模式时旧 load() 可能已跨过 await 恢复，
+    //  不校验就会把上一个账号的歌单写进侧栏
+    @State private var loadToken = UUID()
 
     private let provider = NeteaseProvider.shared
 
@@ -146,19 +152,31 @@ struct SidebarView: View {
     }
 
     private func loadPlaylists() async {
+        let token = UUID()
+        loadToken = token
         guard appState.isLoggedIn, !appState.isDemoMode else {
             userPlaylists = []
             return
         }
+        // 先用本地缓存立即填充，避免侧栏空白等待网络
+        if userPlaylists.isEmpty {
+            let cached = PersistenceStore.shared.loadCachedUserPlaylists()
+            guard loadToken == token, !Task.isCancelled else { return }
+            userPlaylists = cached
+        }
         isLoadingPlaylists = userPlaylists.isEmpty
         do {
             let playlists = try await provider.fetchUserPlaylists()
+            // 切账号/退出演示后旧请求才返回，丢弃以免串号并污染缓存
+            guard loadToken == token, !Task.isCancelled else { return }
             userPlaylists = playlists
             PersistenceStore.shared.saveCachedUserPlaylists(playlists)
         } catch {
+            guard loadToken == token else { return }
             // 失败时保留缓存内容，避免侧栏闪空
             CTLog.general.error("加载歌单失败: \(CTLog.sanitize(error.localizedDescription))")
         }
+        guard loadToken == token else { return }
         isLoadingPlaylists = false
     }
 }
@@ -166,7 +184,6 @@ struct SidebarView: View {
 // MARK: - 工具栏
 struct ToolbarView: View {
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var player: PlayerController
     @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
@@ -363,13 +380,14 @@ struct ContentView: View {
 // MARK: - 占位视图（阶段 A 先保证可构建）
 struct DiscoverView: View {
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var player: PlayerController
     @Environment(\.colorScheme) var colorScheme
     @State private var recommendedPlaylists: [Playlist] = []
     @State private var isLoading = false
+    /// 加载代次：与 PlaylistDetailView / MyMusicView 保持同一套竞态防护
+    @State private var loadToken = UUID()
 
     private let provider = NeteaseProvider.shared
-    private let demoProvider = DemoProvider()
+    private let demoProvider = DemoProvider.shared
 
     var activeProvider: MusicProvider {
         appState.isDemoMode ? demoProvider : provider
@@ -407,12 +425,18 @@ struct DiscoverView: View {
     }
 
     private func loadRecommendations() async {
+        let token = UUID()
+        loadToken = token
         isLoading = true
         do {
-            recommendedPlaylists = try await activeProvider.fetchRecommendPlaylists()
+            let loaded = try await activeProvider.fetchRecommendPlaylists()
+            guard loadToken == token, !Task.isCancelled else { return }
+            recommendedPlaylists = loaded
         } catch {
-            CTLog.general.error("加载推荐失败: \(error.localizedDescription)")
+            guard loadToken == token else { return }
+            CTLog.general.error("加载推荐失败: \(CTLog.sanitize(error.localizedDescription))")
         }
+        guard loadToken == token else { return }
         isLoading = false
     }
 }
@@ -500,8 +524,9 @@ struct MyMusicView: View {
                     }
                     .padding(CTSpacing.xl)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
+                // 这里不是 List，listStyle / scrollContentBackground 都是无效修饰符；
+                // 透明背景要显式声明
+                .background(Color.clear)
             }
         }
         .background(CTColors.background(for: colorScheme))
@@ -582,7 +607,7 @@ struct LikedView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
-    private let demoProvider = DemoProvider()
+    private let demoProvider = DemoProvider.shared
 
     /// 演示模式用内置数据；登录态直接用 AppState 的缓存列表（收藏后即时同步）
     private var songs: [Song] {
@@ -778,7 +803,7 @@ struct PlaylistDetailView: View {
     @State private var loadToken = UUID()
 
     private let provider = NeteaseProvider.shared
-    private let demoProvider = DemoProvider()
+    private let demoProvider = DemoProvider.shared
 
     /// 演示模式的歌单来自内置数据，不能打到网易云接口
     private var activeProvider: MusicProvider {

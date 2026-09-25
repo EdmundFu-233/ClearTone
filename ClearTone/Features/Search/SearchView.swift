@@ -21,7 +21,7 @@ struct SearchView: View {
     @State private var activeIsDemoMode = false
 
     private let provider = NeteaseProvider.shared
-    private let demoProvider = DemoProvider()
+    private let demoProvider = DemoProvider.shared
 
     var body: some View {
         VStack(spacing: 0) {

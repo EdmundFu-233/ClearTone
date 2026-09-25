@@ -262,7 +262,7 @@ struct NowPlayingView: View {
     private static func fetchLyrics(for song: Song) async throws -> LyricResult {
         switch song.source {
         case .demo:
-            return try await DemoProvider().fetchLyrics(songID: song.id)
+            return try await DemoProvider.shared.fetchLyrics(songID: song.id)
         case .local:
             return try await LocalProvider.shared.fetchLyrics(songID: song.id)
         case .netease:
