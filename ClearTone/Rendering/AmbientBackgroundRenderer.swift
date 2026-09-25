@@ -23,8 +23,68 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
     public var animationEnabled: Bool = true
     public var renderScale: Float = 0.5  // 降低渲染比例节省能耗
 
+    /// 目标帧率，由 SwiftUI 侧按性能模式设置
+    public var targetFramesPerSecond: Int = 60
+
     private var isPaused: Bool = false
     private var frameCount: UInt64 = 0
+
+    /// draw 循环内零分配用的定长存储（定长元组不能用下标，改用固定结构体）
+    private struct Palette {
+        var c0 = SIMD3<Float>(0.1, 0.1, 0.12)
+        var c1 = SIMD3<Float>(0.15, 0.15, 0.18)
+        var c2 = SIMD3<Float>(0.2, 0.2, 0.25)
+        var c3 = SIMD3<Float>(0.12, 0.12, 0.15)
+        var c4 = SIMD3<Float>(0.18, 0.18, 0.22)
+
+        subscript(i: Int) -> SIMD3<Float> {
+            get {
+                switch i {
+                case 0: return c0
+                case 1: return c1
+                case 2: return c2
+                case 3: return c3
+                default: return c4
+                }
+            }
+            set {
+                switch i {
+                case 0: c0 = newValue
+                case 1: c1 = newValue
+                case 2: c2 = newValue
+                case 3: c3 = newValue
+                default: c4 = newValue
+                }
+            }
+        }
+    }
+
+    private var colorStorage = Palette()
+    private var spectrumStorage = [Float](repeating: 0, count: 64)
+
+    /// 在途 GPU 帧数，用于背压
+    private var inFlightFrames = 0
+    private let maxInFlightFrames = 2
+
+    /// 按目标帧率算出跳帧间隔
+    private var frameInterval: Int {
+        let fps = max(1, min(targetFramesPerSecond, 120))
+        return max(1, 60 / fps)
+    }
+
+    /// 由 SwiftUI 侧在 updateNSView 调用（不在 draw 线程）
+    public func updateBuffers(colors: [SIMD3<Float>], spectrum: [Float]) {
+        let palette: [SIMD3<Float>] = [
+            SIMD3(0.1, 0.1, 0.12), SIMD3(0.15, 0.15, 0.18), SIMD3(0.2, 0.2, 0.25),
+            SIMD3(0.12, 0.12, 0.15), SIMD3(0.18, 0.18, 0.22),
+        ]
+        for i in 0..<5 {
+            if i < colors.count { colorStorage[i] = colors[i] } else { colorStorage[i] = palette[i] }
+        }
+        for i in 0..<64 {
+            spectrumStorage[i] = i < spectrum.count ? spectrum[i] : 0
+        }
+    }
 
     public override init() {
         device = MTLCreateSystemDefaultDevice()
@@ -33,6 +93,10 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         startTime = CFAbsoluteTimeGetCurrent()
         setupPipeline()
     }
+
+    /// MTKView 也要用同一个 device：多 GPU 配置下若 view 的 drawable 属于
+    /// Device A 而 command queue 属于 Device B，会拿不到 drawable 或渲染异常
+    public var metalDevice: MTLDevice? { device }
 
     private func setupPipeline() {
         guard let device = device else { return }
@@ -83,13 +147,16 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
             return
         }
 
+        // GPU 背压：若已提交的命令还没回来，说明 GPU 落后于提交速度。
+        // 不加这个判断，command queue 会无限堆积、显存单调增长直到被内存压力杀掉。
+        if inFlightFrames > maxInFlightFrames { return }
+
         frameCount += 1
         let time = Float(CFAbsoluteTimeGetCurrent() - startTime)
 
-        // 限制帧率（自动模式）
-        if frameCount % 2 == 0 && renderScale < 1.0 {
-            // 节能模式降帧
-        }
+        // 真实降帧：原先这个 if 块是空的，降帧从未发生。
+        // 按 renderScale 降档，节能模式 20fps / 自动 30fps / 高质量 60fps。
+        if frameCount % UInt64(max(1, frameInterval)) != 0 { return }
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
@@ -102,30 +169,29 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         var uniforms = AmbientUniforms(
             time: time,
             resolution: SIMD2(Float(view.drawableSize.width), Float(view.drawableSize.height)),
-            colorCount: min(5, UInt32(colors.count)),
+            colorCount: UInt32(min(5, colors.count)),
             spectrumEnabled: spectrumEnabled ? 1 : 0,
             renderScale: renderScale
         )
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<AmbientUniforms>.size, index: 0)
 
-        // 传递颜色
-        var colorArray = colors
-        if colorArray.count < 5 {
-            colorArray += Array(repeating: SIMD3(0.15, 0.15, 0.18), count: 5 - colorArray.count)
-        }
-        encoder.setFragmentBytes(&colorArray, length: MemoryLayout<SIMD3<Float>>.size * 5, index: 1)
+        // 传递颜色：预分配的定长存储，draw 内零分配。
+        // 原先是 `var colorArray = colors` + `+= Array(repeating:)`，
+        // 取色结果通常少于 5 个颜色所以每帧都会走 += 分支 = 每秒 120 次堆分配。
+        encoder.setFragmentBytes(&colorStorage, length: MemoryLayout<SIMD3<Float>>.size * 5, index: 1)
 
-        // 传递频谱
+        // 传递频谱：同样是预分配存储
         if spectrumEnabled {
-            var spectrum = spectrumData
-            if spectrum.count < 64 {
-                spectrum += Array(repeating: 0, count: 64 - spectrum.count)
-            }
-            encoder.setFragmentBytes(&spectrum, length: MemoryLayout<Float>.size * 64, index: 2)
+            encoder.setFragmentBytes(&spectrumStorage, length: MemoryLayout<Float>.size * 64, index: 2)
         }
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
+
+        inFlightFrames += 1
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            self?.inFlightFrames -= 1
+        }
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
@@ -158,30 +224,59 @@ public struct MetalBackgroundView: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> MTKView {
         let view = MTKView()
-        view.device = MTLCreateSystemDefaultDevice()
+        // 复用 renderer 的 device：多 GPU 配置下两者必须是同一个
+        view.device = context.coordinator.metalDevice
         view.delegate = context.coordinator
-        view.preferredFramesPerSecond = 60
         view.enableSetNeedsDisplay = false
         view.isPaused = false
-        view.framebufferOnly = false
+        view.framebufferOnly = true
         view.layer?.isOpaque = false
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        view.preferredFramesPerSecond = max(1, min(context.coordinator.targetFramesPerSecond, 120))
         return view
     }
 
     public func updateNSView(_ nsView: MTKView, context: Context) {
         let renderer = context.coordinator
-        renderer.colors = colors.prefix(5).map { color in
+        let converted = colors.prefix(5).map { color -> SIMD3<Float> in
             let nsColor = NSColor(color)
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             nsColor.getRed(&r, green: &g, blue: &b, alpha: &a)
             return SIMD3(Float(r), Float(g), Float(b))
         }
+        renderer.colors = converted
         renderer.spectrumData = spectrum
         renderer.spectrumEnabled = showSpectrum
         renderer.animationEnabled = isAnimating
         renderer.renderScale = renderScale
+        // 数据搬运放在这里（主线程），draw 循环内只读预分配存储
+        renderer.updateBuffers(colors: converted, spectrum: spectrum)
+
+        let fps = targetFramesPerSecond
+        if nsView.preferredFramesPerSecond != fps {
+            nsView.preferredFramesPerSecond = fps
+        }
+
+        // 真正的降分辨率：原先 renderScale 只在 shader 里缩放 UV 坐标，
+        // 渲染像素量与全分辨率完全相同，节能模式零收益。
+        let scale = CGFloat(max(0.25, min(renderScale, 1.0)))
+        let target = CGSize(width: nsView.bounds.width * scale, height: nsView.bounds.height * scale)
+        if target.width >= 1, target.height >= 1, nsView.drawableSize != target {
+            nsView.autoResizeDrawable = false
+            nsView.drawableSize = target
+        }
+
+        // 窗口不可见时停帧
         nsView.isPaused = !isAnimating
+    }
+
+    /// 节能 / 自动 / 高质量对应的目标帧率
+    private var targetFramesPerSecond: Int {
+        switch renderScale {
+        case ..<0.4: return 20
+        case ..<0.6: return 30
+        default: return 60
+        }
     }
 
     public func makeCoordinator() -> AmbientBackgroundRenderer {

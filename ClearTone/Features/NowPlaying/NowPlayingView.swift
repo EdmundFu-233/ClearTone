@@ -22,9 +22,12 @@ struct NowPlayingView: View {
         Color(hex: 0x1a1a2e), Color(hex: 0x16213e), Color(hex: 0x0f3460),
         Color(hex: 0x533483), Color(hex: 0xe94560)
     ]
-    @State private var spectrum: [Float] = Array(repeating: 0, count: 64)
-    @State private var isAnimating = true
-    @State private var lyricsTask: Task<Void, Never>?
+      @State private var spectrum: [Float] = Array(repeating: 0, count: 64)
+      @State private var isAnimating = true
+      @State private var lyricsTask: Task<Void, Never>?
+      /// App 是否在前台。原先 isAnimating 声明后从未被置为 false，
+      /// 导致打开正在播放页后即使 App 在后台 Metal 循环也不停
+      @Environment(\.scenePhase) private var scenePhase
 
     // 歌词行高亮定时器：@State 保证视图身份内只创建一次，
     // 由 SwiftUI 订阅生命周期管理，退出视图自动失效，避免 Timer 堆积
@@ -212,6 +215,10 @@ struct NowPlayingView: View {
         .onDisappear {
             lyricsTask?.cancel()
             lyricsTask = nil
+        }
+        // 视图不可见或 App 退到后台时停掉 Metal 渲染循环
+        .onChange(of: scenePhase) { _, phase in
+            isAnimating = phase == .active
         }
         .onChange(of: player.currentSong) { _, _ in
             loadLyrics()
