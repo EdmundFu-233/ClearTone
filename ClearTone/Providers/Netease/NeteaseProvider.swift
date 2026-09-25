@@ -20,6 +20,13 @@ public actor NeteaseProvider: MusicProvider {
 
     /// 只读接口的短时缓存，避免页面来回切换重复请求；写操作后按前缀失效
     private var responseCache: [String: CacheEntry] = [:]
+    private var responseCacheBytes = 0
+
+    /// 缓存硬上限。原先的 256 只是「触发 prune 的阈值」而非上限 ——
+    /// pruneExpiredCache 只删过期项，写入速率高于过期速率时字典单调增长
+    /// （一个 1000 首歌单 10 页约 1.5MB），最坏可达数百 MB 后被 jetsam 杀掉。
+    private static let responseCacheEntryLimit = 128
+    private static let responseCacheByteLimit = 32 * 1024 * 1024
 
     public init() {
         let config = URLSessionConfiguration.default
@@ -193,6 +200,8 @@ public actor NeteaseProvider: MusicProvider {
 
     /// 歌单曲目缓存有效期（内存态，避免每次重进都重新请求）
     private static let playlistTrackCacheTTL: TimeInterval = 600
+    /// 歌单整表缓存的条数上限（每个 1000 首歌单约上千个 Song 对象）
+    private static let playlistTrackCacheLimit = 8
 
     public func cachedPlaylistTracks(id: String) -> [Song]? {
         guard let entry = playlistTrackCache[id],
@@ -204,11 +213,14 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     private func storePlaylistTracks(_ songs: [Song], for id: String) {
-        if playlistTrackCache.count > 16 {
-            let cutoff = Date().addingTimeInterval(-Self.playlistTrackCacheTTL)
-            playlistTrackCache = playlistTrackCache.filter { $0.value.cachedAt > cutoff }
-        }
         playlistTrackCache[id] = (songs, Date())
+        // 硬上限：原实现只在 >16 后按 TTL 过滤，若都未过期则无限增长
+        guard playlistTrackCache.count > Self.playlistTrackCacheLimit else { return }
+        let ordered = playlistTrackCache.sorted { $0.value.cachedAt < $1.value.cachedAt }
+        let overflow = playlistTrackCache.count - Self.playlistTrackCacheLimit
+        for (key, _) in ordered.prefix(overflow) {
+            playlistTrackCache.removeValue(forKey: key)
+        }
     }
 
     /// 歌单曲目分页并发拉取：最多 maxConcurrent 个请求同时进行，按页序 yield，调用方可边收边渲染。
@@ -465,7 +477,9 @@ public actor NeteaseProvider: MusicProvider {
         guard let code = json["code"] as? Int, code == 200 else {
             throw MusicError.apiError(code: json["code"] as? Int ?? -1, message: json["message"] as? String ?? "操作失败")
         }
-        invalidateCache(pathPrefix: "/likelist")
+        // 收藏状态变化会反映到歌单曲目元数据与用户歌单计数，
+        // 只清 /likelist 会让这些最长 300s 不更新
+        invalidateCache(pathPrefixes: ["/likelist", "/song/detail", "/user/playlist", "/playlist/detail"])
     }
 
     public func fetchRecommendPlaylists() async throws -> [Playlist] {
@@ -523,8 +537,9 @@ public actor NeteaseProvider: MusicProvider {
                 throw sessionExpiredError()
             }
             if let ttl = cacheTTL, ttl > 0 {
+                responseCacheBytes += data.count - (responseCache[cacheKey]?.data.count ?? 0)
                 responseCache[cacheKey] = CacheEntry(data: data, expiresAt: Date().addingTimeInterval(ttl))
-                if responseCache.count > 256 { pruneExpiredCache() }
+                enforceResponseCacheLimits()
             }
             return data
         } catch let error as URLError where error.code == .cancelled {
@@ -546,6 +561,9 @@ public actor NeteaseProvider: MusicProvider {
 
     /// 广播会话失效（AppState 监听后清理登录态并提示重新登录）
     private func sessionExpiredError() -> MusicError {
+        // 会话失效后 cookie 可能被原地刷新（重新扫码换新 MUSIC_U，权限可能变化），
+        // 不清缓存的话旧身份写入的条目会继续命中到 TTL 结束
+        clearCache()
         NotificationCenter.default.post(name: .clearToneSessionExpired, object: nil)
         return MusicError.sessionExpired
     }
@@ -561,17 +579,63 @@ public actor NeteaseProvider: MusicProvider {
 
     private func pruneExpiredCache() {
         let now = Date()
+        let before = responseCache
         responseCache = responseCache.filter { $0.value.expiresAt > now }
+        responseCacheBytes -= before.reduce(0) { sum, entry in
+            responseCache[entry.key] == nil ? sum + entry.value.data.count : sum
+        }
+        if responseCacheBytes < 0 { responseCacheBytes = 0 }
     }
 
-    /// 按路径前缀失效缓存（写操作后调用）
+    /// 硬上限：先清过期，再按最接近过期优先淘汰，直到同时满足条数与字节预算。
+    /// 过期项每次都清（一次 filter，开销可忽略）：它们虽然不会被读取命中，
+    /// 但不清理就会一直占着内存与字节预算。
+    private func enforceResponseCacheLimits() {
+        pruneExpiredCache()
+        guard responseCache.count > Self.responseCacheEntryLimit
+                || responseCacheBytes > Self.responseCacheByteLimit else { return }
+        let ordered = responseCache.sorted { $0.value.expiresAt < $1.value.expiresAt }
+        for (key, entry) in ordered {
+            if responseCache.count <= Self.responseCacheEntryLimit,
+               responseCacheBytes <= Self.responseCacheByteLimit { break }
+            responseCache.removeValue(forKey: key)
+            responseCacheBytes -= entry.data.count
+        }
+    }
+
+    /// 按路径前缀失效缓存（写操作后调用）。
+    /// 缓存键形如 "/path?query|auth"，直接 hasPrefix 会误伤：
+    /// "/like" 会连带清掉 "/likelist"，"/user/playlist" 与 "/user/playlist/..." 互相误伤。
+    public func invalidateCache(pathPrefixes: [String]) {
+        for prefix in pathPrefixes {
+            let hit = responseCache.keys.filter {
+                let path = Self.path(ofCacheKey: $0)
+                return path == prefix || path.hasPrefix(prefix + "/")
+            }
+            for key in hit {
+                responseCacheBytes -= responseCache[key]?.data.count ?? 0
+                responseCache.removeValue(forKey: key)
+            }
+        }
+        if responseCacheBytes < 0 { responseCacheBytes = 0 }
+    }
+
+    /// 从缓存键里取出路径部分。注意两种分隔符都要处理：
+    /// 有 query 时是 "/path?query|auth"，无 query 时是 "/path|auth" ——
+    /// 只按 "?" 切分会让无 query 的键（如 "/likelist|auth"）永远匹配不上前缀。
+    private static func path(ofCacheKey key: String) -> String {
+        guard let cut = key.firstIndex(where: { $0 == "?" || $0 == "|" }) else { return key }
+        return String(key[key.startIndex..<cut])
+    }
+
     public func invalidateCache(pathPrefix: String) {
-        responseCache = responseCache.filter { !$0.key.hasPrefix(pathPrefix) }
+        invalidateCache(pathPrefixes: [pathPrefix])
     }
 
-    /// 清空全部缓存（退出登录等）
+    /// 清空全部缓存（退出登录、会话失效等）
     public func clearCache() {
         responseCache.removeAll()
+        responseCacheBytes = 0
     }
 
     // MARK: - 模型映射

@@ -104,7 +104,10 @@ public final class HelperProcessManager: ObservableObject {
             .appendingPathComponent("Logs/ClearTone")
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         let logURL = logDir.appendingPathComponent("helper.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        // 日志轮转：原先只在启动时截断一次，运行期只追加。
+        // Node 对每个请求都打 INFO（含 ANSI 色码），崩溃重启循环还会不断重开句柄，
+        // 无人清理时可涨到百 MB 级。
+        Self.rotateLogIfNeeded(at: logURL)
         // 日志句柄创建失败不应让状态卡在 .starting
         let logHandle = (try? FileHandle(forWritingTo: logURL)) ?? FileHandle.nullDevice
         proc.standardOutput = logHandle
@@ -212,7 +215,8 @@ public final class HelperProcessManager: ObservableObject {
         while Date() < deadline {
             try Task.checkCancellation()
             if let healthy = try? await performHealthCheck(), healthy { return }
-            try await Task.sleep(for: .milliseconds(300))
+            // 500ms 足够：15s 内 30 次探测足以覆盖 Node 冷启动
+            try await Task.sleep(for: .milliseconds(500))
         }
         throw MusicError.helperProcessTimeout
     }
@@ -226,11 +230,26 @@ public final class HelperProcessManager: ObservableObject {
         return try await checkPort(port)
     }
 
+    /// 健康检查专用 session。
+    ///
+    /// 不能用 URLSession.shared：它保留默认 cookie 存储，会重新创建
+    /// ~/Library/HTTPStorages/com.cleartone.app/ 容器目录，而该目录会被
+    /// LaunchServices 误注册成 com.cleartone.app 这个 bundle，顶掉真正的
+    /// App 注册，导致 Finder/Dock 显示通用图标（已在 NeteaseProvider 规避，这里同样要规避）。
+    private static let healthSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForRequest = 2
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
     private func checkPort(_ port: Int) async throws -> Bool {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/ct_health")!)
         request.setValue(authToken, forHTTPHeaderField: "X-CT-Token")
         request.timeoutInterval = 2
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await Self.healthSession.data(for: request)
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
@@ -238,7 +257,7 @@ public final class HelperProcessManager: ObservableObject {
         healthCheckTask?.cancel()
         healthCheckTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
+                try? await Task.sleep(for: .seconds(30))
                 guard let self = self, !Task.isCancelled else { return }
                 // 检查进程是否仍在运行
                 let processAlive = self.process?.isRunning ?? false
@@ -277,6 +296,17 @@ public final class HelperProcessManager: ObservableObject {
         process = nil
         port = 0
         authToken = ""
+    }
+
+    /// 超过阈值就把 helper.log 轮转为 helper.log.1，保留最近两份。
+    /// 崩溃重启循环会不断重开句柄，没有轮转时文件会单调增长。
+    private static func rotateLogIfNeeded(at url: URL, maxBytes: Int = 5 * 1024 * 1024) {
+        let fm = FileManager.default
+        let rotated = url.appendingPathExtension("1")
+        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        guard size > maxBytes else { return }
+        try? fm.removeItem(at: rotated)
+        try? fm.moveItem(at: url, to: rotated)
     }
 }
 
