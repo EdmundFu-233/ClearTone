@@ -45,9 +45,7 @@ struct PlayerBarView: View {
         HStack(spacing: CTSpacing.md) {
             // 封面
             Button(action: { appState.isNowPlayingExpanded = true }) {
-                AsyncImage(url: player.currentSong?.coverURL) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
+                CoverImage(url: player.currentSong?.coverURL, size: 56) {
                     RoundedRectangle(cornerRadius: CTRadius.small)
                         .fill(CTColors.overlay(for: colorScheme))
                         .overlay(

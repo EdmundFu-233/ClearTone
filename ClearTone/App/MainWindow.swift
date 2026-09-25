@@ -426,9 +426,7 @@ struct PlaylistCardView: View {
     var body: some View {
         Button { onTap?() } label: {
         VStack(alignment: .leading, spacing: CTSpacing.sm) {
-            AsyncImage(url: playlist.coverURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
+            CoverImage(url: playlist.coverURL, size: 180) {
                 RoundedRectangle(cornerRadius: CTRadius.medium)
                     .fill(CTColors.overlay(for: colorScheme))
                     .overlay(Image(systemName: "music.note.list").foregroundStyle(.secondary))
@@ -799,9 +797,7 @@ struct PlaylistDetailView: View {
             } else if let detail {
                 // 歌单头部
                 HStack(alignment: .top, spacing: CTSpacing.lg) {
-                    AsyncImage(url: detail.playlist.coverURL) { image in
-                        image.resizable().scaledToFill()
-                    } placeholder: {
+                    CoverImage(url: detail.playlist.coverURL, size: 160) {
                         RoundedRectangle(cornerRadius: CTRadius.medium)
                             .fill(CTColors.overlay(for: colorScheme))
                             .overlay(Image(systemName: "music.note.list").foregroundStyle(.secondary))

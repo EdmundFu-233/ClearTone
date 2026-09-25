@@ -240,9 +240,7 @@ struct SongRowView: View {
     var body: some View {
         HStack(spacing: CTSpacing.md) {
             // 封面
-            AsyncImage(url: song.coverURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
+            CoverImage(url: song.coverURL, size: 40) {
                 RoundedRectangle(cornerRadius: CTRadius.small)
                     .fill(CTColors.overlay(for: colorScheme))
                     .overlay(Image(systemName: "music.note").foregroundStyle(.secondary))
@@ -345,9 +343,7 @@ struct PlaylistRowView: View {
     var body: some View {
         Button { onTap?() } label: {
         HStack(spacing: CTSpacing.md) {
-            AsyncImage(url: playlist.coverURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
+            CoverImage(url: playlist.coverURL, size: 48) {
                 RoundedRectangle(cornerRadius: CTRadius.small)
                     .fill(CTColors.overlay(for: colorScheme))
                     .overlay(Image(systemName: "music.note.list").foregroundStyle(.secondary))

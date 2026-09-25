@@ -60,9 +60,11 @@ struct NowPlayingView: View {
                         Spacer()
 
                         // 封面
-                        AsyncImage(url: player.currentSong?.coverURL) { image in
-                            image.resizable().scaledToFit()
-                        } placeholder: {
+                        CoverImage(
+                            url: player.currentSong?.coverURL,
+                            size: min(geometry.size.width * 0.35, 400),
+                            contentMode: .fit
+                        ) {
                             RoundedRectangle(cornerRadius: CTRadius.large)
                                 .fill(CTColors.overlay(for: colorScheme))
                                 .overlay(

@@ -10,9 +10,7 @@ struct MiniPlayerView: View {
         VStack(spacing: CTSpacing.sm) {
             // 封面与信息
             HStack(spacing: CTSpacing.md) {
-                AsyncImage(url: player.currentSong?.coverURL) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
+                CoverImage(url: player.currentSong?.coverURL, size: 48) {
                     RoundedRectangle(cornerRadius: CTRadius.small)
                         .fill(CTColors.overlay(for: colorScheme))
                         .overlay(Image(systemName: "music.note").foregroundStyle(.secondary))
