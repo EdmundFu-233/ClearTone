@@ -464,6 +464,9 @@ struct MyMusicView: View {
     @State private var playlists: [Playlist] = PersistenceStore.shared.loadCachedUserPlaylists()
     @State private var isLoading = false
     @State private var errorMessage: String?
+    /// 加载代次：切换账号/演示模式时旧 load() 可能已跨过 await 恢复，
+    /// 不校验就会把上一个账号的歌单写进来
+    @State private var loadToken = UUID()
 
     private let provider = NeteaseProvider.shared
 
@@ -508,6 +511,8 @@ struct MyMusicView: View {
     }
 
     private func load() async {
+        let token = UUID()
+        loadToken = token
         guard appState.isLoggedIn, !appState.isDemoMode else {
             playlists = []
             return
@@ -517,11 +522,15 @@ struct MyMusicView: View {
         await appState.loadLikedSongs()
         do {
             let loaded = try await provider.fetchUserPlaylists()
+            // 切账号/退出登录后旧请求才返回，丢弃以免串号
+            guard loadToken == token, !Task.isCancelled else { return }
             playlists = loaded
             PersistenceStore.shared.saveCachedUserPlaylists(loaded)
         } catch {
+            guard loadToken == token else { return }
             errorMessage = error.localizedDescription
         }
+        guard loadToken == token else { return }
         isLoading = false
     }
 }
@@ -766,6 +775,9 @@ struct PlaylistDetailView: View {
     @State private var detail: PlaylistDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    /// 加载代次：切换歌单时 .task(id:) 只保证取消旧 Task，但旧 load() 可能已跨过 await 恢复，
+    /// 继续写共享的 detail，会把上一个歌单的条目覆盖到当前歌单上。用代次令牌做提交前校验。
+    @State private var loadToken = UUID()
 
     private let provider = NeteaseProvider.shared
     private let demoProvider = DemoProvider()
@@ -848,12 +860,18 @@ struct PlaylistDetailView: View {
 
     private func load() async {
         guard !playlistID.isEmpty else { return }
+        // 领取新代次并立即作废旧代次的所有在途写入
+        let token = UUID()
+        loadToken = token
         isLoading = true
         errorMessage = nil
+        // 切歌单时先清空上一个歌单的内容，避免新旧混排
+        detail = nil
         do {
             // 演示模式歌单来自内置数据，不涉及网易云分页与缓存
             if !appState.isDemoMode, let cached = await provider.cachedPlaylistTracks(id: playlistID) {
                 var loaded = try await activeProvider.fetchPlaylistDetail(id: playlistID)
+                guard loadToken == token, !Task.isCancelled else { return }
                 loaded.tracks = cached
                 detail = loaded
                 isLoading = false
@@ -862,6 +880,7 @@ struct PlaylistDetailView: View {
 
             // 1. 先只取详情并立即渲染（标题/封面/首屏曲目），不再等全部分页结束
             var loaded = try await activeProvider.fetchPlaylistDetail(id: playlistID)
+            guard loadToken == token, !Task.isCancelled else { return }
             detail = loaded
             isLoading = false
 
@@ -874,14 +893,18 @@ struct PlaylistDetailView: View {
                 id: playlistID,
                 totalCount: loaded.totalTrackCount
             ) {
+                // 每个批次提交前都要校验代次：旧歌单的迟到批次必须丢弃
+                guard loadToken == token, !Task.isCancelled else { return }
                 accumulated.append(contentsOf: batch)
                 guard var current = detail else { return }
                 current.tracks = accumulated
                 detail = current
             }
         } catch {
+            guard loadToken == token else { return }
             errorMessage = error.localizedDescription
         }
+        guard loadToken == token else { return }
         isLoading = false
     }
 }

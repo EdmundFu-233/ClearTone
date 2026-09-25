@@ -26,6 +26,12 @@ public actor NeteaseProvider: MusicProvider {
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
         config.waitsForConnectivity = true
+        // 不做 cookie 持久化：网易云凭据一律走 X-CT-Cookie 头传给辅助进程。
+        // 若保留默认 cookie 存储，URLSession 会在 ~/Library/HTTPStorages/com.cleartone.app
+        // 建容器目录，而该目录会被 LaunchServices 误注册成 com.cleartone.app 这个 bundle，
+        // 顶掉真正的 App 注册，导致 Finder/Dock 显示通用图标。
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
         self.session = URLSession(configuration: config)
         self.decoder = JSONDecoder()
     }
