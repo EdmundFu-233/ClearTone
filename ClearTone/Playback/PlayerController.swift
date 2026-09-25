@@ -247,11 +247,17 @@ public final class PlayerController: ObservableObject {
                 guard let self = self, generation == self.currentGeneration else { return }
                 switch item.status {
                 case .readyToPlay:
-                    if case .loading = self.playbackState {
-                        // 真正进入播放，连续失败计数清零
-                        self.consecutiveFailures = 0
-                        self.startAudio(generation: generation, songID: song.id)
-                    }
+                      // （self 已由外层 guard 解包）只校验 item 身份与歌单身份，
+                      // **不校验状态枚举**。原先要求状态为 .loading，而用户在加载窗口内
+                      // 点暂停时 pause() 已把状态改成 .paused，于是这个分支不进入：
+                      // 恢复进度的 seek 被静默丢弃（之后从头开始播），
+                      // 且 updateNowPlayingInfo 不会被调用，系统媒体控制
+                      // （锁屏/控制中心/耳机）继续显示上一首的标题与封面。
+                      guard self.playerItem === item,
+                            self.playbackState.songID == song.id else { break }
+                    // 真正进入播放，连续失败计数清零
+                    self.consecutiveFailures = 0
+                    self.startAudio(generation: generation, songID: song.id)
                 case .failed:
                     self.handlePlayError(item.error ?? MusicError.unknown("播放失败"), for: song)
                 default:
@@ -316,6 +322,17 @@ public final class PlayerController: ObservableObject {
     /// 可播放后按恢复意图启动音频（含恢复进度 seek）
     private func startAudio(generation: UInt, songID: String) {
         guard let player = player else { return }
+
+        // 用 AVPlayerItem 的实际时长校正 duration：只信 API 元数据时，
+        // 本地文件或某些 CDN 转码流会出现「拖到 99% 就结束 / 提前结束」
+        if let item = playerItem {
+            let actual = item.duration.seconds
+            if actual.isFinite, actual > 1, abs(actual - self.duration) > 0.5 {
+                CTLog.playback.info("时长校正: \(Int(self.duration))s → \(Int(actual))s")
+                self.duration = actual
+            }
+        }
+
         if let restoreTime = pendingRestoreTime, restoreTime > 1, duration > 0, restoreTime < duration {
             let target = min(restoreTime, max(duration - 0.5, 0))
             isUserSeeking = true

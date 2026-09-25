@@ -28,17 +28,28 @@
 
 | 条目 | 内容 | 状态 |
 |---|---|---|
-| P1-7 | **加载期暂停会静默丢弃「恢复播放位置」**；且切歌后立刻暂停时系统媒体控制仍显示上一首的标题封面 | 待做（用户可感知 bug） |
+| P1-8 | `.buffering` 状态是纯死设计，无 `playbackStalled` / `timeControlStatus` 观察 | 待做 |
 | P1-9 | 每首歌新建 `AVPlayer`，而非复用 + `replaceCurrentItem` | 待做（收益中等，风险中等） |
-| P1-13 | `duration` 不与 `AVPlayerItem.duration` 校对，元数据不准时进度条最大值会错 | 待做（收益小，风险小） |
-| P1-14 | 随机播放 `shuffleHistory` 是数组，`contains` 线性扫描，`next()` 为 O(n×k) | 待做（收益小） |
-| P1-15 | 完全没有 `AVAudioSession` 配置，蓝牙/AirPlay 路由在部分配置下不可用 | 待做（功能缺失） |
-| P1-8 | `.buffering` 状态是纯死设计，无 `playbackStalled` / `timeControlStatus` 观察 | 待做（依赖 P1-7） |
 | P1-21 | 频谱分析器是死代码（`attach(to:)` 无条件 throw，无实例化点），且内部有 70 次/buffer 堆分配、采样率硬编码 44100（实际链路 48000） | **需决策**：接上还是删除 |
 | P1-26 | 用户歌单缓存有两个 owner（`SidebarView` 与 `MyMusicView` 各存一份） | 待做 |
-| P1-27 | `CoverLoader` 的 `NSCache` 只限数量不限体积，360×360 封面约 150MB 常驻 | 待做（收益小） |
-| P1-28 | `CoverImage` 占位符被擦除成 `AnyView`，列表行多一层动态树节点 | 待做（收益小） |
 | P2-2/3/5/6/7/8/9/10/11/12/13 | 见第四节，均为次要项 | 未做 |
+
+### 调研中的误报（实施时发现，已排除）
+
+写代码时被编译器/测试证伪，**不要按原方案改**：
+
+| 条目 | 原结论 | 实际情况 |
+|---|---|---|
+| P1-15 | 缺 `AVAudioSession` 配置导致蓝牙/AirPlay 不可用 | **`AVAudioSession` 在 macOS 上不可用**（`unavailable in macOS`），那是 iOS API。macOS 输出路由由 CoreAudio 管理，AVPlayer 自动处理，无需配置 |
+| P1-28 | `CoverImage` 占位符被擦除成 `AnyView`，列表行多一层动态树节点 | 7 处调用点**全部**用泛型 + 具体视图的尾随闭包形式，`Placeholder` 被推断为具体类型。`AnyView` 便利构造从未被调用（已删除以防误用） |
+| P2-2 | `PlayerController.localProvider` 是死对象 | 确实未使用，但无性能损失（init 为空），仅语义误导 |
+| P2-13 | `currentIndex` 只夹上限，空队列时为 -1 | 已修（`1bb3af6` 之后的第 1 批） |
+
+**写测试时抓到并修正的真实 bug（累计 4 个）**：
+1. WAV 头长度：把 RIFF 约定值（文件大小 - 8）当文件长度分配，每个文件少写 8 字节尾部截断
+2. 缓存淘汰：`freed` 与按 `index` 实时重算的 `totalCacheBytes` 重复扣减，淘汰提前停止、缓存仍超上限
+3. 缓存前缀失效：无 query 的键形如 `/likelist|auth`，只按 `?` 切分导致前缀永远匹配不上
+4. 随机历史双结构失同步：同一 id 重复入栈后弹一次就从集合删除，尽管栈里还有记录 → 该歌在应被排除时被重复抽中
 
 ---
 

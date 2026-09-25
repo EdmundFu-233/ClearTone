@@ -51,8 +51,49 @@ public struct PlayQueue: Sendable, Codable {
     public internal(set) var currentIndex: Int = -1
     public var mode: PlayMode = .sequential
 
+    /// 随机模式历史：既是「上一首」的 LIFO 回退栈，又是「已播过」的 O(1) 判定集合。
+    ///
+    /// 原先只用 `[UUID]`，`contains` 是线性扫描，随机模式的 next() 变成 O(n×k)，
+    /// 1000 首时单次调用约 10⁶ 次 UUID 比较。封装成类型是为了保证栈与集合不会失同步。
+    struct ShuffleHistory: Codable {
+        private(set) var stack: [UUID] = []
+        private var set: Set<UUID> = []
+
+        var isEmpty: Bool { stack.isEmpty }
+        var count: Int { stack.count }
+
+        mutating func append(_ id: UUID) {
+            stack.append(id)
+            set.insert(id)
+        }
+
+        /// 取出最近播过的一首（LIFO）
+        ///
+        /// 注意：同一个 id 可能重复入栈（随机模式回绕时会再次播放同一首），
+        /// 所以只有当栈里已经不再有该 id 时才能从集合移除，
+        /// 否则会出现「栈里还有记录、集合里已删除」的失同步，
+        /// 导致该歌在应该被排除时被重复抽中。
+        mutating func popLast() -> UUID? {
+            guard let id = stack.popLast() else { return nil }
+            if !stack.contains(id) { set.remove(id) }
+            return id
+        }
+
+        func contains(_ id: UUID) -> Bool { set.contains(id) }
+
+        mutating func removeAll() {
+            stack.removeAll()
+            set.removeAll()
+        }
+
+        mutating func removeAll(where shouldRemove: (UUID) -> Bool) {
+            stack.removeAll(where: shouldRemove)
+            set = Set(stack)
+        }
+    }
+
     /// 随机模式历史栈（存储 item id），用于上一首回退
-    private var shuffleHistory: [UUID] = []
+    private var shuffleHistory = ShuffleHistory()
 
     public init() {}
 

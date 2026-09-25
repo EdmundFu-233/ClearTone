@@ -40,29 +40,6 @@ struct CoverImage<Placeholder: View>: View {
     }
 }
 
-extension CoverImage where Placeholder == AnyView {
-    /// 常见占位样式：圆角底色 + 音符
-    init(
-        url: URL?,
-        size: CGFloat,
-        contentMode: ContentMode = .fill,
-        cornerRadius: CGFloat = CTRadius.small,
-        systemImage: String = "music.note",
-        tint: Color = .secondary
-    ) {
-        self.init(url: url, size: size, contentMode: contentMode) {
-            AnyView(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(Color.secondary.opacity(0.12))
-                    .overlay(
-                        Image(systemName: systemImage)
-                            .foregroundStyle(tint)
-                    )
-            )
-        }
-    }
-}
-
 /// 封面下载 + 下采样 + 多级缓存
 @MainActor
 final class CoverLoader {
@@ -75,7 +52,11 @@ final class CoverLoader {
     private let session: URLSession
 
     private init() {
-        memory.countLimit = 300
+        memory.countLimit = 120
+        // 必须同时限体积：360×360 BGRA 约 0.5MB/张，只限条数时
+        // 120 张就是约 60MB 常驻；且 NSCache 在内存压力下会整体清空，
+        // 一次清空等于全列表封面重下。
+        memory.totalCostLimit = 64 * 1024 * 1024
         // 原图动辄几百 KB，磁盘缓存给足，回滚/重进页面直接命中
         let cache = URLCache(
             memoryCapacity: 64 * 1024 * 1024,
@@ -108,7 +89,11 @@ final class CoverLoader {
         inFlight[key] = task
         let result = await task.value
         inFlight[key] = nil
-        if let result { memory.setObject(result, forKey: key as NSString) }
+        if let result {
+            // 按实际像素数记账，供 totalCostLimit 淘汰
+            let cost = Int(result.size.width * result.size.height) * 4
+            memory.setObject(result, forKey: key as NSString, cost: cost)
+        }
         return result
     }
 
