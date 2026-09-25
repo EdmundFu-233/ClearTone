@@ -22,6 +22,21 @@ public enum PlaybackState: Equatable, Sendable {
         if case .playing = self { return true }
         return false
     }
+
+    /// 用户的播放意图：缓冲中虽然此刻没在出声，但意图仍是「播放中」，
+    /// 所以播放按钮应继续显示暂停图标，否则会在缓冲的瞬间跳成 ▶，看着像被暂停了。
+    public var isPlayIntentActive: Bool {
+        switch self {
+        case .playing, .buffering, .loading: return true
+        default: return false
+        }
+    }
+
+    /// 是否处于缓冲中（网络抖动、需要等待数据）
+    public var isBuffering: Bool {
+        if case .buffering = self { return true }
+        return false
+    }
 }
 
 /// 播放模式

@@ -100,14 +100,23 @@ struct PlayerBarView: View {
 
                 // 播放/暂停
                 Button(action: { player.togglePlayPause() }) {
-                    Image(systemName: player.playbackState.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    Image(systemName: player.playbackState.isPlayIntentActive ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 36))
                         .foregroundStyle(CTColors.accent(for: colorScheme))
                 }
                 .buttonStyle(.plain)
                 .disabled(player.currentSong == nil)
-                .accessibilityLabel(player.playbackState.isPlaying ? "暂停" : "播放")
-                .help(player.playbackState.isPlaying ? L10n.Common.pause : L10n.Common.play)
+                .accessibilityLabel(player.playbackState.isPlayIntentActive ? "暂停" : "播放")
+                .help(player.playbackState.isPlayIntentActive ? L10n.Common.pause : L10n.Common.play)
+
+                // 缓冲中：给一个明确提示，否则网络抖动时界面看起来像卡死
+                if player.playbackState.isBuffering {
+                    Text("缓冲中…")
+                        .font(CTTypography.caption)
+                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                        .fixedSize()
+                        .transition(.opacity)
+                }
 
                 // 下一首
                 Button(action: { player.next() }) {

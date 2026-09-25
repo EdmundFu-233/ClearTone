@@ -74,7 +74,7 @@ struct MiniPlayerView: View {
                 Spacer()
 
                 Button(action: { player.togglePlayPause() }) {
-                    Image(systemName: player.playbackState.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: player.playbackState.isPlayIntentActive ? "pause.fill" : "play.fill")
                         .font(.title2)
                 }
 

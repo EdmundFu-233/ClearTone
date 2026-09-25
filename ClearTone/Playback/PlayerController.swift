@@ -52,6 +52,10 @@ public final class PlayerController: ObservableObject {
     private var bufferObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
     private var errorObserver: NSObjectProtocol?
+    /// 缓冲中：playbackStalled 通知 + timeControlStatus KVO，两者都在
+    /// `detachCurrentItem` 中对称移除
+    private var stallObserver: NSObjectProtocol?
+    private var timeControlObserver: NSKeyValueObservation?
 
     private var provider: MusicProvider = NeteaseProvider.shared
     private var localProvider = LocalProvider()
@@ -176,7 +180,7 @@ public final class PlayerController: ObservableObject {
         actualQuality = nil
         isCurrentFromCache = false
         // 切歌开始时立即停止旧播放器，避免旧歌曲的时间观察者继续写进新歌曲进度
-        cleanupPlayer()
+        teardownPlayer()
 
         playbackState = .loading(songID: song.id)
         currentSong = song
@@ -233,11 +237,17 @@ public final class PlayerController: ObservableObject {
     }
 
     private func startPlayback(url: URL, song: Song, generation: UInt) throws {
-        cleanupPlayer()
+        // 只解绑当前 item，播放器实例复用（切歌延迟与 CPU 峰值都更低）
+        detachCurrentItem()
 
         let item = AVPlayerItem(url: url)
         playerItem = item
-        player = AVPlayer(playerItem: item)
+        if let player {
+            // 复用实例换源；没有实例时（冷启动首播）才懒建
+            player.replaceCurrentItem(with: item)
+        } else {
+            player = AVPlayer(playerItem: item)
+        }
         player?.volume = volume
         player?.isMuted = isMuted
 
@@ -299,6 +309,38 @@ public final class PlayerController: ObservableObject {
             Task { @MainActor in
                 guard let self = self, generation == self.currentGeneration else { return }
                 self.handlePlayError(nsError ?? MusicError.unknown("播放中断"), for: song)
+            }
+        }
+
+        // 缓冲中检测。原先 PlaybackState.buffering 是纯死设计（声明后零赋值），
+        // 网络抖动时界面没有任何缓冲提示。
+        // playbackStalled 覆盖「已经开始播放又卡住」，timeControlStatus 覆盖「首次缓冲」。
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, generation == self.currentGeneration else { return }
+                // 只在「用户意图是播放」时提示，暂停状态下卡顿无需打扰
+                guard self.pendingAutoplay, let songID = self.playbackState.songID else { return }
+                self.playbackState = .buffering(songID: songID)
+            }
+        }
+        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self = self, generation == self.currentGeneration else { return }
+                switch player.timeControlStatus {
+                case .waitingToPlayAtSpecifiedRate:
+                    guard self.pendingAutoplay, let songID = self.playbackState.songID else { return }
+                    self.playbackState = .buffering(songID: songID)
+                case .playing:
+                    // 缓冲结束：恢复为 playing（endOfMedia 由 endedObserver 负责）
+                    if self.playbackState.isBuffering, let songID = self.playbackState.songID {
+                        self.playbackState = .playing(songID: songID)
+                        self.updateNowPlayingPlaybackState()
+                    }
+                default:
+                    break
+                }
             }
         }
 
@@ -409,7 +451,8 @@ public final class PlayerController: ObservableObject {
 
     public func togglePlayPause() {
         switch playbackState {
-        case .playing: pause()
+        case .playing, .buffering: pause()
+        case .loading: break   // 加载中不响应，交给 readyToPlay 后的意图分支
         case .paused, .idle, .ended: resume()
         case .failed:
             // 失败态下点播放：重新尝试当前歌曲（重置失败计数与重试次数）
@@ -660,8 +703,14 @@ public final class PlayerController: ObservableObject {
         return currentSong != nil
     }
 
-    private func cleanupPlayer() {
-        if let observer = timeObserver, let player = player {
+    /// 换歌时解绑当前 item：移除观察者与通知，但**保留 AVPlayer 实例**。
+    ///
+    /// 原先 `cleanupPlayer()` 每次都 `player = nil` 再 `AVPlayer(playerItem:)` 新建。
+    /// AVPlayer 持有音频会话、解码管线与输出路由，反复构造/销毁会在曲目切换处
+    /// 产生额外中断与延迟尖峰、CPU 峰值更高（每次重新协商解码器），
+    /// 也让「无缝切歌」无法实现。
+    private func detachCurrentItem() {
+        if let observer = timeObserver, let player {
             player.removeTimeObserver(observer)
         }
         timeObserver = nil
@@ -677,9 +726,21 @@ public final class PlayerController: ObservableObject {
         }
         endObserver = nil
         errorObserver = nil
+        if let stallObserver {
+            NotificationCenter.default.removeObserver(stallObserver)
+        }
+        stallObserver = nil
+        timeControlObserver?.invalidate()
+        timeControlObserver = nil
         player?.pause()
-        player = nil
+        player?.replaceCurrentItem(with: nil)
         playerItem = nil
+    }
+
+    /// 彻底销毁播放器（退出播放、App 停止等边界）
+    private func teardownPlayer() {
+        detachCurrentItem()
+        player = nil
     }
 
     /// 停止播放并回到空闲态（清空队列等边界）
@@ -691,7 +752,8 @@ public final class PlayerController: ObservableObject {
         loadTask = nil
         seekTask?.cancel()
         isUserSeeking = false
-        cleanupPlayer()
+        // 停止播放是彻底边界：销毁播放器实例，避免空转的解码器与音频会话
+        teardownPlayer()
         currentSong = nil
         duration = 0
         currentTime = 0

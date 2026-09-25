@@ -127,7 +127,7 @@ struct NowPlayingView: View {
                                     .font(.title)
                             }
                             Button(action: { player.togglePlayPause() }) {
-                                Image(systemName: player.playbackState.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                Image(systemName: player.playbackState.isPlayIntentActive ? "pause.circle.fill" : "play.circle.fill")
                                     .font(.system(size: 64))
                             }
                             Button(action: { player.next() }) {
