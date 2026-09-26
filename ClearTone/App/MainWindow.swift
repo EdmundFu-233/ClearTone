@@ -72,6 +72,8 @@ struct SidebarView: View {
                     .tag(AppState.Page.discover)
                 Label(L10n.Sidebar.search, systemImage: "magnifyingglass")
                     .tag(AppState.Page.search)
+                Label("电台", systemImage: "dot.radiowaves.left.and.right")
+                    .tag(AppState.Page.radio)
             }
 
             Section("资料库") {
@@ -334,6 +336,10 @@ struct ContentView: View {
                 RecentView()
             case .playlistDetail:
                 PlaylistDetailView(playlistID: appState.selectedPlaylistID ?? "")
+            case .radio:
+                RadioView()
+            case .radioDetail:
+                RadioDetailView(radioID: appState.selectedRadioID ?? "")
             case .settings:
                 SettingsView()
             }

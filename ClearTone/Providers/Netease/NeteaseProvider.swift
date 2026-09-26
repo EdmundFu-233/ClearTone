@@ -551,6 +551,96 @@ public actor NeteaseProvider: MusicProvider {
         return dailySongs.compactMap { mapSong($0) }
     }
 
+    // MARK: - 电台（DJ / 播客）
+
+    /// 电台分类。注意响应是**顶层** `categories`，不在 result/data 里。
+    public func fetchRadioCategories() async throws -> [RadioCategory] {
+        let data = try await request("/dj/catelist", cacheTTL: 3600)
+        let json = try parseJSON(data)
+        guard let categories = json["categories"] as? [[String: Any]] else { throw MusicError.invalidResponse }
+        return categories.compactMap { dict in
+            guard let name = dict["name"] as? String else { return nil }
+            let id = String(describing: dict["id"] ?? "")
+            // 二级分类名，用于 dj/hot?cat=
+            let subs = (dict["sub"] as? [[String: Any]])?
+                .compactMap { $0["name"] as? String } ?? []
+            return RadioCategory(id: id, name: name, subCategories: subs)
+        }
+    }
+
+    /// 精选电台推荐。响应 `djRadios` 在顶层。
+    public func fetchRecommendedRadios(limit: Int = 30) async throws -> [RadioStation] {
+        let data = try await request("/dj/recommend", query: ["limit": String(limit)], cacheTTL: 600)
+        return try parseRadioStations(data)
+    }
+
+    /// 热门电台，可按分类筛选。`categoryID` 传 nil 表示全部分类。
+    public func fetchHotRadios(categoryID: String? = nil, limit: Int = 30) async throws -> [RadioStation] {
+        var query = ["limit": String(limit)]
+        if let categoryID, !categoryID.isEmpty { query["cat"] = categoryID }
+        let data = try await request("/dj/hot", query: query, cacheTTL: 600)
+        return try parseRadioStations(data)
+    }
+
+    private func parseRadioStations(_ data: Data) throws -> [RadioStation] {
+        let json = try parseJSON(data)
+        guard let radios = json["djRadios"] as? [[String: Any]] else { throw MusicError.invalidResponse }
+        return radios.compactMap { mapRadioStation($0) }
+    }
+
+    private func mapRadioStation(_ dict: [String: Any]) -> RadioStation? {
+        guard let id = dict["id"] else { return nil }
+        let dj = dict["dj"] as? [String: Any] ?? [:]
+        return RadioStation(
+            id: String(describing: id),
+            name: dict["name"] as? String ?? "未命名电台",
+            coverURL: (dict["picUrl"] as? String).flatMap(URL.init),
+            programCount: (dict["programCount"] as? Int) ?? 0,
+            subscriberCount: (dict["subCount"] as? Int) ?? 0,
+            creatorName: dj["nickname"] as? String,
+            categoryName: dict["categoryName"] as? String,
+            descriptionText: dict["desc"] as? String,
+            isSubscribed: (dict["isSub"] as? Int) == 1
+        )
+    }
+
+    /// 电台节目列表。
+    ///
+    /// 两个容易踩的坑（均已实测）：
+    /// 1. 参数是 `rid` 不是 `id`（`id` 会返回「参数错误」）
+    /// 2. `programs` 在**顶层**，不是 `data.programs`
+    public func fetchRadioPrograms(radioID: String, page: Int = 1, limit: Int = 30) async throws -> [RadioProgram] {
+        let offset = (page - 1) * limit
+        let data = try await request("/dj/program", query: [
+            "rid": radioID, "limit": String(limit), "offset": String(offset),
+        ], cacheTTL: 300)
+        let json = try parseJSON(data)
+        guard let programs = json["programs"] as? [[String: Any]] else { throw MusicError.invalidResponse }
+        return programs.compactMap { mapRadioProgram($0, stationName: nil) }
+    }
+
+    private func mapRadioProgram(_ dict: [String: Any], stationName: String?) -> RadioProgram? {
+        guard let id = dict["id"] else { return nil }
+        // 节目自带 mainSong，结构与标准歌曲一致，直接复用 mapSong
+        let mainSong = dict["mainSong"] as? [String: Any]
+        let song = mainSong.flatMap { mapSong($0) }
+        // 时长是毫秒；节目级 duration 优先，缺失时取歌曲的
+        let durationMs = (dict["duration"] as? Int)
+            ?? (mainSong?["duration"] as? Int)
+            ?? 0
+        return RadioProgram(
+            id: String(describing: id),
+            title: dict["name"] as? String ?? song?.title ?? "未命名节目",
+            // 节目封面实测常为空，回退用主音频的专辑封面
+            coverURL: (dict["coverImgUrl"] as? String).flatMap(URL.init) ?? song?.coverURL,
+            duration: TimeInterval(durationMs) / 1000,
+            createTime: (dict["createTime"] as? Int).map { Date(timeIntervalSince1970: TimeInterval($0 / 1000)) },
+            playCount: (dict["playCount"] as? Int) ?? 0,
+            stationName: stationName,
+            song: song
+        )
+    }
+
     // MARK: - 网络请求基础
 
     /// 发起请求。

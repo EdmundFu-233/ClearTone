@@ -41,6 +41,32 @@ struct CoverImage<Placeholder: View>: View {
 }
 
 /// 封面下载 + 下采样 + 多级缓存
+/// 封面下载 + 下采样 + 多级缓存
+extension CoverImage where Placeholder == AnyView {
+    /// 常见占位样式：圆角底色 + 图标。
+    /// 仅用于非列表场景（卡片、详情页头）；列表行请用泛型 + 具体视图，
+    /// 避免每行多一层类型擦除。
+    init(
+        url: URL?,
+        size: CGFloat,
+        contentMode: ContentMode = .fill,
+        cornerRadius: CGFloat = CTRadius.small,
+        systemImage: String = "music.note",
+        tint: Color = .secondary
+    ) {
+        self.init(url: url, size: size, contentMode: contentMode) {
+            AnyView(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(Color.secondary.opacity(0.12))
+                    .overlay(
+                        Image(systemName: systemImage)
+                            .foregroundStyle(tint)
+                    )
+            )
+        }
+    }
+}
+
 @MainActor
 final class CoverLoader {
     static let shared = CoverLoader()
@@ -66,11 +92,21 @@ final class CoverLoader {
         let config = URLSessionConfiguration.default
         config.urlCache = cache
         config.requestCachePolicy = .returnCacheDataElseLoad
-        config.timeoutIntervalForRequest = 20
+        // 连接建立是封面慢的真正瓶颈（不是带宽）：网易云图片分散在
+        // p1~p4 / m1~m8 等多个 host，DNS 随机解析到的节点有时完全不可达，
+        // 实测同一张图在可达 host 上 0.66s、在不可达 host 上要等满 20s。
+        // 超时压到 2.5s 并配合换 host 重试，把最坏等待从 20s 降到几秒。
+        config.timeoutIntervalForRequest = 2.5
+        config.timeoutIntervalForResource = 15
+        // 同一 host 的并发连接数：列表滚动会同时要十几张封面
+        config.httpMaximumConnectionsPerHost = 6
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         session = URLSession(configuration: config)
     }
+
+    /// 已知可达的图片 host。用于失败后切换，路径部分在所有 host 上通用。
+    private static let mirrorHosts = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
 
     func load(url: URL?, pointSize: CGFloat) async -> NSImage? {
         guard let url else { return nil }
@@ -82,9 +118,7 @@ final class CoverLoader {
         if let existing = inFlight[key] { return await existing.value }
 
         let task = Task<NSImage?, Never> { [session] in
-            guard let (data, _) = try? await session.data(from: sized),
-                  let raw = NSImage(data: data) else { return nil }
-            return Self.downsample(raw, to: pointSize)
+            await Self.fetchImage(session: session, from: sized, pointSize: pointSize)
         }
         inFlight[key] = task
         let result = await task.value
@@ -95,6 +129,53 @@ final class CoverLoader {
             memory.setObject(result, forKey: key as NSString, cost: cost)
         }
         return result
+    }
+
+    /// 下载并解码图片；连接失败时换一个 host 重试。
+    ///
+    /// 实测同一张封面的路径部分在 p1~p8 上通用，但某些 host 在当前网络下
+    /// 完全无法建立 TCP 连接（time_connect = 0，直接超时）。随机命中就表现为
+    /// 「封面一直不出来」。所以这里把 host 当作可替换的镜像逐个尝试。
+    private static func fetchImage(
+        session: URLSession,
+        from url: URL,
+        pointSize: CGFloat
+    ) async -> NSImage? {
+        if let raw = await downloadOnce(session: session, from: url) {
+            return downsample(raw, to: pointSize)
+        }
+        // 主 host 不可达：换镜像 host 重试
+        return await retryWithMirrorHosts(session: session, from: url, pointSize: pointSize)
+    }
+
+    /// 单次下载；只发一个请求（data(from:) 同时返回 body 与 response）
+    private static func downloadOnce(session: URLSession, from url: URL) async -> NSImage? {
+        guard let (data, response) = try? await session.data(from: url),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else { return nil }
+        return NSImage(data: data)
+    }
+
+    private static func retryWithMirrorHosts(
+        session: URLSession,
+        from url: URL,
+        pointSize: CGFloat
+    ) async -> NSImage? {
+        guard let host = url.host, host.hasSuffix("music.126.net") else { return nil }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        guard let currentHost = host.split(separator: ".").first.map(String.init) else { return nil }
+        // 从当前 host 之后开始试，最多 3 个，避免无谓请求
+        let start = (mirrorHosts.firstIndex(of: currentHost) ?? 0) + 1
+        guard start < mirrorHosts.count else { return nil }
+
+        for offset in 0..<min(3, mirrorHosts.count - start) {
+            components?.host = "\(mirrorHosts[(start + offset) % mirrorHosts.count]).music.126.net"
+            guard let candidate = components?.url else { continue }
+            if let raw = await downloadOnce(session: session, from: candidate) {
+                return downsample(raw, to: pointSize)
+            }
+        }
+        return nil
     }
 
     /// 网易云图片服务支持 `?param=宽x高` 服务端裁剪；其他来源（本地文件等）原样使用

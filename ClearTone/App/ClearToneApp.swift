@@ -100,6 +100,8 @@ public class AppState: ObservableObject {
     @Published public private(set) var account: AccountInfo?
     @Published public private(set) var isLoggedIn: Bool = false
     @Published var selectedPlaylistID: String?
+    /// 当前打开的电台 id
+    @Published var selectedRadioID: String?
     @Published var searchQuery = ""
 
     /// 喜欢的歌曲（本地缓存 + 服务端同步）
@@ -357,11 +359,13 @@ public class AppState: ObservableObject {
     public enum Page: String, CaseIterable {
         case discover = "发现音乐"
         case search = "搜索"
+        case radio = "电台"
         case myMusic = "我的音乐"
         case liked = "喜欢的音乐"
         case local = "本地音乐"
         case recent = "最近播放"
         case playlistDetail = "歌单详情"
+        case radioDetail = "电台详情"
         case settings = "设置"
     }
 }
