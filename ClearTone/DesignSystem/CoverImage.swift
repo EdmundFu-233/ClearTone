@@ -219,15 +219,55 @@ final class CoverLoader {
     }
 
     /// 在主线程把原图重绘到目标像素尺寸，顺带完成圆角外的裁剪基准
+    /// 缩放到目标像素尺寸并**立即栅格化**。
+    ///
+    /// ## 为什么要立刻栅格化（这里曾崩过一次）
+    ///
+    /// 原实现返回 `NSImage(size:flipped:drawingHandler:)` —— 它是**惰性**的，
+    /// 闭包会在「任何线程请求绘制时」才执行。AppKit 不保证绘制发生在主线程，
+    /// 于是踩到了这个崩溃：
+    ///
+    ///     MPNowPlayingInfoCenter (后台队列 accessQueue)
+    ///       → MPArtworkImageJPEGRepresentation
+    ///       → NSImage.draw(in:) → 我们的 drawingHandler
+    ///       → CoverLoader 是 @MainActor → _swift_task_checkIsolatedSwift
+    ///       → dispatch_assert_queue_fail → SIGTRAP 闪退
+    ///
+    /// 触发路径是锁屏/控制中心/触控栏取封面图 —— 也就是「播放每日推荐的歌」
+    /// 之后系统自动拉取 artwork 时。NSImage 本身在多线程绘制是安全的，
+    /// 只要里面**没有闭包**。所以这里直接烘成位图。
     private static func downsample(_ image: NSImage, to pointSize: CGFloat) -> NSImage {
         let side = max(1, pointSize * 2)
         guard image.size.width > side || image.size.height > side else { return image }
-        let target = NSSize(width: side, height: side)
-        let output = NSImage(size: target, flipped: false) { rect in
-            image.draw(in: rect, from: NSRect(origin: .zero, size: image.size), operation: .sourceOver, fraction: 1)
-            return true
-        }
-        return output
+
+        // 目标像素尺寸，2x 密度直接用像素点
+        let pixelSide = Int(side)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelSide,
+            pixelsHigh: pixelSide,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return image }
+
+        rep.size = NSSize(width: side, height: side)
+        // 立刻绘制：此时仍在主线程（CoverLoader 是 @MainActor）
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: side, height: side),
+                   from: NSRect(origin: .zero, size: image.size),
+                   operation: .sourceOver,
+                   fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let baked = NSImage(size: NSSize(width: side, height: side))
+        baked.addRepresentation(rep)
+        return baked
     }
 }
 

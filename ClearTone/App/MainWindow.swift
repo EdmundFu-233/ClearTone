@@ -256,15 +256,35 @@ final class AvatarLoader {
         if let cached = cache.object(forKey: url as NSURL) { return cached }
         guard let (data, _) = try? await URLSession.shared.data(from: url),
               let raw = NSImage(data: data) else { return nil }
-        // 直接绘制成圆形：菜单标签会绕过 SwiftUI 的裁剪，只有在图片层裁剪才可靠
-        let thumb = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            NSBezierPath(ovalIn: rect).addClip()
-            let src = raw.size
-            let side = min(src.width, src.height)
-            let srcRect = NSRect(x: (src.width - side) / 2, y: (src.height - side) / 2, width: side, height: side)
-            raw.draw(in: rect, from: srcRect, operation: .sourceOver, fraction: 1)
-            return true
-        }
+        // 直接绘制成圆形：菜单标签会绕过 SwiftUI 的裁剪，只有在图片层裁剪才可靠。
+        //
+        // 同样**立即栅格化**而不是用 NSImage(size:flipped:drawingHandler:)：
+        // 后者惰性，闭包在任意请求绘制的线程上执行。这里虽然没踩到
+        // CoverLoader 那个 @MainActor 崩溃（AvatarLoader 无隔离标注），
+        // 但同类的隐患没必要留着。
+        let side = Int(size)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: side, pixelsHigh: side,
+            bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = NSSize(width: size, height: size)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        let rect = NSRect(x: 0, y: 0, width: size, height: size)
+        NSBezierPath(ovalIn: rect).addClip()
+        let src = raw.size
+        let crop = min(src.width, src.height)
+        let srcRect = NSRect(x: (src.width - crop) / 2, y: (src.height - crop) / 2, width: crop, height: crop)
+        raw.draw(in: rect, from: srcRect, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let thumb = NSImage(size: NSSize(width: size, height: size))
+        thumb.addRepresentation(rep)
         cache.setObject(thumb, forKey: url as NSURL)
         return thumb
     }
