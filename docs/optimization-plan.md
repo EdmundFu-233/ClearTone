@@ -483,3 +483,43 @@ P0-3 seek 分离 preview/commit · P0-4 `bufferedTime` 降级 + `timePublisher` 
 - **SwiftUI 重绘**：Signpost 打点各视图 `body` 入口，统计 `currentTime` tick 期间的求值次数（应从 2Hz×全树 降到 0）
 - **缓存行为**：单元测试覆盖 P0-5/P0-7/P0-8；afconvert 挂死用 `kill -STOP` 模拟
 - **回归**：`xcodebuild -project ClearTone.xcodeproj -scheme ClearTone -configuration Debug test -destination 'platform=macOS'`，当前 28 项全绿，各批次均需保持
+
+---
+
+## 电台功能：已知限制
+
+功能已可用（实测：`/dj/recommend` → `/dj/program?rid=` → 播放走标准链路）。
+
+| 限制 | 原因 |
+|---|---|
+| 节目只加载单页 30 期 | 未做无限滚动。`/dj/program` 支持 `offset` 分页，接口层面已具备 |
+| 电台名称显示为「电台」 | `/dj/detail` 需登录态且部分电台返回 400，不稳定；为不阻塞节目展示用兜底名。若要真实名称，可在拉节目时并行查一次热门/推荐列表做匹配 |
+| 不支持订阅电台 | `/dj/sub` 是写操作。鉴于 `/like` 曾因 GET/POST 用错被网易云判为风控（见下），写操作在实测确认请求方法前不盲写 |
+| 节目仅显示可播放的 | `mainSong` 缺失的条目会被过滤，避免点了没声音 |
+
+## 写操作必须实测请求方法（重要）
+
+`/like` 长期用 GET 调用，网易云稳定返回 `code: 524「当前环境异常，已取消喜欢」`，
+表现为「点收藏完全没反应」。同一首歌、同一 cookie、同一个 helper 进程：
+
+    POST /like → code 200
+    GET  /like → code 524
+
+`NeteaseProvider.request()` 原先从不设置 `httpMethod`，URLRequest 默认 GET，
+所以项目第一天起所有写操作都是 GET 出去的。
+
+**约定**：新增任何写接口（订阅、评论、加歌单）前，
+先用 curl 分别试 GET 和 POST，确认哪个返回 200，再写代码。
+
+    curl -s -X POST -H "X-CT-Cookie: $COOKIE" -d "id=123&like=true" "$H/like"
+
+## 封面下载慢的真实原因
+
+瓶颈是**连接建立**，不是带宽。同一张封面的路径部分在所有 host 上通用，但可达性随机：
+
+    p1/p2/p3 → HTTP 200,  0.66s
+    p4/p7/p8 → TCP 连不上, 6s 超时（time_connect = 0）
+
+DNS 随机解析到不可达节点，随机命中就表现为「封面一直不出来」。
+`?param=` 对耗时几乎无影响（0.66s vs 0.68s）但体积差 3 倍（3955B vs 8680B），
+所以 `?param=` 保留用于省流量，解决慢靠：超时压到 2.5s + 失败换 host 重试。
