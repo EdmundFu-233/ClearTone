@@ -105,8 +105,17 @@ final class CoverLoader {
         session = URLSession(configuration: config)
     }
 
-    /// 已知可达的图片 host。用于失败后切换，路径部分在所有 host 上通用。
-    private static let mirrorHosts = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
+    /// 已知可达的图片 host，按实测可达率降序，用于失败后切换。
+    ///
+    /// 路径部分在所有 host 上通用，但 host 本身差别很大。实测同一张封面 × 4 轮：
+    ///     p1 → 4/4 可达      p2 → 2/4      p3 → 1/4      p4 → 3/4
+    ///     p5 → 0/4，全 404   p6 → 0/4，全 404
+    ///     p7 → 0/4，连接超时  p8 → 0/4，连接超时
+    ///
+    /// **p5~p8 不是有效镜像**：p5/p6 直接 404（纯浪费一次请求），
+    /// p7/p8 TCP 都建不上（每轮白等满超时）。所以池子里只保留 p1~p4，
+    /// 并按可达率排序，让最可靠的先试。
+    private static let mirrorHosts = ["p1", "p4", "p2", "p3"]
 
     func load(url: URL?, pointSize: CGFloat) async -> NSImage? {
         guard let url else { return nil }
@@ -163,13 +172,16 @@ final class CoverLoader {
     ) async -> NSImage? {
         guard let host = url.host, host.hasSuffix("music.126.net") else { return nil }
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        guard let currentHost = host.split(separator: ".").first.map(String.init) else { return nil }
-        // 从当前 host 之后开始试，最多 3 个，避免无谓请求
-        let start = (mirrorHosts.firstIndex(of: currentHost) ?? 0) + 1
-        guard start < mirrorHosts.count else { return nil }
+        let currentHost = host.split(separator: ".").first.map(String.init)
 
-        for offset in 0..<min(3, mirrorHosts.count - start) {
-            components?.host = "\(mirrorHosts[(start + offset) % mirrorHosts.count]).music.126.net"
+        // 按 mirrorHosts 已排好的可达率顺序试，跳过刚失败的当前 host。
+        //
+        // 之前这里是「从当前 host 之后顺序走」：从 p4 失败会依次试
+        // p5(404) → p6(404) → p7(超时)，全是不该试的 host，
+        // 反而永远够不到 4/4 可达的 p1。改成整体排序 + 跳过当前，
+        // 无论原始 host 是哪个，下一次尝试都落在最可靠的候选上。
+        for candidateHost in mirrorHosts where candidateHost != currentHost {
+            components?.host = "\(candidateHost).music.126.net"
             guard let candidate = components?.url else { continue }
             if let raw = await downloadOnce(session: session, from: candidate) {
                 return downsample(raw, to: pointSize)
@@ -184,6 +196,21 @@ final class CoverLoader {
         // 列表行 40~56pt、播放栏 56pt 用 2x 屏密度已足够，避免过度下载
         let pixels = Int((pointSize * 2).rounded()).clamped(to: 64...1200)
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+
+        // 明文 http 升级为 https。
+        //
+        // 本项目**没有配置任何 ATS 例外**（Info.plist 里零个 ATS 键），
+        // 也就是走默认 ATS —— 默认禁止明文 HTTP。
+        // 而网易云各接口返回的协议并不统一，实测：
+        //     /recommend/songs  → http://p3|p4.music.126.net   ← 明文
+        //     /song/detail      → https://p3.music.126.net      ← 加密
+        // 于是「每日推荐」的封面全部被 ATS **静默拦截**（无报错、无日志、
+        // 只是永远转圈），其他页面正常 —— 表现为只有每日推荐没封面。
+        // 这里在唯一的 URL 准备漏斗里统一升级，比开 ATS 例外更安全。
+        if components.scheme?.lowercased() == "http" {
+            components.scheme = "https"
+        }
+
         var items = components.queryItems ?? []
         items.removeAll { $0.name == "param" }
         items.append(URLQueryItem(name: "param", value: "\(pixels)y\(pixels)"))
