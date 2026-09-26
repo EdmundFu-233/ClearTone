@@ -106,7 +106,8 @@ struct QueueItemRow: View {
         }
         .padding(.vertical, CTSpacing.xs)
         .contentShape(Rectangle())
-        .onTapGesture(perform: onPlay)
+        // 双击播放，与其它歌曲列表一致（单击留给右键菜单与选中）
+        .onTapGesture(count: 2) { onPlay() }
         .onHover { isHovering = $0 }
     }
 }

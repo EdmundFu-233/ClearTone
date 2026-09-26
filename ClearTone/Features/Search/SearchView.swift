@@ -309,6 +309,14 @@ struct SongRowView: View {
         .background(player.currentSong?.id == song.id ? CTColors.accentSubtle(for: colorScheme) : (isHovering ? CTColors.overlay(for: colorScheme) : Color.clear))
         .clipShape(RoundedRectangle(cornerRadius: CTRadius.medium))
         .onHover { isHovering = $0 }
+        // 双击整行播放。放在行上而不是 List 上，这样每个列表各自决定
+        // 「这一行的播放」是什么语义（队列替换 vs 追加）。
+        // contentShape 确保空白区域也能接收点击，否则只有文字/图片命中。
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            guard song.isPlayable else { return }
+            onPlay()
+        }
         .contextMenu {
             Button("立即播放") { onPlay() }.disabled(!song.isPlayable)
             Button("下一首播放") { player.insertNext(song) }

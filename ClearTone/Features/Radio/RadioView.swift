@@ -247,10 +247,8 @@ struct RadioDetailView: View {
         } else {
             List(playablePrograms) { program in
                 RadioProgramRow(program: program) {
-                    guard let song = program.song else { return }
                     player.play(songs: playablePrograms.compactMap(\.song),
                                 startAt: playablePrograms.firstIndex(of: program) ?? 0)
-                    _ = song
                 }
             }
             .listStyle(.plain)
@@ -336,7 +334,8 @@ struct RadioProgramRow: View {
             .help("播放这一期")
         }
         .contentShape(Rectangle())
-        .onTapGesture(perform: onPlay)
+        // 双击播放，与其它歌曲列表一致
+        .onTapGesture(count: 2) { onPlay() }
         .opacity(isHovering ? 0.85 : 1)
         .onHover { isHovering = $0 }
     }
