@@ -523,3 +523,103 @@ P0-3 seek 分离 preview/commit · P0-4 `bufferedTime` 降级 + `timePublisher` 
 DNS 随机解析到不可达节点，随机命中就表现为「封面一直不出来」。
 `?param=` 对耗时几乎无影响（0.66s vs 0.68s）但体积差 3 倍（3955B vs 8680B），
 所以 `?param=` 保留用于省流量，解决慢靠：超时压到 2.5s + 失败换 host 重试。
+
+---
+
+## iOS 移植：weapi 纯 Swift 可行性验证（已通过）
+
+目标：确认网易云 weapi 加密能在 iOS 可用原语下跑通，否则 iOS 移植没有意义。
+验证方式：独立 Swift 程序（/tmp/weapitest/），逐层对 Node 侧标准答案，不猜。
+
+### 算法（从 api/util/crypto.js + node-forge 源码逐行读出）
+
+weapi(obj):
+  text      = JSON.stringify(obj)                      # 紧凑无空格
+  secretKey = 16 个 base62 随机字符
+  inner     = AES-128-CBC-PKCS7(text, presetKey, iv) → base64 字符串
+  params    = AES-128-CBC-PKCS7(inner, secretKey, iv) → base64 字符串
+              # 注意：外层加密的是内层 base64「字符串的 UTF-8 字节」
+  encSecKey = hex(rawRSA(reverse(secretKey)))
+
+presetKey = '0CoJUm6Qyw8W8jud'，iv = '0102030405060708'，RSA 公钥 1024 位、e=65537。
+
+### 三个决定实现方式的细节
+
+1. **双重 AES-CBC**：内层输出 base64 字符串，外层加密该字符串的 UTF-8。
+2. **raw RSA，零 padding**：node-forge 的 `encrypt(str, 'NONE')` 里
+   scheme.encode 是恒等函数。所以 Security.framework 做不到
+   （只支持 PKCS1v15/OAEP），必须手写 bignum 模幂。
+   输入左补零到 128 字节（大端），输出同样补齐到 128 字节再 hex。
+3. **请求体必须对标 URLSearchParams 编码**：base64 里的 `+` 必须编成 `%2B`。
+   URLComponents 的 urlQueryAllowed 不编码 `+`，直接用会导致服务端
+   把 `+` 解成空格 → 返回 HTTP 200 空 body（极具迷惑性）。
+   症状：HTTP 200 但 body 为空，不是 4xx。
+
+### 验证结果（每层都对过标准答案）
+
+- raw RSA：3 组 Node 生成向量全部一致
+- 双重 AES：与 CryptoJS 输出逐字节一致
+- 真实请求：POST https://music.163.com/weapi/v3/discovery/recommend/songs
+  → HTTP 200，34 首日推
+
+### iOS 可用的原语对照
+
+  AES-128-CBC+PKCS7 → CommonCrypto（注意 Swift 6 下嵌套闭包排他性检查，
+                       用 NSData/NSMutableData 写法避开）
+  模幂/大整数       → 手写约 120 行（schoolbook 乘法 + 二进制长除法求余，
+                       e=65537 只需 17 次平方，1024 位规模下毫秒级）
+  注意：UInt64 减法下溢在 Swift 里会 trap，必须用 &-（曾因此 SIGTRAP）
+
+### 结论
+
+加密层不是 iOS 移植的障碍。真正的剩余工作是 UI/播放层的平台适配，
+以及 12 个明文接口换 URLSession（零加密成本）。
+
+---
+
+## iOS 移植
+
+### 为什么必须重写网络层
+
+macOS 版通过本地 Node.js 辅助进程（api-enhanced，169MB）访问网易云。
+iOS 上这条路完全不可用：
+
+- **没有 `Process()`**，无法拉起子进程
+- `bin/node` 是 macOS Mach-O 二进制（104MB），iOS 无法运行
+
+所以 26 个接口全部要改成 Swift 原生实现。实测 21 个接口，20 个 code 200。
+
+### weapi 加密（已逐字节验证）
+
+`ClearTone/Providers/Netease/NeteaseCrypto.swift`。三个决定实现方式的细节：
+
+1. **双重 AES-CBC** —— 外层加密的是内层 base64 *字符串的 UTF-8*，
+   不是内层密文字节。
+2. **raw RSA，零 padding** —— api-enhanced 用 `forge.encrypt(str,'NONE')`，
+   node-forge 在该分支的 `scheme.encode` 是恒等函数。所以 Security.framework
+   做不到（只支持 PKCS1v15/OAEP），必须手写 bignum 模幂（约 120 行）。
+3. **表单编码对标 URLSearchParams** —— base64 的 `+` 必须编成 `%2B`，
+   否则**HTTP 200 但 body 为空**（不是 4xx，极难定位）。
+
+验证方式：先从 Node 侧（node-forge / CryptoJS）生成标准答案，
+再让 Swift 逐字节对齐，而不是按协议文档手算。
+
+### 顺带修正了一个误判
+
+`/like` 收藏接口此前返回 -460 / 524，我当时记为「GET 方法不对」。
+**实际原因是缺少客户端标识 cookie**（os / appver / osver / versioncode 等）。
+补齐后进入正常风控（405「操作频繁」= 请求已被接受）。
+
+结论要记住：-460 = 缺客户端标识；524 = 同一个原因的不同表现；
+405 = 已被接受的风控限流。写操作确实要 POST，但方法不是唯一原因。
+
+### 平台拆分
+
+- `AppState` 从 `ClearToneApp.swift` 拆出（原本与 macOS AppDelegate 混在一起）
+- `PlayerController` 用 `typealias PlatformImage` 跨平台
+- `AudioCacheManager`：iOS 无 `Process()`，改用 `AVAssetExportSession`
+  （不支持 OPUS，缓存为 AAC m4a，扩展名随平台变）
+- `CoverLoader`：`NSImage` → `UIImage`，iOS 版复刻了 https 升级与 host 故障转移
+- `project.yml` 两个 target 的 sources 需分别维护。**注意**：
+  共享文件时不能给一个 target exclude 而另一个不 exclude，
+  否则会出 `cannot find type` 或 `invalid redeclaration`。

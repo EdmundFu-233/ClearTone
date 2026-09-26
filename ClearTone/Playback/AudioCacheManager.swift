@@ -43,7 +43,19 @@ final class AudioCacheManager: ObservableObject {
     private let targetBitrate = 96000
     /// 缓存上限，超出后按最久未播放淘汰
     private let maxCacheBytes: Int64 = 1_500_000_000
-    private let cacheDirectory: URL
+    /// 缓存文件扩展名。
+///   macOS: caf —— afconvert `-d opus` 的容器
+///   iOS:   m4a —— AVAssetExportSession 唯一支持的 AAC 容器
+/// 两者不能混用：AFPlayer 靠扩展名与实际编码匹配，扩展名错会导致播放失败。
+nonisolated static var cacheFileExtension: String {
+    #if os(macOS)
+    "caf"
+    #else
+    "m4a"
+    #endif
+}
+
+private let cacheDirectory: URL
     private var index: [String: CacheMeta] = [:]
 
     /// 「清除缓存」代数。在途的缓存任务完成后要校验它，
@@ -155,7 +167,7 @@ final class AudioCacheManager: ObservableObject {
     // MARK: - 私有
 
     private func fileURL(for songID: String) -> URL {
-        cacheDirectory.appendingPathComponent("\(songID).caf")
+        cacheDirectory.appendingPathComponent("\(songID).\(Self.cacheFileExtension)")
     }
 
     private func indexURL() -> URL {
@@ -289,10 +301,15 @@ final class AudioCacheManager: ObservableObject {
         let sourceDuration = ((try? await AVURLAsset(url: tempFile).load(.duration))?.seconds) ?? 0
 
         let tempOutput = destination.deletingLastPathComponent()
-            .appendingPathComponent("\(Self.tempPrefix)\(UUID().uuidString).caf")
+            .appendingPathComponent("\(Self.tempPrefix)\(UUID().uuidString).\(Self.cacheFileExtension)")
         defer { try? FileManager.default.removeItem(at: tempOutput) }
 
+        #if os(macOS)
         try await runAfconvert(input: tempFile, output: tempOutput, targetBitrate: targetBitrate)
+        #else
+        // iOS 没有 Process()，无法调 afconvert。改用进程内的 AVAssetExportSession。
+        try await runExportSession(input: tempFile, output: tempOutput)
+        #endif
 
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: tempOutput)
@@ -318,6 +335,7 @@ final class AudioCacheManager: ObservableObject {
         return URLSession(configuration: config)
     }()
 
+#if os(macOS)
     /// afconvert 超时。超过后强杀，避免 waitUntilExit 永久阻塞导致
     /// continuation 永不 resume、「缓存中」永久显示、utility 线程泄漏。
     private nonisolated static let afconvertTimeout: Duration = .seconds(180)
@@ -375,6 +393,7 @@ final class AudioCacheManager: ObservableObject {
             if process.isRunning { process.terminate() }
         }
     }
+    #endif
 }
 
 /// 保证 continuation 只被恢复一次（多次 resume 会 crash）
@@ -391,3 +410,32 @@ private final class ResumeGuard: @unchecked Sendable {
         return true
     }
 }
+
+#if os(iOS)
+extension AudioCacheManager {
+    /// iOS 转码：用进程内的 AVAssetExportSession 替代 afconvert 子进程。
+    ///
+    /// iOS 没有 `Process()`，拉不起系统 afconvert。AVAssetExportSession 是
+    /// 进程内 API，但它**不支持 OPUS** —— Apple 只导出 m4a(AAC)。
+    /// 所以 iOS 侧缓存为 AAC m4a 而非 OPUS CAF：码率同档，兼容性更好，
+    /// 且省掉了子进程带来的 watchdog / ENOSPC / 临时文件清理那套复杂度。
+    nonisolated static func runExportSession(input: URL, output: URL) async throws {
+        let asset = AVURLAsset(url: input)
+        guard let session = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetAppleM4A
+        ) else {
+            throw MusicError.unknown("无法创建转码会话")
+        }
+        session.outputURL = output
+        session.outputFileType = .m4a
+        session.audioTimePitchAlgorithm = .timeDomain
+
+        await session.export()
+
+        guard session.status == .completed else {
+            throw MusicError.unknown("转码失败 (status=\(session.status.rawValue))")
+        }
+    }
+}
+#endif

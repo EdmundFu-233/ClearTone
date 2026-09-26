@@ -126,7 +126,7 @@ private struct CTGlassSurface: ViewModifier {
     func body(content: Content) -> some View {
         if reduceTransparency {
             content.background(CTColors.panel(for: colorScheme), in: RoundedRectangle(cornerRadius: radius))
-        } else if #available(macOS 26.0, *) {
+        } else if #available(macOS 26.0, iOS 26.0, *) {
             content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: radius))
         } else {
             content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius))

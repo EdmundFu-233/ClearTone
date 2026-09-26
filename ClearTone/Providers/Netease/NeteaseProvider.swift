@@ -43,8 +43,10 @@ public actor NeteaseProvider: MusicProvider {
         self.decoder = JSONDecoder()
     }
 
+    #if os(macOS)
     @MainActor
     private var helper: HelperProcessManager { HelperProcessManager.shared }
+    #endif
 
     // MARK: - 认证
 
@@ -663,6 +665,14 @@ public actor NeteaseProvider: MusicProvider {
             return entry.data
         }
 
+        #if os(iOS)
+        // iOS 无法拉起辅助进程（没有 Process()，且 node 是 macOS 二进制），
+        // 改为直连：路由名翻译成网易云原始 uri，自行完成加密。
+        let data = try await directRequest(
+            path, query: query, cookie: cookie, cacheTTL: cacheTTL, method: method
+        )
+        return data
+        #else
         try await helper.startIfNeeded()
         let url = try await helper.makeURL(path: path, query: query)
         var request = URLRequest(url: url)
@@ -710,7 +720,62 @@ public actor NeteaseProvider: MusicProvider {
             if let musicError = error as? MusicError { throw musicError }
             throw MusicError.unknown(error.localizedDescription)
         }
+        #endif
     }
+
+    #if os(iOS)
+    /// iOS 直连实现。
+    ///
+    /// 与辅助进程版的差异只有「谁来翻译路由名、谁来加密」，
+    /// 缓存、错误映射、解析逻辑完全共用。
+    private func directRequest(
+        _ path: String,
+        query: [String: String],
+        cookie: String?,
+        cacheTTL: TimeInterval?,
+        method: String
+    ) async throws -> Data {
+        guard let endpoint = NeteaseEndpoint.endpoint(forRoute: path) else {
+            // 未知路由显式失败：静默走错加密方式会得到「HTTP 200 空 body」
+            CTLog.general.error("未映射的接口路由: \(CTLog.sanitize(path))")
+            throw MusicError.apiError(code: -1, message: "接口未适配：\(path)")
+        }
+
+        let cacheKey = Self.cacheKey(
+            path: path, query: query, hasCookie: !(cookie ?? "").isEmpty
+        )
+
+        // 辅助进程接受 GET/POST 两种；直连统一用 POST。
+        // 写操作必须 POST（GET 时网易云返回 524/405）。
+        let data: Data
+        switch endpoint.crypto {
+        case .plain:
+            data = try await NeteaseDirectTransport.shared.plainAPI(
+                endpoint.apiPath, params: query, cookie: cookie
+            )
+        case .weapi:
+            data = try await NeteaseDirectTransport.shared.weapi(
+                endpoint.apiPath, params: query, cookie: cookie
+            )
+        }
+
+        // 会话失效：部分接口 HTTP 200 + body code=301
+        if data.count <= 64 * 1024,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           (json["code"] as? Int) == 301 {
+            throw sessionExpiredError()
+        }
+
+        if method == "GET", let ttl = cacheTTL, ttl > 0 {
+            responseCacheBytes += data.count - (responseCache[cacheKey]?.data.count ?? 0)
+            responseCache[cacheKey] = CacheEntry(
+                data: data, expiresAt: Date().addingTimeInterval(ttl)
+            )
+            enforceResponseCacheLimits()
+        }
+        return data
+    }
+    #endif
 
     private func parseJSON(_ data: Data) throws -> [String: Any] {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -868,6 +933,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 }
 
+#if os(macOS)
 // MARK: - HelperProcessManager 便捷扩展
 extension HelperProcessManager {
     @MainActor
@@ -881,3 +947,4 @@ extension HelperProcessManager {
         }
     }
 }
+#endif

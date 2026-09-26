@@ -2,7 +2,14 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
+#if os(macOS)
 import AppKit
+/// 封面图在两个平台上的统一别名
+typealias PlatformImage = NSImage
+#elseif os(iOS)
+import UIKit
+typealias PlatformImage = UIImage
+#endif
 
 /// 全局唯一播放控制器，管理 AVPlayer、状态、队列、系统媒体集成
 @MainActor
@@ -47,6 +54,9 @@ public final class PlayerController: ObservableObject {
     // MARK: - Private
     private var player: AVPlayer?
     private var playerItem: AVPlayerItem?
+    /// 是否处于前台。iOS 用：后台时跳过 2Hz 的 UI 进度更新（音频不受影响）。
+    private var isForeground = true
+
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
     private var bufferObserver: NSKeyValueObservation?
@@ -337,6 +347,9 @@ public final class PlayerController: ObservableObject {
                 // 校验代次：旧歌曲的时钟不得写入新歌曲或已停止的播放器
                 guard let self = self, generation == self.currentGeneration,
                       !self.isUserSeeking, self.currentSong != nil else { return }
+                // 后台跳过 UI 进度更新（音频照常播放，system 由 PlaybackRate 外推）。
+                // 2Hz 的 @Published 会让整棵视图树重算，进后台时纯属浪费功耗。
+                guard self.isForeground else { return }
                 self.currentTime = time.seconds
                 self.timePublisher.send(time.seconds)
                 // 不在这里调 updateNowPlayingElapsedTime()：写 nowPlayingInfo 字典会触发
@@ -474,8 +487,27 @@ public final class PlayerController: ObservableObject {
         beginRestoredPlayback(autoplay: false)
     }
 
-    public func togglePlayPause() {
-        switch playbackState {
+    /// 场景切换回调（iOS 用；macOS 不调用）。
+    ///
+    /// 切后台**不暂停音频** —— info.plist 已声明 `UIBackgroundModes: audio`，
+    /// 锁屏与切后台都应继续播放。这里只处理两件事：
+    /// 1. 进后台时停掉高频 UI 刷新（省电，进度条改为低频更新）
+    /// 2. 回前台时立刻同步一次进度，避免显示过期位置
+    public func setScenePhase(_ phase: ScenePhaseBridge) {
+        #if os(iOS)
+        // 回前台时立刻同步一次进度，避免进度条停在离开时的位置
+        if phase == .active, let player, currentSong != nil, !isUserSeeking {
+            let t = player.currentTime().seconds
+            if t.isFinite {
+                currentTime = t
+                timePublisher.send(t)
+            }
+        }
+        isForeground = (phase == .active)
+        #endif
+    }
+
+    public func togglePlayPause() {        switch playbackState {
         case .playing, .buffering: pause()
         case .loading: break   // 加载中不响应，交给 readyToPlay 后的意图分支
         case .paused, .idle, .ended: resume()
@@ -828,7 +860,9 @@ public final class PlayerController: ObservableObject {
 
     /// 封面回调必须 nonisolated：MediaPlayer 在内部队列（*/accessQueue）同步调用它，
     /// 若在 @MainActor 上下文中构造闭包会继承隔离性，触发 dispatch_assert_queue 崩溃（SIGTRAP）
-    private nonisolated static func makeArtworkRequestHandler(image: NSImage) -> (CGSize) -> NSImage {
+    private nonisolated static func makeArtworkRequestHandler(
+        image: PlatformImage
+    ) -> (CGSize) -> PlatformImage {
         { _ in image }
     }
 
