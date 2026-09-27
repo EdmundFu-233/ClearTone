@@ -90,5 +90,9 @@ struct MiniPlayerView: View {
         .padding(CTSpacing.md)
         .frame(width: 300)
         .background(CTColors.panel(for: colorScheme))
+        // 置顶由 `MiniPlayerWindowController` 直接设 `NSWindow.level`。
+        // 这里不再用 `floatingWindow`：它靠一个 `NSViewRepresentable` 在
+        // `DispatchQueue.main.async` 里读 `view.window`，那个时机窗口通常还没建好，
+        // 读到 nil，置顶静默失效。
     }
 }

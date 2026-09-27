@@ -50,4 +50,14 @@ final class PlaybackStateSemanticsTests: XCTestCase {
         XCTAssertEqual(PlaybackState.buffering(songID: id).songID, id,
                        "缓冲态必须保留 songID，否则切歌校验会失效")
     }
+
+    /// isLoading 与 isBuffering 必须分清：前者是「播放源还没准备好」，
+    /// resume() 靠它决定「只翻意图」还是「真的开始播」
+    func testOnlyLoadingIsMarkedLoading() {
+        XCTAssertTrue(PlaybackState.loading(songID: "1").isLoading)
+        for state in [PlaybackState.playing(songID: "1"), .paused(songID: "1"),
+                      .buffering(songID: "1"), .ended(songID: "1"), .idle] {
+            XCTAssertFalse(state.isLoading, "\(state) 不应被标记为加载中")
+        }
+    }
 }

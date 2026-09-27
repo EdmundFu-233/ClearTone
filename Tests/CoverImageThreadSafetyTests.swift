@@ -161,69 +161,62 @@ final class CoverImageThreadSafetyTests: XCTestCase {
         XCTAssertEqual(baked.representations.count, first, "已栅格化的图像重复绘制不应产生新 representation")
     }
 
-    // MARK: - 头像同样不再是惰性
+    // MARK: - 头像：与封面合并后走同一条链路
 
-    /// AvatarLoader 曾用同一套惰性构造，虽然没崩（无 MainActor 隔离），
-    /// 但同类的隐患不留
-    func testAvatarStyleImageIsAlsoBaked() {
+    /// 头像必须**立即栅格化**。
+    ///
+    /// 合并进 `CoverLoader` 之前，头像用的是带 drawingHandler 的惰性 NSImage；
+    /// 那种闭包会在任意请求绘制的线程上执行，没有主线程保证。
+    func testAvatarIsBakedNotLazy() {
         let raw = makeSolidImage(pixels: 200)
-        let side = 40
-        let rep = NSBitmapImageRep(
+        let baked = CoverLoader.bakeCircular(raw, pointSize: 40)
+        let side = 80   // pointSize * 2
+        XCTAssertEqual(baked.size.width, CGFloat(side), accuracy: 0.5)
+        XCTAssertEqual(baked.representations.count, 1, "应当只有一个已烘焙的位图表示")
+
+        // 重复绘制不得产生新表示（惰性 drawingHandler 每次绘制都会重跑闭包）
+        let before = baked.representations.count
+        for _ in 0..<5 { baked.draw(in: NSRect(x: 0, y: 0, width: 80, height: 80)) }
+        XCTAssertEqual(baked.representations.count, before)
+    }
+
+    /// 圆形裁剪必须真的执行：四角透明、中心不透明。
+    ///
+    /// 之前这条测试把绘制逻辑**手抄了一遍**，断言的是自己刚建的那个 rep，
+    /// 无论生产代码怎么改都会通过 —— 等于什么都没测。
+    func testCircularClipActuallyCutsCorners() throws {
+        let side = 80
+        let opaque = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: side, pixelsHigh: side,
             bitsPerSample: 8, samplesPerPixel: 4,
             hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB,
             bytesPerRow: 0, bitsPerPixel: 0
-        )!
-        rep.size = NSSize(width: CGFloat(side), height: CGFloat(side))
+        ))
+        opaque.size = NSSize(width: CGFloat(side), height: CGFloat(side))
+        // 先铺满红色：不透明，任何「没裁到」的像素都会露红
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        let rect = NSRect(x: 0, y: 0, width: CGFloat(side), height: CGFloat(side))
-        NSBezierPath(ovalIn: rect).addClip()
-        raw.draw(in: rect, from: NSRect(origin: .zero, size: raw.size), operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: opaque)
+        NSColor.red.setFill()
+        NSRect(x: 0, y: 0, width: CGFloat(side), height: CGFloat(side)).fill()
         NSGraphicsContext.restoreGraphicsState()
-        let avatar = NSImage(size: NSSize(width: CGFloat(side), height: CGFloat(side)))
-        avatar.addRepresentation(rep)
-        XCTAssertFalse(avatar.representations.isEmpty)
-    }
-
-    /// 圆形裁剪后四角应透明（验证栅格化真的执行了裁剪，而非只是换了容器）
-    func testCircularClipProducesTransparentCorners() {
-        let opaque = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: 40, pixelsHigh: 40,
-            bitsPerSample: 8, samplesPerPixel: 4,
-            hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0, bitsPerPixel: 0
-        )!
-        opaque.size = NSSize(width: 40, height: 40)
         let src = NSImage(size: opaque.size)
         src.addRepresentation(opaque)
 
-        let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: 40, pixelsHigh: 40,
-            bitsPerSample: 8, samplesPerPixel: 4,
-            hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0, bitsPerPixel: 0
-        )!
-        rep.size = NSSize(width: 40, height: 40)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        let rect = NSRect(x: 0, y: 0, width: 40, height: 40)
-        NSColor.red.setFill()
-        rect.fill()
-        NSBezierPath(ovalIn: rect).addClip()
-        src.draw(in: rect, from: NSRect(origin: .zero, size: src.size), operation: .sourceOver, fraction: 1)
-        NSGraphicsContext.restoreGraphicsState()
+        let baked = CoverLoader.bakeCircular(src, pointSize: CGFloat(side) / 2)
+        let result = try XCTUnwrap(baked.representations.first as? NSBitmapImageRep)
 
-        // 左上角（圆外）应保持红色且不透明，中心应被 src 覆盖
-        XCTAssertNotNil(rep)
-        let baked = NSImage(size: NSSize(width: 40, height: 40))
-        baked.addRepresentation(rep)
-        XCTAssertFalse(baked.representations.isEmpty)
+        func alpha(x: Int, y: Int) -> Int {
+            // NSBitmapImageRep 的坐标原点在左下角
+            guard let color = result.colorAt(x: x, y: y),
+                  let alpha = color.usingColorSpace(.deviceRGB)?.alphaComponent else { return -1 }
+            return Int((alpha * 255).rounded())
+        }
+        XCTAssertEqual(alpha(x: 1, y: 1), 0, "左上角在圆外，必须透明")
+        XCTAssertEqual(alpha(x: side - 2, y: 1), 0, "右上角在圆外，必须透明")
+        XCTAssertEqual(alpha(x: 1, y: side - 2), 0, "左下角在圆外，必须透明")
+        XCTAssertEqual(alpha(x: side - 2, y: side - 2), 0, "右下角在圆外，必须透明")
+        XCTAssertEqual(alpha(x: side / 2, y: side / 2), 255, "中心必须不透明")
     }
 }

@@ -39,21 +39,15 @@ final class AudioCacheManager: ObservableObject {
     @Published private(set) var cachedSongIDs: Set<String> = []
     @Published private(set) var cachingSongIDs: Set<String> = []
 
-    /// 目标码率（受约束 VBR）
-    private let targetBitrate = 96000
+    /// 目标码率（受约束 VBR）。`static` 是因为下载/转码跑在后台任务里，
+    /// 读不到 MainActor 隔离的实例属性。
+    nonisolated static let defaultTargetBitrate = 96000
     /// 缓存上限，超出后按最久未播放淘汰
     private let maxCacheBytes: Int64 = 1_500_000_000
-    /// 缓存文件扩展名。
-///   macOS: caf —— afconvert `-d opus` 的容器
-///   iOS:   m4a —— AVAssetExportSession 唯一支持的 AAC 容器
-/// 两者不能混用：AFPlayer 靠扩展名与实际编码匹配，扩展名错会导致播放失败。
-nonisolated static var cacheFileExtension: String {
-    #if os(macOS)
-    "caf"
-    #else
-    "m4a"
-    #endif
-}
+    /// 缓存文件扩展名：caf —— afconvert `-d opus` 的容器。
+    ///
+    /// 扩展名必须与实际编码匹配，AVPlayer 靠扩展名判定容器，写错会直接播不出来。
+    nonisolated static var cacheFileExtension: String { "caf" }
 
 private let cacheDirectory: URL
     private var index: [String: CacheMeta] = [:]
@@ -110,50 +104,84 @@ private let cacheDirectory: URL
             return
         }
 
-        let generation = clearGeneration
         cachingSongIDs.insert(songID)
-        let destination = fileURL(for: songID)
+        pendingCaches.append(PendingCache(
+            songID: songID, sourceURL: sourceURL, generation: clearGeneration
+        ))
+        pumpCacheQueue()
+    }
+
+    /// 等待中的缓存任务。
+    ///
+    /// 之前每首歌各自 `Task(priority: .utility)`：连续切 30 首歌就会同时跑
+    /// 30 个下载 + 30 个 afconvert 进程，既抢播放的连接与 CPU，也可能把盘写满。
+    /// 串行化之后一次只处理一首。
+    private struct PendingCache {
+        let songID: String
+        let sourceURL: URL
+        let generation: Int
+    }
+
+    private var pendingCaches: [PendingCache] = []
+    private var isRunningCache = false
+
+    private func pumpCacheQueue() {
+        guard !isRunningCache, !pendingCaches.isEmpty else { return }
+        isRunningCache = true
+        let job = pendingCaches.removeFirst()
+        let destination = fileURL(for: job.songID)
+
         Task(priority: .utility) { [weak self] in
-            // 无论成功失败都要把「缓存中」状态清掉，否则 UI 会永久显示
-            defer { Task { @MainActor in self?.cachingSongIDs.remove(songID) } }
+            // 无论成功失败都要清状态并推进队列，否则「缓存中」永久亮着、队列不再前进
+            defer { Task { @MainActor in self?.finishCacheJob(job.songID) } }
 
             let result: (bitrateKbps: Int, sizeBytes: Int64)
             do {
                 result = try await Self.downloadAndTranscode(
-                    sourceURL: sourceURL,
+                    sourceURL: job.sourceURL,
                     destination: destination,
-                    targetBitrate: self?.targetBitrate ?? 96000
+                    targetBitrate: Self.defaultTargetBitrate
                 )
             } catch {
-                CTLog.general.warning("音频缓存失败 [\(songID)]: \(CTLog.sanitize(error.localizedDescription))")
+                CTLog.general.warning("音频缓存失败 [\(job.songID)]: \(CTLog.sanitize(error.localizedDescription))")
                 return
             }
 
             await MainActor.run {
                 guard let self else { return }
                 // 清除缓存发生在转码期间：把刚写的文件删掉，不要让条目复活
-                guard generation == self.clearGeneration else {
+                guard job.generation == self.clearGeneration else {
                     try? FileManager.default.removeItem(at: destination)
-                    CTLog.general.info("丢弃已过期的缓存结果: \(songID)")
+                    CTLog.general.info("丢弃已过期的缓存结果: \(job.songID)")
                     return
                 }
-                self.index[songID] = CacheMeta(
+                self.index[job.songID] = CacheMeta(
                     formatName: "OPUS",
                     bitrateKbps: result.bitrateKbps,
                     sizeBytes: result.sizeBytes,
                     cachedAt: Date(),
                     lastAccessedAt: Date()
                 )
-                self.cachedSongIDs.insert(songID)
+                self.cachedSongIDs.insert(job.songID)
                 self.persistIndexSoon()
                 self.trimIfNeeded()
-                CTLog.general.info("音频缓存完成: \(songID) OPUS \(result.bitrateKbps)kbps (\(result.sizeBytes) bytes)")
+                CTLog.general.info("音频缓存完成: \(job.songID) OPUS \(result.bitrateKbps)kbps (\(result.sizeBytes) bytes)")
             }
         }
     }
 
+    /// 一首缓存任务结束（成功 / 失败 / 被丢弃）：清状态并推进队列
+    private func finishCacheJob(_ songID: String) {
+        cachingSongIDs.remove(songID)
+        isRunningCache = false
+        pumpCacheQueue()
+    }
+
     func clearAll() {
         clearGeneration += 1
+        // 排队中的任务一并作废：它们本来也会被 clearGeneration 拦下，
+        // 但留着会让「缓存中」一直亮着
+        pendingCaches.removeAll()
         cachedSongIDs.removeAll()
         cachingSongIDs.removeAll()
         index.removeAll()
@@ -304,12 +332,7 @@ private let cacheDirectory: URL
             .appendingPathComponent("\(Self.tempPrefix)\(UUID().uuidString).\(Self.cacheFileExtension)")
         defer { try? FileManager.default.removeItem(at: tempOutput) }
 
-        #if os(macOS)
         try await runAfconvert(input: tempFile, output: tempOutput, targetBitrate: targetBitrate)
-        #else
-        // iOS 没有 Process()，无法调 afconvert。改用进程内的 AVAssetExportSession。
-        try await runExportSession(input: tempFile, output: tempOutput)
-        #endif
 
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: tempOutput)
@@ -411,31 +434,3 @@ private final class ResumeGuard: @unchecked Sendable {
     }
 }
 
-#if os(iOS)
-extension AudioCacheManager {
-    /// iOS 转码：用进程内的 AVAssetExportSession 替代 afconvert 子进程。
-    ///
-    /// iOS 没有 `Process()`，拉不起系统 afconvert。AVAssetExportSession 是
-    /// 进程内 API，但它**不支持 OPUS** —— Apple 只导出 m4a(AAC)。
-    /// 所以 iOS 侧缓存为 AAC m4a 而非 OPUS CAF：码率同档，兼容性更好，
-    /// 且省掉了子进程带来的 watchdog / ENOSPC / 临时文件清理那套复杂度。
-    nonisolated static func runExportSession(input: URL, output: URL) async throws {
-        let asset = AVURLAsset(url: input)
-        guard let session = AVAssetExportSession(
-            asset: asset,
-            presetName: AVAssetExportPresetAppleM4A
-        ) else {
-            throw MusicError.unknown("无法创建转码会话")
-        }
-        session.outputURL = output
-        session.outputFileType = .m4a
-        session.audioTimePitchAlgorithm = .timeDomain
-
-        await session.export()
-
-        guard session.status == .completed else {
-            throw MusicError.unknown("转码失败 (status=\(session.status.rawValue))")
-        }
-    }
-}
-#endif

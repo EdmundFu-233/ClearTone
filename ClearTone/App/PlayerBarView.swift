@@ -7,20 +7,26 @@ import SwiftUI
 struct PlayerBarView: View {
     @EnvironmentObject var player: PlayerController
     @EnvironmentObject var appState: AppState
+    /// 缓存状态变化（正在写 / 写完）要即时反映到音源标签上，
+    /// 而 PlayerController 不订阅 AudioCacheManager，所以由视图自己观察
     @ObservedObject private var audioCache = AudioCacheManager.shared
-    @Environment(\.openWindow) private var openWindow
     @Environment(\.colorScheme) var colorScheme
 
     /// 状态槽固定宽度（缓存 / 音质 / 缓存中 / 失败 共用）
-    private let statusSlotWidth: CGFloat = 118
+    /// 132 按最长的实际内容量的：「FLAC 1411k」+ 缓存图标 + 下拉箭头 + 内边距。
+    /// 窄到放不下时 `ViewThatFits` 会退到紧凑文案，而不是把文字截断。
+    private let statusSlotWidth: CGFloat = 132
     /// 信息区宽度：与右侧区域大致等宽，使中间的控制按钮落在窗口正中
     private let infoWidth: CGFloat = 330
 
     var body: some View {
         HStack(spacing: CTSpacing.lg) {
-            // 左侧：封面/歌名/歌手
+            // 左侧：封面/歌名/歌手。
+            // 可压缩（歌名本身有 lineLimit(1)+省略号）：窗口窄时让它先让位，
+            // 否则被挤掉的会是右侧的音源标签（文字被截成 "96k"，编码都丢了）
             infoSection
-                .frame(width: infoWidth, alignment: .leading)
+                .frame(minWidth: 190, maxWidth: infoWidth, alignment: .leading)
+                .layoutPriority(0)
 
             // 中间：播放控制 + 进度条
             middleSection
@@ -136,15 +142,17 @@ struct PlayerBarView: View {
             // 不再牵动整棵视图树，只有这一小段重算。
             // 拖动中只更新 UI 时间（previewSeek），抬手才提交一次精确 seek（commitSeek）——
             // 原先每帧都提交零容差 seek，而 Task.cancel 撤不回已提交给 AVFoundation 的请求。
-            progressContent(time: 0)
-                .frame(minWidth: 230, maxWidth: .infinity)
-                .observingPlaybackTime(player) { currentTime in
-                    progressContent(time: currentTime)
-                }
-                .onChange(of: progressIsDragging) { _, dragging in
-                    // 抬手：把预览位置真正提交给播放器
-                    if !dragging { player.commitSeek(to: player.currentTime) }
-                }
+            //
+            // 宽度约束必须**写在闭包里面**：`observingPlaybackTime` 会丢弃接收者
+            // `self`，写在它前面的 `.frame(minWidth:maxWidth:)` 会被静默丢掉。
+            observingPlaybackTime(player) { currentTime in
+                progressContent(time: currentTime)
+                    .frame(minWidth: 230, maxWidth: .infinity)
+            }
+            .onChange(of: progressIsDragging) { _, dragging in
+                // 抬手：把预览位置真正提交给播放器
+                if !dragging { player.commitSeek(to: player.currentTime) }
+            }
         }
     }
 
@@ -208,9 +216,12 @@ struct PlayerBarView: View {
                     get: { Double(player.volume) },
                     set: { player.volume = Float($0) }
                 ), in: 0...1)
-                .frame(width: 70)
+                // 音量是这一排里最可牺牲的：窗口变窄时它先收缩，
+                // 音源标签的「编码 + 码率」必须完整显示
+                .frame(minWidth: 34, maxWidth: 70)
                 .accessibilityLabel("音量")
             }
+            .layoutPriority(-1)
 
             // 收藏
             if let song = player.currentSong, song.source == .netease {
@@ -219,9 +230,10 @@ struct PlayerBarView: View {
                         .foregroundStyle(appState.isLiked(song.id) ? CTColors.accent(for: colorScheme) : CTColors.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
-                .disabled(!appState.isLoggedIn || appState.isDemoMode)
+                .disabled(!appState.isLoggedIn)
                 .help(appState.isLiked(song.id) ? "取消收藏" : "收藏到喜欢的音乐")
                 .accessibilityLabel(appState.isLiked(song.id) ? "取消收藏" : "收藏")
+                .fixedSize()
             }
 
             // 歌词
@@ -231,14 +243,19 @@ struct PlayerBarView: View {
             }
             .buttonStyle(.plain)
             .help(L10n.Common.lyrics)
+            .fixedSize()
+
+            // 倍速 + 睡眠定时器
+            PlaybackUtilitiesMenu()
 
             // 迷你播放器
-            Button(action: { openWindow(id: "mini-player") }) {
+            Button(action: { AppWindowController.openMiniPlayer() }) {
                 Image(systemName: "rectangle.on.rectangle")
                     .foregroundStyle(CTColors.textSecondary(for: colorScheme))
             }
             .buttonStyle(.plain)
             .help("迷你播放器")
+            .fixedSize()
 
             // 队列
             Button(action: { appState.showQueue.toggle() }) {
@@ -247,6 +264,7 @@ struct PlayerBarView: View {
             }
             .buttonStyle(.plain)
             .help(L10n.Common.queue)
+            .fixedSize()
         }
     }
 
@@ -259,46 +277,67 @@ struct PlayerBarView: View {
                 .foregroundStyle(.orange)
                 .help("播放失败：\(reason)\n点击播放按钮重试")
                 .accessibilityLabel("播放失败")
-        } else if let song = player.currentSong,
-                  song.source == .netease,
-                  let meta = audioCache.meta(for: song.id) {
-            // 有缓存：显示缓存格式与码率（正在播缓存时高亮）
-            let fromCache = player.isCurrentFromCache
-            HStack(spacing: 4) {
-                Image(systemName: fromCache ? "internaldrive.fill" : "internaldrive")
-                Text("OPUS \(meta.bitrateKbps)k")
+        } else if let info = player.playingSourceInfo, let song = player.currentSong {
+            // 网易云歌曲时整块变成菜单：点这里给「这一首」点名音质（走网易源、跳过缓存）
+            if song.source == .netease {
+                SongQualityMenu(
+                    songID: song.id,
+                    help: info.detail + "\n\n点击为这首歌指定音质"
+                ) { sourceChip(info: info, song: song) }
+            } else {
+                sourceChip(info: info, song: song)
+                    .help(info.detail)
             }
-            .font(CTTypography.caption)
-            .foregroundStyle(fromCache ? CTColors.accent(for: colorScheme) : CTColors.textSecondary(for: colorScheme))
-            .padding(.horizontal, CTSpacing.sm)
-            .padding(.vertical, 2)
-            .background(fromCache ? CTColors.accentSubtle(for: colorScheme) : CTColors.overlay(for: colorScheme))
-            .cornerRadius(CTRadius.small)
-            .help(fromCache
-                  ? "正在播放本地缓存：\(meta.formatName) \(meta.bitrateKbps)kbps（优先于在线流）"
-                  : "本地已有缓存：\(meta.formatName) \(meta.bitrateKbps)kbps，下次播放优先使用")
-            .accessibilityLabel("\(fromCache ? "正在播放缓存" : "已缓存")，\(meta.formatName) \(meta.bitrateKbps) kbps")
-        } else if let song = player.currentSong,
-                  song.source == .netease,
-                  audioCache.cachingSongIDs.contains(song.id) {
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.down.circle")
-                Text("缓存中")
-            }
-            .font(CTTypography.caption)
-            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-            .help("正在缓存为 OPUS 96kbps…")
-        } else if !player.isCurrentFromCache, let actual = player.actualQuality {
-            // 无缓存：显示音质（含实际码率）
-            Text(actual.bitrate.map { "\(actual.level.rawValue) \($0)k" } ?? actual.level.rawValue)
-                .font(CTTypography.caption)
-                .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                .padding(.horizontal, CTSpacing.sm)
-                .padding(.vertical, 2)
-                .background(CTColors.accentSubtle(for: colorScheme))
-                .cornerRadius(CTRadius.small)
-                .help("\(L10n.Player.requestedQuality): \(player.requestedQuality.rawValue)\n\(L10n.Player.actualQuality): \(actual.level.rawValue)")
         }
+    }
+
+    /// 音源标签本体（不含菜单外壳）。
+    ///
+    /// 主信息 = 此刻真正出声的格式/码率；缓存只是旁注。后台缓存是「一开始播就写」，
+    /// 若让缓存状态顶掉码率，一首第一次听的歌从头到尾显示的都是缓存状态，
+    /// 和耳朵听到的 320k 对不上。
+    ///
+    /// 刻意写成分开的两个方法而不是在 @ViewBuilder 里定义局部闭包：
+    /// 那个写法在 Release（-O）下会触发 Swift 编译器 CopyPropagation 断言崩溃。
+    private func sourceChip(info: PlayingSourceInfo, song: Song) -> some View {
+        // 完整文案放不下时退到紧凑形态（"无损 1411k" → "1411k"），
+        // 而不是把文字截成 "OP…"
+        ViewThatFits(in: .horizontal) {
+            chipBody(info: info, song: song, text: info.text)
+            chipBody(info: info, song: song, text: info.shortText)
+        }
+    }
+
+    private func chipBody(info: PlayingSourceInfo, song: Song, text: String) -> some View {
+        HStack(spacing: 4) {
+            if info.isFromCache {
+                Image(systemName: "internaldrive.fill")
+            }
+            Text(text)
+                .lineLimit(1)
+            if !info.isFromCache {
+                // 有缓存 / 正在缓存：用弱化的小图标提示，不抢主信息
+                switch info.cache {
+                case .cached: Image(systemName: "internaldrive")
+                case .caching: Image(systemName: "arrow.down.circle")
+                case .none: EmptyView()
+                }
+            }
+            if song.source == .netease {
+                // 菜单的可点提示。放在标签里而不是依赖 Menu 自带的箭头：
+                // 那个箭头带一圈 bezel，在固定宽度的状态槽里会把文字挤没
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+        }
+        .font(CTTypography.caption)
+        .foregroundStyle(info.isFromCache || player.currentSongUsesOverride
+                         ? CTColors.accent(for: colorScheme) : CTColors.textSecondary(for: colorScheme))
+        .padding(.horizontal, CTSpacing.sm)
+        .padding(.vertical, 2)
+        .background(info.isFromCache ? CTColors.accentSubtle(for: colorScheme) : CTColors.overlay(for: colorScheme))
+        .cornerRadius(CTRadius.small)
+        .accessibilityLabel("\(info.isFromCache ? "正在播放缓存" : "正在播放")：\(text)")
     }
 
     private var playModeIcon: String {

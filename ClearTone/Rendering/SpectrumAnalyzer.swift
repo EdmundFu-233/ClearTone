@@ -9,7 +9,7 @@ import MediaToolbox
 ///
 /// ## 当前状态：FFT 数学部分可用，但**尚未接入音频**
 ///
-/// 曾尝试用 `MTAudioProcessingTap` 把本地文件（演示音频 / 96kbps OPUS 缓存）
+/// 曾尝试用 `MTAudioProcessingTap` 把本地文件（96kbps OPUS 缓存）
 /// 的音频接进来，结果播放卡在 `waitingToPlayAtSpecifiedRate`（界面显示「缓冲中」）。
 /// 两个原因：
 /// 1. `MTAudioProcessingTapStorage` 这个 C 结构体在 SDK 头文件里根本不存在，

@@ -9,8 +9,21 @@ import Combine
 /// `@EnvironmentObject` 持有者的整个 body 重算 —— 包括侧栏、队列面板、
 /// Metal 背景、歌词列表的 ForEach 差分，而这些重算 100% 不产生可见变化。
 ///
-/// 用法：把依赖 currentTime 的部分包进这个 ViewModifier，
+/// 用法：把**依赖 currentTime 的那部分内容**放进 `observingPlaybackTime` 的闭包，
 /// 只有它自己会被重算。
+///
+/// ## 注意：它**不是** ViewModifier，`self` 会被丢弃
+///
+/// `func observingPlaybackTime(...) -> some View` 返回的是一个全新视图，
+/// 接收者 `self` 从未参与。写成
+/// ```swift
+/// someView.observingPlaybackTime(player) { time in ... }
+/// ```
+/// 的话，`someView` **不会**被替换掉，而是和闭包内容**同时渲染**。
+///
+/// 历史上 `NowPlayingView` 因此渲染了两条进度条：一条时间恒为 0:00（但仍是
+/// 可拖动的真 Slider，拖它会走 previewSeek/commitSeek 而立刻弹回 0）。
+/// 正确写法是把内容只放进闭包，不要写在接收者位置上。
 struct PlaybackTimeObserver<Content: View>: View {
     let player: PlayerController
     @ViewBuilder var content: (TimeInterval) -> Content
@@ -29,7 +42,10 @@ struct PlaybackTimeObserver<Content: View>: View {
 }
 
 extension View {
-    /// 只让 `content` 在播放进度变化时重算
+    /// 只让 `content` 在播放进度变化时重算。
+    ///
+    /// **返回的是全新视图，接收者 `self` 被丢弃** —— 写在接收者位置上的内容
+    /// 会和闭包内容同时渲染（见上面的说明）。内容只放进闭包。
     func observingPlaybackTime(
         _ player: PlayerController,
         @ViewBuilder _ content: @escaping (TimeInterval) -> some View

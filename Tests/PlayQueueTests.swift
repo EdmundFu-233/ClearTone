@@ -3,7 +3,7 @@ import XCTest
 final class PlayQueueTests: XCTestCase {
 
     private func makeSong(id: String) -> Song {
-        Song(id: id, title: "Song \(id)", artists: [Artist(id: "a1", name: "Artist")], source: .demo)
+        Song(id: id, title: "Song \(id)", artists: [Artist(id: "a1", name: "Artist")], source: .netease)
     }
 
     func testReplaceAndNavigate() {

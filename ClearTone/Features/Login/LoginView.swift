@@ -16,93 +16,79 @@ struct LoginView: View {
     private let provider = NeteaseProvider.shared
 
     var body: some View {
-        VStack(spacing: CTSpacing.xl) {
-            // 标题
-            Text(L10n.Login.title)
-                .font(CTTypography.pageTitle)
-                .foregroundStyle(CTColors.textPrimary(for: colorScheme))
+        VStack(spacing: 0) {
+            // 标题 + 关闭
+            CTSheetHeader(title: L10n.Login.title) { dismiss() }
 
-            // 二维码区域
-            ZStack {
-                RoundedRectangle(cornerRadius: CTRadius.medium)
-                    .fill(CTColors.panel(for: colorScheme))
-                    .frame(width: 240, height: 240)
-
-                if let qrImage = qrImage {
-                    Image(nsImage: qrImage)
-                        .resizable()
-                        .interpolation(.none)
-                        .scaledToFit()
-                        .frame(width: 220, height: 220)
-
-                    // 过期遮罩
-                    if case .expired = status {
-                        RoundedRectangle(cornerRadius: CTRadius.medium)
-                            .fill(.black.opacity(0.7))
-                            .frame(width: 220, height: 220)
-                        VStack {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.title)
-                            Text(L10n.Login.expired)
-                                .font(CTTypography.caption)
-                        }
-                        .foregroundStyle(.white)
-                        .onTapGesture { refreshQRCode() }
-                    }
-                } else if let error = errorMessage {
-                    VStack(spacing: CTSpacing.sm) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundStyle(CTColors.accent(for: colorScheme))
-                        Text(error)
-                            .font(CTTypography.caption)
-                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                            .multilineTextAlignment(.center)
-                        Button(L10n.Common.retry) { refreshQRCode() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    .padding()
-                } else {
-                    ProgressView()
-                        .scaleEffect(1.5)
-                }
-            }
-
-            // 状态提示
-            VStack(spacing: CTSpacing.sm) {
-                Text(statusText)
-                    .font(CTTypography.body)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                if case .failed = status {
-                    Button(L10n.Common.retry) { refreshQRCode() }
-                        .buttonStyle(.bordered)
-                }
-            }
-
-            // 说明
-            Text(L10n.Login.scanPrompt)
-                .font(CTTypography.caption)
-                .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-
-            // 演示模式入口
             Divider()
-                .padding(.horizontal, CTSpacing.xxl)
 
-            VStack(spacing: CTSpacing.sm) {
-                Text("没有账号？使用演示模式体验")
+            VStack(spacing: CTSpacing.xl) {
+                // 二维码区域
+                ZStack {
+                    RoundedRectangle(cornerRadius: CTRadius.medium)
+                        .fill(CTColors.panel(for: colorScheme))
+                        .frame(width: 240, height: 240)
+
+                    if let qrImage = qrImage {
+                        Image(nsImage: qrImage)
+                            .resizable()
+                            .interpolation(.none)
+                            .scaledToFit()
+                            .frame(width: 220, height: 220)
+
+                        // 过期遮罩
+                        if case .expired = status {
+                            RoundedRectangle(cornerRadius: CTRadius.medium)
+                                .fill(.black.opacity(0.7))
+                                .frame(width: 220, height: 220)
+                            VStack {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.title)
+                                Text(L10n.Login.expired)
+                                    .font(CTTypography.caption)
+                            }
+                            .foregroundStyle(.white)
+                            .onTapGesture { refreshQRCode() }
+                        }
+                    } else if let error = errorMessage {
+                        VStack(spacing: CTSpacing.sm) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.largeTitle)
+                                .foregroundStyle(CTColors.accent(for: colorScheme))
+                            Text(error)
+                                .font(CTTypography.caption)
+                                .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                                .multilineTextAlignment(.center)
+                            Button(L10n.Common.retry) { refreshQRCode() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        .padding()
+                    } else {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                    }
+                }
+
+                // 状态提示
+                VStack(spacing: CTSpacing.sm) {
+                    Text(statusText)
+                        .font(CTTypography.body)
+                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    if case .failed = status {
+                        Button(L10n.Common.retry) { refreshQRCode() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+
+                // 说明
+                Text(L10n.Login.scanPrompt)
                     .font(CTTypography.caption)
                     .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 
-                Button("进入演示模式") {
-                    appState.enterDemoMode()
-                    dismiss()
+                Spacer()
                 }
-                .buttonStyle(.bordered)
-            }
-
-            Spacer()
+            .padding(CTSpacing.xxl)
         }
-        .padding(CTSpacing.xxl)
         .frame(width: 400, height: 600)
         .background(CTColors.background(for: colorScheme))
         .onAppear { refreshQRCode() }
@@ -146,7 +132,7 @@ struct LoginView: View {
                 await pollStatus(key: key)
             } catch {
                 if !Task.isCancelled {
-                    errorMessage = error.localizedDescription
+                    errorMessage = error.ctUserMessage
                 }
             }
         }

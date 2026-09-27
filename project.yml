@@ -3,13 +3,12 @@ options:
   bundleIdPrefix: com.cleartone
   deploymentTarget:
     macOS: "14.0"
-    iOS: "17.0"
   createIntermediateGroups: true
 
+# 仅 macOS。曾经的 ClearToneiOS target 已移除：
+# 它没有登录页、设置页、歌单详情页，是一个不完整的第二交付面。
+# 若要恢复，见 git history（commit 在移除之前）。
 targets:
-  # ==========================================================
-  # macOS 版
-  # ==========================================================
   ClearTone:
     type: application
     platform: macOS
@@ -18,11 +17,24 @@ targets:
       - path: ClearTone
         excludes:
           - "Resources/HelperRuntime/**"
-          # iOS 专用源码（iOS target 才编）
-          - "iOS/**"
       - path: ClearTone/Resources/HelperRuntime
         buildPhase: resources
         type: folder
+    info:
+      path: ClearTone/Resources/Info.plist
+      properties:
+        # `SongTransfer` 用 `UTType(exportedAs: "com.cleartone.song")` 承载
+        # 「拖歌进队列」的拖放数据。`exportedAs` 语义上要求本进程**声明**这个
+        # 类型：AppKit 头文件对 `+exportedTypeWithIdentifier:` 的说明是
+        # 「若标识符不对应系统已知的任何类型，结果未定义」。
+        # 之前只写了 `exportedAs` 而没有声明，LaunchServices 不认识该标识符，
+        # 拖放要么静默失效要么抛 ObjC 异常。
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.cleartone.song
+            UTTypeDescription: 澄音歌曲
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [cleartonesong]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.app
@@ -56,65 +68,6 @@ targets:
     dependencies: []
 
   # ==========================================================
-  # iOS 版
-  #
-  # 与 macOS 版的差异：
-  # - 无辅助进程（iOS 没有 Process()）→ NeteaseProvider 走 #if os(iOS) 直连
-  # - 排除 macOS UI（NSWindow / MenuBarExtra / AppKit 的 NSImage）
-  # - 保留已跨平台化的 PlayerController / AudioCacheManager / AppState
-  # ==========================================================
-  ClearToneiOS:
-    type: application
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources:
-      - path: ClearTone
-        excludes:
-          - "Resources/HelperRuntime/**"
-          # macOS 专有 UI 与平台层
-          - "App/ClearToneApp.swift"
-          - "App/MainWindow.swift"
-          - "App/PlayerBarView.swift"
-          - "App/MiniPlayerView.swift"
-          - "App/AppCommands.swift"
-          - "Features/**"
-          # iOS 没有 Process()，且 node 二进制是 macOS 的
-          - "Core/Networking/HelperProcessManager.swift"
-          # 依赖 NSViewRepresentable
-          - "Rendering/AmbientBackgroundRenderer.swift"
-          # AppKit 版封面加载；iOS 用 iOS/iOSCoverLoader.swift
-          - "DesignSystem/CoverImage.swift"
-      - path: ClearTone/Resources/Assets.xcassets
-        buildPhase: resources
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.app.ios
-        PRODUCT_NAME: 澄音
-        SWIFT_VERSION: "6.0"
-        TARGETED_DEVICE_FAMILY: "1,2"
-        CODE_SIGN_IDENTITY: "Apple Development"
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ML3D4RN65N
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: 澄音
-        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 ClearTone"
-        # 后台播放：锁屏/切后台继续出声
-        INFOPLIST_KEY_UIBackgroundModes: audio
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: 0.1.0
-        SWIFT_STRICT_CONCURRENCY: complete
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-      configs:
-        Debug:
-          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
-        Release:
-          SWIFT_OPTIMIZATION_LEVEL: "-O"
-    dependencies: []
-
-  # ==========================================================
   # 单元测试（macOS host）
   # ==========================================================
   ClearToneTests:
@@ -126,16 +79,22 @@ targets:
       - path: ClearTone
         excludes:
           - "Resources/HelperRuntime/**"
-          - "iOS/**"
+          # 以下文件依赖被排除的视图类型，或持有 AppKit 窗口/状态栏项，
+          # 单测里既用不到也构造不出来。它们的**纯逻辑**都拆到了
+          # Playback/SongTransfer.swift、App/MenuBarVisibilityPolicy.swift
+          # 这些测试能编到的文件里。
           - "App/ClearToneApp.swift"
           - "App/MainWindow.swift"
           - "App/PlayerBarView.swift"
           - "App/MiniPlayerView.swift"
+          - "App/MenuBarPlayerView.swift"
           - "App/AppCommands.swift"
+          - "App/AppWindowController.swift"
+          - "App/MenuBarController.swift"
           - "Features/**"
           # 注意：这里**不能**排除 HelperProcessManager.swift ——
-          # NeteaseProvider.swift 在 macOS 分支里引用它，
-          # 排除会导致 "cannot find type 'HelperProcessManager'"
+          # NeteaseProvider 引用它，排除会报
+          # "cannot find type 'HelperProcessManager'"
           - "Rendering/AmbientBackgroundRenderer.swift"
     settings:
       base:
@@ -158,16 +117,5 @@ schemes:
       config: Debug
       targets:
         - ClearToneTests
-    archive:
-      config: Release
-
-  ClearToneiOS:
-    build:
-      targets:
-        ClearToneiOS: all
-    run:
-      config: Debug
-    test:
-      config: Debug
     archive:
       config: Release

@@ -2,6 +2,8 @@
 
 macOS 原生第三方网易云音乐播放器。
 
+仅支持 macOS 14.0 及以上。仓库里没有 iOS / Windows / Linux target —— 曾经的 `ClearToneiOS` 已移除。
+
 ## 系统要求
 
 - macOS 14.0 或更高版本
@@ -37,7 +39,6 @@ open /Users/edmundfu/Library/Developer/Xcode/DerivedData/ClearTone-*/Build/Produ
 
 - 点击右上角头像进入登录页
 - 使用网易云音乐 App 扫码登录
-- 或使用「演示模式」体验基础功能
 
 ## 功能
 
@@ -49,16 +50,6 @@ open /Users/edmundfu/Library/Developer/Xcode/DerivedData/ClearTone-*/Build/Produ
 - 🎤 同步歌词（LRC/YRC）
 - ⌨️ 系统快捷键与媒体控制
 - 📋 播放队列管理
-
-## 演示模式
-
-无需账号即可体验：
-
-1. 打开应用
-2. 点击右上角头像
-3. 选择「进入演示模式」
-
-演示模式使用内置测试数据，包含长歌名、多语言、权限不足等场景。
 
 ## 故障排查
 
@@ -106,7 +97,7 @@ xcodebuild -project ClearTone.xcodeproj -scheme ClearTone -configuration Debug t
 ClearTone/
   App/                 # 入口、窗口、菜单
   Core/                # 模型、网络、持久化、安全、日志
-  Providers/           # Netease/Local/Demo Provider
+  Providers/           # Netease/Local Provider
   Playback/            # 播放控制器、队列
   Features/            # 各功能页面
   DesignSystem/        # 颜色、排版、间距

@@ -29,6 +29,7 @@
 - 当前机器验证原生玻璃渲染；未在 macOS 26、14、15 独立机器逐一运行。
 - 深色、减少透明度、VoiceOver 和最小窗口尺寸尚未完成实际操作验证；已有对应主题与版本分支，不代表完整无障碍合规。
 - 新版截图使用演示模式；在线登录、推荐内容和联网播放不属于本轮通过证据。
+  ⚠️ 演示模式此后已移除，第 2/3/5 条观察无法再复现，仅作当时状态的存档。
 - 截图含本机音乐库信息，仅保存在工作区，未上传或发布。
 
 参考：[Apple — Applying Liquid Glass to custom views](https://developer.apple.com/documentation/SwiftUI/Applying-Liquid-Glass-to-custom-views)。

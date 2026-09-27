@@ -1,73 +1,44 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SearchView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var player: PlayerController
     @Environment(\.colorScheme) var colorScheme
 
-    @State private var searchText = ""
+    /// 搜索状态机（草稿/已提交分离 + 在途请求代次隔离），见 SearchSession
+    @StateObject private var session = SearchSession()
+    @StateObject private var assist = SearchAssistStore()
     @State private var searchType: SearchType = .song
-    @State private var result: SearchResult?
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var currentPage = 1
-    @State private var searchTask: Task<Void, Never>?
-    @State private var loadMoreTask: Task<Void, Never>?
-    @State private var searchGeneration = 0
-
-    // 当前结果集对应的“已提交”搜索参数；分页只读取这里，不读输入框草稿
-    @State private var activeQuery: String?
-    @State private var activeType: SearchType?
-    @State private var activeIsDemoMode = false
-
-    private let provider = NeteaseProvider.shared
-    private let demoProvider = DemoProvider.shared
+    @State private var isShowingAssist = false
+    @FocusState private var isFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            // 搜索栏
-            VStack(spacing: CTSpacing.md) {
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("搜索歌曲、歌手、专辑、歌单", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .onSubmit { performSearch() }
-                    if !searchText.isEmpty {
-                        Button(action: resetSearch) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(CTSpacing.md)
-                .ctGlassSurface()
-
-                // 类型选择
-                Picker("类型", selection: $searchType) {
-                    ForEach(SearchType.allCases, id: \.self) { type in
-                        Text(type.rawValue).tag(type)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: searchType) { _, _ in
-                    if !searchText.isEmpty { performSearch() }
-                }
-            }
-            .padding(CTSpacing.lg)
+            searchBar
+            typePicker
 
             // 结果区
-            if isLoading {
+            if session.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = errorMessage {
-                ErrorView(message: error, retryAction: performSearch)
-            } else if let result = result {
-                if result.songs.isEmpty && result.artists.isEmpty && result.albums.isEmpty && result.playlists.isEmpty {
-                    EmptyStateView(icon: "magnifyingglass", title: "没有找到相关结果", message: "试试更短的关键词，或切换搜索类型")
+            } else if let error = session.errorMessage {
+                ErrorView(message: error) {
+                    session.retry(type: searchType)
+                }
+            } else if let result = session.result {
+                if result.isEmpty {
+                    EmptyStateView(
+                        icon: "magnifyingglass",
+                        title: "没有找到相关结果",
+                        message: "试试更短的关键词，或切换搜索类型"
+                    )
                 } else {
-                    SearchResultList(result: result, type: searchType, onLoadMore: loadMore)
+                    SearchResultList(
+                        result: result,
+                        type: session.displayType,
+                        onLoadMore: { session.loadMore() }
+                    )
                 }
             } else {
                 EmptyStateView(
@@ -79,105 +50,152 @@ struct SearchView: View {
         }
         .background(CTColors.background(for: colorScheme))
         .onAppear {
-            if !appState.searchQuery.isEmpty {
-                searchText = appState.searchQuery
-                appState.searchQuery = ""
-                performSearch()
+            // 工具栏的搜索框与 `appState.searchQuery` 双向绑定，所以这里能直接读到
+            // 「用户在工具栏里敲了什么」。
+            //
+            // 不要清空它：清空会让工具栏的输入框在离开搜索页后又变空，
+            // 而搜索页里还留着上次的关键词 —— 界面与状态对不上。
+            // 只有当它与已提交的查询不同时才需要发起新查询。
+            let incoming = appState.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !incoming.isEmpty else { return }
+            if session.activeQuery != incoming {
+                session.draftQuery = incoming
+                submit()
+            } else {
+                session.draftQuery = incoming
             }
         }
         .onDisappear {
-            searchGeneration += 1
-            searchTask?.cancel()
-            loadMoreTask?.cancel()
+            session.cancelInFlight()
         }
         .onChange(of: appState.dataContextKey) { _, _ in
-            // 登录/演示状态切换：用新数据源重搜，避免展示上一个数据源的结果
-            if activeQuery != nil { performSearch() }
+            // 登录态切换：重搜，避免展示上一个账号的结果
+            session.refreshDataContext(type: searchType)
         }
     }
 
-    private func performSearch() {
-        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        // 递增代际并捕获本次搜索参数；旧任务回包时校验代际，结果不再混入
-        searchGeneration += 1
-        let generation = searchGeneration
-        let query = searchText
-        let type = searchType
-        let useDemo = appState.isDemoMode
-        let searchProvider: MusicProvider = useDemo ? demoProvider : provider
-        searchTask?.cancel()
-        searchTask = nil
-        loadMoreTask?.cancel()
-        loadMoreTask = nil
-        // 记录结果集对应的已提交参数，后续分页固定使用它们
-        activeQuery = query
-        activeType = type
-        activeIsDemoMode = useDemo
-        currentPage = 1
-        isLoading = true
-        errorMessage = nil
+    // MARK: - 搜索栏（含热搜/历史/联想面板）
 
-        searchTask = Task {
-            do {
-                let found = try await searchProvider.search(
-                    query: query, type: type, page: 1, limit: 30
+    private var searchBar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜索歌曲、歌手、专辑、歌单", text: $session.draftQuery)
+                    .textFieldStyle(.plain)
+                    .focused($isFieldFocused)
+                    .onSubmit { submit() }
+                    .onChange(of: session.draftQuery) { _, newValue in
+                        // 只在获得焦点时展示下拉，避免切页后残留一个浮层
+                        isShowingAssist = isFieldFocused
+                        if isFieldFocused { assist.querySuggestions(newValue) }
+                    }
+                if !session.draftQuery.isEmpty {
+                    Button {
+                        // 键盘清空和点 × 必须走同一条路径：
+                        // 早期只让 × 调 resetSearch，导致用键盘删空后
+                        // 再切分类会命中「关键词为空 → 不搜索」而显示空白页
+                        session.reset()
+                        assist.clearSuggestions()
+                        isShowingAssist = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清空搜索")
+                }
+            }
+            .padding(CTSpacing.md)
+            .ctGlassSurface()
+
+            if isShowingAssist {
+                SearchAssistPanel(
+                    keyword: session.draftQuery,
+                    onPick: { term in
+                        session.draftQuery = term
+                        isShowingAssist = false
+                        isFieldFocused = false
+                        submit()
+                    },
+                    onPickSuggestion: { suggestion in
+                        isShowingAssist = false
+                        isFieldFocused = false
+                        open(suggestion)
+                    },
+                    onClose: closeAssist,
+                    store: assist
                 )
-                if !Task.isCancelled, generation == searchGeneration {
-                    self.result = found
-                    isLoading = false
-                }
-            } catch {
-                if !Task.isCancelled, generation == searchGeneration {
-                    errorMessage = error.localizedDescription
-                    isLoading = false
-                }
+                .padding(.horizontal, CTSpacing.lg)
+                .padding(.top, CTSpacing.xs)
+                .transition(.opacity)
+            }
+        }
+        .padding(CTSpacing.lg)
+        .padding(.bottom, isShowingAssist ? 0 : CTSpacing.lg)
+        .task { await assist.loadHotTerms() }
+    }
+
+    // MARK: - 类型选择
+
+    private var typePicker: some View {
+        Picker("类型", selection: $searchType) {
+            ForEach(SearchType.allCases, id: \.self) { type in
+                Text(type.rawValue).tag(type)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, CTSpacing.lg)
+        .padding(.bottom, CTSpacing.md)
+        .onChange(of: searchType) { _, _ in
+            isShowingAssist = false
+            // 关键词为空时也要重置已提交的结果，
+            // 否则会显示上一个关键词在这个类型下的结果
+            if session.draftQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                session.reset()
+            } else {
+                submit()
             }
         }
     }
 
-    private func loadMore() {
-        // 分页只使用已提交查询对应的参数，不读输入框草稿
-        guard let result = result, result.hasMore, !isLoading, loadMoreTask == nil,
-              let query = activeQuery, let type = activeType else { return }
-        let generation = searchGeneration
-        let useDemo = activeIsDemoMode
-        let searchProvider: MusicProvider = useDemo ? demoProvider : provider
-        let page = currentPage + 1
-        currentPage = page
+    // MARK: - 动作
 
-        loadMoreTask = Task {
-            defer { loadMoreTask = nil }
-            do {
-                let more = try await searchProvider.search(
-                    query: query, type: type, page: page, limit: 30
-                )
-                // 期间发起了新搜索/清空结果集则丢弃本次分页，避免旧结果混入
-                guard generation == searchGeneration else { return }
-                var merged = self.result ?? SearchResult()
-                merged.songs.append(contentsOf: more.songs)
-                merged.hasMore = more.hasMore
-                self.result = merged
-            } catch {
-                guard generation == searchGeneration else { return }
-                currentPage = page - 1
-            }
-        }
+    /// 收起联想下拉。面板的关闭按钮与 Esc 都走这里。
+    ///
+    /// 必须连输入框焦点一起撤掉：面板的显示条件是 `isShowingAssist`，
+    /// 而它由 `draftQuery` 的 onChange 同步成 `isFieldFocused` ——
+    /// 焦点还在的话，用户接着打字面板会立刻弹回来。
+    private func closeAssist() {
+        isShowingAssist = false
+        isFieldFocused = false
     }
 
-    /// 清空搜索框：作废所有在途请求并重置结果/分页/加载态
-    private func resetSearch() {
-        searchGeneration += 1
-        searchTask?.cancel()
-        searchTask = nil
-        loadMoreTask?.cancel()
-        loadMoreTask = nil
-        activeQuery = nil
-        activeType = nil
-        result = nil
-        currentPage = 1
-        isLoading = false
-        errorMessage = nil
-        searchText = ""
+    private func submit() {
+        let keyword = session.draftQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return }
+        assist.recordSearch(keyword)
+        // 回写全局关键词：工具栏的输入框绑定在它上面，
+        // 不回写的话用户离开搜索页再回来，工具栏会是空的
+        appState.searchQuery = keyword
+        session.submit(type: searchType)
+    }
+
+    /// 联想项直接跳到对应详情页（而不是把它当关键词再搜一次）
+    private func open(_ suggestion: SearchSuggestion) {
+        switch suggestion.kind {
+        case .song:
+            // 歌曲联想只给 id 和简要信息，拉详情再播
+            session.draftQuery = suggestion.title
+            searchType = .song
+            submit()
+        case .artist:
+            appState.openArtist(suggestion.targetID)
+        case .album:
+            appState.openAlbum(suggestion.targetID)
+        case .playlist:
+            appState.openPlaylist(suggestion.targetID)
+        }
     }
 }
 
@@ -198,31 +216,66 @@ struct SearchResultList: View {
                         SongRowView(song: song, onPlay: {
                             player.play(songs: result.songs, startAt: result.songs.firstIndex(of: song) ?? 0)
                         })
-                        .onAppear {
-                            if song.id == result.songs.last?.id { onLoadMore() }
-                        }
+                        .onAppear { triggerLoadMoreIfNeeded(song.id) }
                     }
                 case .artist:
-                    ForEach(result.artists) { artist in
-                        Text(artist.name)
-                            .font(CTTypography.body)
-                            .padding()
+                    // 歌手/专辑/歌单此前只渲染裸 Text，点不进去也看不出封面。
+                    // 三者现在都是可点的卡片，并各自触发分页。
+                    grid {
+                        ForEach(result.artists) { artist in
+                            ArtistCardView(artist: artist) {
+                                appState.openArtist(artist.id)
+                            }
+                            .onAppear { triggerLoadMoreIfNeeded(artist.id) }
+                        }
                     }
                 case .album:
-                    ForEach(result.albums) { album in
-                        Text(album.name)
-                            .font(CTTypography.body)
-                            .padding()
+                    grid {
+                        ForEach(result.albums) { album in
+                            AlbumCardView(album: album) {
+                                appState.openAlbum(album.id)
+                            }
+                            .onAppear { triggerLoadMoreIfNeeded(album.id) }
+                        }
                     }
                 case .playlist:
                     ForEach(result.playlists) { playlist in
                         PlaylistRowView(playlist: playlist) {
-                            appState.selectedPlaylistID = playlist.id
-                            appState.currentPage = .playlistDetail
+                            appState.openPlaylist(playlist.id)
                         }
+                        .onAppear { triggerLoadMoreIfNeeded(playlist.id) }
                     }
                 }
             }
+            .padding(.bottom, CTSpacing.xl)
+        }
+    }
+
+    /// 三种非单曲类型共用同一套网格布局。
+    ///
+    /// 不能写成 `grid(of:content:)` 泛型形式：`@ViewBuilder` 产生的闭包是
+    /// non-escaping，而 ForEach 需要 escaping 闭包，Swift 会直接拒绝编译。
+    @ViewBuilder
+    private func grid(@ViewBuilder content: () -> some View) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 130), spacing: CTSpacing.lg)],
+            spacing: CTSpacing.lg
+        ) {
+            content()
+                .padding(.horizontal, CTSpacing.lg)
+                .padding(.top, CTSpacing.md)
+        }
+    }
+
+    /// 滚到最后一项就加载下一页 —— 此前只有单曲分支接了 onLoadMore，
+    /// 于是歌手/专辑/歌单永远停在第一页 30 条。
+    private func triggerLoadMoreIfNeeded(_ id: String) {
+        guard result.hasMore else { return }
+        switch type {
+        case .song: if id == result.songs.last?.id { onLoadMore() }
+        case .artist: if id == result.artists.last?.id { onLoadMore() }
+        case .album: if id == result.albums.last?.id { onLoadMore() }
+        case .playlist: if id == result.playlists.last?.id { onLoadMore() }
         }
     }
 }
@@ -234,6 +287,7 @@ struct SongRowView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) var colorScheme
     @State private var isHovering = false
+    @State private var showAddToPlaylist = false
 
     private var isLiked: Bool { appState.isLiked(song.id) }
 
@@ -280,7 +334,7 @@ struct SongRowView: View {
                         .foregroundStyle(isLiked ? CTColors.accent(for: colorScheme) : CTColors.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
-                .disabled(!appState.isLoggedIn || appState.isDemoMode)
+                .disabled(!appState.canPerformWrite)
                 .opacity(appState.isLoggedIn ? 1 : 0.4)
                 .help(heartHelpText)
                 .accessibilityLabel(isLiked ? "取消收藏" : "收藏")
@@ -317,17 +371,34 @@ struct SongRowView: View {
             guard song.isPlayable else { return }
             onPlay()
         }
-        .contextMenu {
-            Button("立即播放") { onPlay() }.disabled(!song.isPlayable)
-            Button("下一首播放") { player.insertNext(song) }
-            Button("添加到队列") { player.appendToQueue(song) }
-            if song.source == .netease {
-                Divider()
-                Button(isLiked ? "取消收藏" : "收藏到喜欢的音乐") {
-                    Task { await appState.toggleLike(song) }
-                }
-                .disabled(!appState.isLoggedIn || appState.isDemoMode)
+        .contextMenu { songContextMenu }
+        // 拖到队列面板上入队。载荷类型的编解码只在 `SongTransfer` 一处定义
+        // （Playback/SongTransfer.swift），不会因为两个地方各写一份而对不上。
+        .draggable(SongTransfer(song: song))
+        .sheet(isPresented: $showAddToPlaylist) {
+            AddToPlaylistSheet(songs: [song])
+                .environmentObject(appState)
+                .environmentObject(player)
+        }
+    }
+
+    @ViewBuilder
+    private var songContextMenu: some View {
+        Button("立即播放") { onPlay() }.disabled(!song.isPlayable)
+        Button("下一首播放") { player.insertNext(song) }
+        Button("添加到队列") { player.appendToQueue(song) }
+
+        if song.source == .netease {
+            Divider()
+            Button(isLiked ? "取消收藏" : "收藏到喜欢的音乐") {
+                Task { await appState.toggleLike(song) }
             }
+            .disabled(!appState.canPerformWrite)
+
+            Button("添加到歌单…") { showAddToPlaylist = true }
+                .disabled(!appState.canPerformWrite)
+
+            Button("查看评论") { appState.openComments(for: song) }
         }
     }
 
@@ -345,8 +416,10 @@ struct SongRowView: View {
 
 struct PlaylistRowView: View {
     let playlist: Playlist
+    var isSubscribed: Bool? = nil
     var onTap: (() -> Void)? = nil
     @Environment(\.colorScheme) var colorScheme
+    @State private var isHovering = false
 
     var body: some View {
         Button { onTap?() } label: {
@@ -364,9 +437,23 @@ struct PlaylistRowView: View {
                     .font(CTTypography.bodyMedium)
                     .foregroundStyle(CTColors.textPrimary(for: colorScheme))
                     .lineLimit(1)
-                Text("\(playlist.trackCount) 首")
-                    .font(CTTypography.caption)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                HStack(spacing: CTSpacing.xs) {
+                    Text("\(playlist.trackCount) 首")
+                        .font(CTTypography.caption)
+                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    if let creator = playlist.creatorName, !creator.isEmpty {
+                        Text("· \(creator)")
+                            .font(CTTypography.caption)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                            .lineLimit(1)
+                    }
+                    if isSubscribed == true {
+                        Image(systemName: "heart.fill")
+                            .font(.caption2)
+                            .foregroundStyle(CTColors.accent(for: colorScheme))
+                            .help("已收藏")
+                    }
+                }
             }
 
             Spacer()
@@ -374,8 +461,10 @@ struct PlaylistRowView: View {
         .padding(.horizontal, CTSpacing.lg)
         .padding(.vertical, CTSpacing.sm)
         .contentShape(Rectangle())
+        .background(isHovering ? CTColors.overlay(for: colorScheme) : Color.clear)
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
         .accessibilityLabel("打开歌单：\(playlist.name)")
     }
 }

@@ -1,16 +1,28 @@
 import Foundation
 
-/// iOS 直连网易云：不经本地辅助进程。
+/// 不经辅助进程、直接向网易云发请求的传输层。
 ///
-/// ## 为什么需要它
+/// ## 当前状态：**已保留，但生产路径不调用它**
 ///
-/// macOS 版通过 Node.js 辅助进程（api-enhanced）访问网易云，封装在
-/// `HelperProcessManager` 里。iOS 上这条路径不可用：
-/// - **没有 `Process()`**，无法拉起子进程
-/// - 打包的 `node` 是 macOS Mach-O 二进制（104MB），iOS 无法运行
+/// macOS 版走 `HelperProcessManager`（Node + api-enhanced），由 Node 侧完成
+/// 加密与路由翻译。`ClearToneiOS` target 已移除，所以本文件目前**没有生产调用方**。
 ///
-/// 所以 iOS 必须自己构造请求。加密由 `NeteaseCrypto` 完成（已逐字节对过
-/// Node 标准答案）。
+/// 保留它有两个实际理由，不是「舍不得删」：
+///
+/// 1. **它是唯一一份不依赖 Node 的实现。** 加密链路（weapi 的双重 AES + raw RSA、
+///    eapi 的 MD5 + AES-ECB）已逐字节对过 Node 的标准答案，见 `NeteaseCrypto`
+///    与 `Tests/NeteaseEapiTests.swift`。哪天要去掉 169MB 的 Node 依赖，
+///    或者要在别的平台上跑，这就是现成的路基。
+/// 2. **它是接口约定的可执行文档。** 域名、必需客户端 cookie、表单编码
+///    对标 `URLSearchParams` 这几条坑，都固化在下面的注释与代码里。
+///
+/// ## 如果要重新启用
+///
+/// 1. 配好 `NeteaseEndpoint` 里对应路由的 `orderedParamsKey`（eapi 键序敏感，
+///    未登记会显式抛错而不是静默发错签名）；
+/// 2. 在传输层入口按 `endpoint.crypto` 分派 `.plain` / `.weapi` / `.eapi`；
+/// 3. 用真机联网逐个验证 —— 这些响应结构多数只在上游 `home.md` 里有片段，
+///    离线测试只能验证「我们读的键名与约定一致」。
 ///
 /// ## 两种请求形态（实测确认）
 ///
@@ -93,8 +105,96 @@ public actor NeteaseDirectTransport {
         )
     }
 
-    private func perform(url: String, body: Data, cookie: String?) async throws -> Data {
-        guard let target = URL(string: url) else { throw MusicError.invalidResponse }
+    /// eapi 请求：AES-128-ECB 加密后 POST 到 interfacepc 域。
+    ///
+    /// 与 weapi 的两点差异：
+    /// 1. 目标域是 `interfacepc.music.163.com`（`APP_CONF.eapiDomain`），
+    ///    路径是 `/eapi/` + uri 去掉前 5 字符。
+    /// 2. 请求体只有一个 `params` 字段（大写 hex），且参数里必须带
+    ///    `header` 对象 —— 它同时也是要发出去的 Cookie。
+    ///
+    /// ## 已知的脆弱点
+    ///
+    /// eapi 的签名覆盖整个 `JSON.stringify` 结果，**包括 `header` 的键序**。
+    /// 上游模块一旦增删 `data` 的字段，iOS 这条路的签名就会失效
+    /// （表现为 code 400 / 签名错误，macOS 走辅助进程不受影响）。
+    /// 因此 `NeteaseEndpoint` 里只有**键序确定**的路由才标 `.eapi`。
+    public func eapi(
+        _ apiPath: String,
+        payload: OrderedJSON.Value,
+        cookie: String?
+    ) async throws -> Data {
+        let csrf = cookie.map { NeteaseCrypto.csrfToken(fromCookie: $0) } ?? ""
+        let (musicU, musicA) = cookieValues(cookie)
+        let header = NeteaseCrypto.eapiHeader(
+            os: "osx",
+            osver: "10.15.7",
+            appver: "2.9.7",
+            versioncode: "140",
+            deviceId: "p6i5y8e9w2s4h7g3",
+            resolution: "1920x1080",
+            buildver: NeteaseCrypto.eapiBuildVersion(),
+            channel: "netease",
+            csrf: csrf,
+            musicU: musicU,
+            musicA: musicA
+        )
+        let params = try NeteaseCrypto.eapi(
+            uri: apiPath,
+            payload: .object(payload.objectPairs + [("e_r", .bool(false)), ("header", header)])
+        )
+        let form = "params=\(NeteaseCrypto.formEncode(params))"
+        let trimmed = String(apiPath.dropFirst(5))
+        let url = "https://interfacepc.music.163.com/eapi/" + trimmed
+        return try await perform(
+            url: url,
+            body: Data(form.utf8),
+            cookie: cookie,
+            extraHeaderCookie: headerCookie(header)
+        )
+    }
+
+    /// 从 cookie 串里取出 MUSIC_U / MUSIC_A
+    private func cookieValues(_ cookie: String?) -> (String?, String?) {
+        guard let cookie, !cookie.isEmpty else { return (nil, nil) }
+        var musicU: String?
+        var musicA: String?
+        for part in cookie.split(separator: ";") {
+            let kv = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard kv.count == 2 else { continue }
+            switch kv[0].trimmingCharacters(in: .whitespaces) {
+            case "MUSIC_U": musicU = String(kv[1])
+            case "MUSIC_A": musicA = String(kv[1])
+            default: break
+            }
+        }
+        return (musicU, musicA)
+    }
+
+    /// 对标 Node 侧的 `createHeaderCookie`：把 header 序列化成 `k=v; k=v`
+    private func headerCookie(_ header: OrderedJSON.Value) -> String {
+        guard case .object(let pairs) = header else { return "" }
+        return pairs
+            .map { "\($0.0)=\(Self.headerValueString($0.1))" }
+            .joined(separator: "; ")
+    }
+
+    private static func headerValueString(_ value: OrderedJSON.Value) -> String {
+        switch value {
+        case .string(let s): return s
+        case .int(let i): return String(i)
+        case .bool(let b): return b ? "true" : "false"
+        case .double(let d): return String(d)
+        default: return ""
+        }
+    }
+
+    private func perform(
+        url: String,
+        body: Data,
+        cookie: String?,
+        extraHeaderCookie: String? = nil
+    ) async throws -> Data {        guard let target = URL(string: url) else { throw MusicError.invalidResponse }
         var request = URLRequest(url: target)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -102,6 +202,8 @@ public actor NeteaseDirectTransport {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         if let cookie, !cookie.isEmpty {
             request.setValue(cookie + clientCookieSuffix, forHTTPHeaderField: "Cookie")
+        } else if let extraHeaderCookie, !extraHeaderCookie.isEmpty {
+            request.setValue(extraHeaderCookie, forHTTPHeaderField: "Cookie")
         }
         request.httpBody = body
 
@@ -127,7 +229,7 @@ public actor NeteaseDirectTransport {
             throw MusicError.networkUnavailable
         } catch {
             if let musicError = error as? MusicError { throw musicError }
-            throw MusicError.unknown(error.localizedDescription)
+            throw MusicError.from(error)
         }
     }
 }

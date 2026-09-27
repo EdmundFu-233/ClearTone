@@ -41,7 +41,18 @@ public struct Album: Identifiable, Hashable, Codable, Sendable {
 }
 
 public enum SongSource: String, Codable, Sendable {
-    case netease, local, demo
+    case netease, local
+
+    /// 演示模式已移除，但旧版本往 `queue.json` 里写过 `"source": "demo"`。
+    ///
+    /// 严格 enum（编译器合成的 `init(from:)`）碰到未知 rawValue 会抛错，
+    /// 而 `PersistedQueue` 是整份解码的 —— 一首歌解不出来，**整条队列都没了**。
+    /// 代价远大于收益，所以这里降级成 `.netease`：那条演示歌曲随后会被
+    /// `PersistenceStore.loadQueue` 按 id 命名空间过滤掉。
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = SongSource(rawValue: raw) ?? .netease
+    }
 }
 
 public struct AudioQuality: Hashable, Codable, Sendable {
@@ -50,6 +61,9 @@ public struct AudioQuality: Hashable, Codable, Sendable {
     public var sampleRate: Int?  // Hz
     public var bitDepth: Int?
     public var isActual: Bool    // true = 实际返回, false = 请求音质
+    /// 实际编码（"MP3" / "AAC" / "FLAC" / "OPUS"…）。缓存与在线流都要显示它，
+    /// 光有码率看不出是 AAC 256k 还是 FLAC 1050k
+    public var codec: String?
 
     public enum QualityLevel: String, Codable, Sendable, CaseIterable {
         case standard = "标准"
@@ -60,8 +74,8 @@ public struct AudioQuality: Hashable, Codable, Sendable {
         case unknown = "未知"
     }
 
-    public init(level: QualityLevel, bitrate: Int? = nil, sampleRate: Int? = nil, bitDepth: Int? = nil, isActual: Bool = false) {
-        self.level = level; self.bitrate = bitrate; self.sampleRate = sampleRate; self.bitDepth = bitDepth; self.isActual = isActual
+    public init(level: QualityLevel, bitrate: Int? = nil, sampleRate: Int? = nil, bitDepth: Int? = nil, isActual: Bool = false, codec: String? = nil) {
+        self.level = level; self.bitrate = bitrate; self.sampleRate = sampleRate; self.bitDepth = bitDepth; self.isActual = isActual; self.codec = codec
     }
 }
 
@@ -90,9 +104,10 @@ public struct PlayableURL: Sendable {
     public var isPreview: Bool
     /// 是否来自本地音频缓存
     public var isCached: Bool
-    public init(url: URL, quality: AudioQuality, expiresAt: Date? = nil, isPreview: Bool = false, isCached: Bool = false) {
-        self.url = url; self.quality = quality; self.expiresAt = expiresAt
-        self.isPreview = isPreview; self.isCached = isCached
+    /// 文件字节数。无损流（FLAC）接口常把 br 报成 0，靠它反算真实码率
+    public var sizeBytes: Int?
+    public init(url: URL, quality: AudioQuality, expiresAt: Date? = nil, isPreview: Bool = false, isCached: Bool = false, sizeBytes: Int? = nil) {
+        self.url = url; self.quality = quality; self.expiresAt = expiresAt; self.isPreview = isPreview; self.isCached = isCached; self.sizeBytes = sizeBytes
     }
 }
 

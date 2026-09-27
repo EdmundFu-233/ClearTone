@@ -17,9 +17,20 @@ xcuserdata/
 # 本地生成的工程文件（由 project.yml 经 xcodegen generate 生成）
 ClearTone.xcodeproj/
 
-# 辅助进程运行时（体积约 169MB，不入库）
-ClearTone/Resources/HelperRuntime/
-Resources/HelperRuntime/
+# 辅助进程运行时。
+#
+# `api/`（NeteaseCloudMusicApiEnhanced，MIT）入库 —— 它是 App 打包所依赖的
+# 业务代码，漏了 clone 出来的工程跑不起来。
+# `bin/node`（104MB 二进制）与 `node_modules`（45MB vendored 依赖）不入库：
+# 前者由 ./scripts/setup-helper.sh 从 nodejs.org 下载，后者由 npm ci 复现。
+ClearTone/Resources/HelperRuntime/bin/
+Resources/HelperRuntime/bin/
+ClearTone/Resources/HelperRuntime/api/node_modules/
+Resources/HelperRuntime/api/node_modules/
+
+# 误入工作区的东西
+CFN.7e-compressed.pdf
+com.cleartone.covercache/
 
 # 构建产物
 DerivedData/

@@ -2,17 +2,32 @@ import Foundation
 
 /// 辅助进程路由名 → 网易云原始接口的映射与加密方式。
 ///
-/// ## 为什么需要这张表
+/// ## 这张表现在做什么用
 ///
-/// macOS 版通过辅助进程访问网易云，用的是 api-enhanced 的**路由名**
-/// （如 `/recommend/songs`、`/like`），由 Node 侧把路由名翻译成网易云的
-/// 真实 uri（`/api/v3/discovery/recommend/songs`）并决定用哪种加密。
+/// 它有两个职责：
 ///
-/// iOS 没有辅助进程，必须自己完成这层翻译 —— 而且这张表是**实测**出来的，
-/// 不是从文档抄的：我逐个读了 `api/module/*.js` 拿到 uri 和 crypto，
-/// 又用纯 Swift 直连打了一遍确认 20/21 个接口 code 200。
+/// 1. **路由登记表（主要职责）。** 每条路由都记着它在
+///    `api/module/*.js` 里的真实 uri 与加密方式，全部逐个读过源码核对。
+///    `Tests/NeteaseEndpointTests.swift` 里的
+///    `testEveryRequestCallSiteIsMapped` 会扫描所有 `request("...")` 调用点，
+///    断言「调了但没登记」的路由不可能存在 —— `/song/detail` 当初就是这么漏掉的，
+///    症状是 iOS 上「喜欢的音乐」必然抛「接口未适配」。
+/// 2. **直连传输的翻译层。** `NeteaseDirectTransport` 按 `crypto` 分派
+///    plain / weapi / eapi。`ClearToneiOS` target 已移除，这条路目前没有生产调用方，
+///    保留理由见 `NeteaseDirectTransport.swift` 顶部说明。
 ///
-/// ## 两种加密
+/// ## 加密方式的判定依据
+///
+/// 以**上游 `api/module/*.js` 的实际行为**为准，不是猜的：
+///
+/// - `createOption(query, 'weapi')` → weapi
+/// - `createOption(query, 'xeapi')` → xeapi（`/song/url/v1`）
+/// - `createOption(query)`（第二参缺省）→ `util/option.js:3` 给出 `crypto: ''`，
+///   `util/request.js:218-221` 把空串解析成 `APP_CONF.encrypt ? 'eapi' : 'api'`，
+///   而 `util/config.json` 里 `encrypt: true` —— 所以**这些 module 全部是 eapi**。
+///
+/// 这条曾经写错成 `.plain`（5 条路由），并被 `NeteaseEndpointTests` 断言锁死。
+/// 现已按 `helper.log` 里的 `[INFO] Request Success: [eapi] <route>` 实测日志校正。
 ///
 /// - `weapi`：AesRsaWeapi。请求发往 `music.163.com/weapi/<uri 去掉前 5 字符>`。
 /// - `plain`：明文表单，POST 到 `interface.music.163.com` + 原始 uri。
@@ -23,15 +38,27 @@ public enum NeteaseEndpoint {
         case weapi
         /// 明文表单
         case plain
+        /// AES-128-ECB + MD5 签名，请求体形如 `params=<大写hex>`
+        case eapi
+        /// 需要运行时公钥 + 反作弊 token 的加强签名。
+        ///
+        /// **直连层不支持**（`NeteaseDirectTransport` 会显式失败而不是静默降级）。
+        /// 登记它是为了让这张表如实反映上游 module 的加密方式 —— 之前
+        /// `/song/url/v1` 被标成 `.plain`，照着表重写直连会得到错签名。
+        case xeapi
     }
 
     public struct Endpoint: Sendable {
         public let apiPath: String
         public let crypto: Crypto
+        /// eapi 路由的请求参数（必须按 Node 模块里的键序）。
+        /// 仅 `.eapi` 使用；nil 表示该路由只有固定参数，在调用处构造。
+        public let orderedParamsKey: String?
 
-        public init(apiPath: String, crypto: Crypto) {
+        public init(apiPath: String, crypto: Crypto, orderedParamsKey: String? = nil) {
             self.apiPath = apiPath
             self.crypto = crypto
+            self.orderedParamsKey = orderedParamsKey
         }
     }
 
@@ -46,30 +73,37 @@ public enum NeteaseEndpoint {
 
         // MARK: 搜索
         "/cloudsearch":     Endpoint(apiPath: "/api/cloudsearch/pc", crypto: .plain),
+        "/search/suggest":  Endpoint(apiPath: "/api/search/suggest/web", crypto: .weapi),
+        "/search/hot":      Endpoint(apiPath: "/api/search/hot", crypto: .eapi, orderedParamsKey: "searchHot"),
+        "/search/hot/detail": Endpoint(apiPath: "/api/hotsearchlist/get", crypto: .weapi),
+
+        // MARK: 歌曲详情
+        "/song/detail":     Endpoint(apiPath: "/api/v3/song/detail", crypto: .weapi),
 
         // MARK: 歌单 / 专辑
-        "/playlist/detail":     Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .plain),
-        "/playlist/track/all":  Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .plain),
+        "/playlist/detail":     Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .eapi, orderedParamsKey: "playlistDetailV6"),
+        "/playlist/track/all":  Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .eapi, orderedParamsKey: "playlistDetailV6"),
         "/album":               Endpoint(apiPath: "/api/v1/album", crypto: .weapi),
         "/artist/detail":       Endpoint(apiPath: "/api/artist/head/info/get", crypto: .plain),
         "/artist/top/song":     Endpoint(apiPath: "/api/artist/top/song", crypto: .weapi),
         "/artist/album":        Endpoint(apiPath: "/api/artist/album", crypto: .weapi),
 
         // MARK: 播放地址
-        "/song/url/v1":         Endpoint(apiPath: "/api/song/enhance/player/url/v1", crypto: .plain),
+        "/song/url/v1":         Endpoint(apiPath: "/api/song/enhance/player/url/v1", crypto: .xeapi),
         "/song/url/match":      Endpoint(apiPath: "/api/song/enhance/player/url", crypto: .plain),
 
         // MARK: 歌词
-        "/lyric/new":           Endpoint(apiPath: "/api/song/lyric/v1", crypto: .plain),
+        "/lyric/new":           Endpoint(apiPath: "/api/song/lyric/v1", crypto: .eapi, orderedParamsKey: "lyricNew"),
 
         // MARK: 用户数据
         "/user/playlist":   Endpoint(apiPath: "/api/user/playlist", crypto: .weapi),
-        "/likelist":        Endpoint(apiPath: "/api/song/like/get", crypto: .plain),
+        "/likelist":        Endpoint(apiPath: "/api/song/like/get", crypto: .eapi, orderedParamsKey: "likelist"),
         "/like":            Endpoint(apiPath: "/api/radio/like", crypto: .weapi),
 
         // MARK: 推荐
         "/recommend/songs":    Endpoint(apiPath: "/api/v3/discovery/recommend/songs", crypto: .weapi),
-        "/recommend/resource": Endpoint(apiPath: "/api/v1/discovery/recommend/resource", crypto: .plain),
+        // 原先标 .plain 是错的：`recommend_resource.js` 用 createOption(query, 'weapi')
+        "/recommend/resource": Endpoint(apiPath: "/api/v1/discovery/recommend/resource", crypto: .weapi),
         "/personalized":       Endpoint(apiPath: "/api/personalized/playlist", crypto: .weapi),
 
         // MARK: 电台
@@ -77,6 +111,71 @@ public enum NeteaseEndpoint {
         "/dj/hot":       Endpoint(apiPath: "/api/djradio/hot/v1", crypto: .weapi),
         "/dj/recommend": Endpoint(apiPath: "/api/djradio/recommend/v1", crypto: .weapi),
         "/dj/program":   Endpoint(apiPath: "/api/dj/program/byradio", crypto: .weapi),
+        "/dj/detail":    Endpoint(apiPath: "/api/djradio/v2/get", crypto: .weapi),
+        "/dj/sub":       Endpoint(apiPath: "/api/djradio/sub", crypto: .weapi),
+        "/dj/unsub":     Endpoint(apiPath: "/api/djradio/unsub", crypto: .weapi),
+        "/dj/sublist":   Endpoint(apiPath: "/api/djradio/get/subed", crypto: .weapi),
+
+        // MARK: 榜单 / 分类
+        "/toplist":            Endpoint(apiPath: "/api/toplist", crypto: .eapi, orderedParamsKey: "toplist"),
+        "/top/song":           Endpoint(apiPath: "/api/v1/discovery/new/songs", crypto: .weapi),
+        "/top/playlist":       Endpoint(apiPath: "/api/playlist/list", crypto: .weapi),
+        "/top/album":          Endpoint(apiPath: "/api/discovery/new/albums/area", crypto: .weapi),
+        "/playlist/catlist":   Endpoint(apiPath: "/api/playlist/catalogue", crypto: .eapi, orderedParamsKey: "playlistCatlist"),
+        "/playlist/hot":       Endpoint(apiPath: "/api/playlist/hottags", crypto: .weapi),
+
+        // MARK: 歌单写操作
+        //
+        // 注意：加歌/删歌用 `/playlist/tracks`（op=add|del），**不是**
+        // `/playlist/track/add` —— 后者在 api-enhanced 里是给「视频歌单」
+        // 用的，home.md 的标题就是「收藏视频到视频歌单」。
+        "/playlist/create":       Endpoint(apiPath: "/api/playlist/create", crypto: .weapi),
+        "/playlist/delete":       Endpoint(apiPath: "/api/playlist/remove", crypto: .weapi),
+        // 重命名走 eapi（createOption 无第二参），键序 { id, name }
+        "/playlist/name/update":  Endpoint(apiPath: "/api/playlist/update/name", crypto: .eapi, orderedParamsKey: "playlistNameUpdate"),
+        "/playlist/tracks":       Endpoint(apiPath: "/api/playlist/manipulate/tracks", crypto: .eapi, orderedParamsKey: "playlistTracks"),
+        "/playlist/subscribe":    Endpoint(apiPath: "/api/playlist/subscribe", crypto: .eapi, orderedParamsKey: "playlistSubscribe"),
+        "/playlist/unsubscribe":  Endpoint(apiPath: "/api/playlist/unsubscribe", crypto: .eapi, orderedParamsKey: "playlistSubscribe"),
+        "/playlist/subscribers":  Endpoint(apiPath: "/api/playlist/subscribers", crypto: .eapi, orderedParamsKey: "playlistSubscribers"),
+        "/album/sublist":         Endpoint(apiPath: "/api/album/sublist", crypto: .weapi),
+        "/artist/sublist":        Endpoint(apiPath: "/api/artist/sublist", crypto: .weapi),
+
+        // MARK: 收藏专辑 / 歌手
+        "/album/sub":   Endpoint(apiPath: "/api/album/sub", crypto: .weapi),
+        "/album/unsub": Endpoint(apiPath: "/api/album/unsub", crypto: .weapi),
+        "/artist/sub":   Endpoint(apiPath: "/api/artist/sub", crypto: .weapi),
+        "/artist/unsub": Endpoint(apiPath: "/api/artist/unsub", crypto: .weapi),
+
+        // MARK: 推荐扩展
+        "/recommend/songs/dislike": Endpoint(apiPath: "/api/v2/discovery/recommend/dislike", crypto: .weapi),
+        "/personal_fm":              Endpoint(apiPath: "/api/v1/radio/get", crypto: .weapi),
+        "/personalized/newsong":     Endpoint(apiPath: "/api/personalized/newsong", crypto: .weapi),
+        "/album/newest":             Endpoint(apiPath: "/api/discovery/newAlbum", crypto: .weapi),
+        "/simi/song":                Endpoint(apiPath: "/api/v1/discovery/simiSong", crypto: .weapi),
+        "/simi/artist":              Endpoint(apiPath: "/api/discovery/simiArtist", crypto: .weapi),
+
+        // MARK: 评论
+        //
+        // 读接口用 `/comment/music`（weapi，歌曲专用）。
+        // `/comment/new` 支持排序但走 eapi，签名对键序敏感，
+        // 因此 iOS 直连统一走 weapi 版本；写接口 `/comment/add|delete`
+        // 是 xeapi（需要运行时公钥 + 反作弊 token），iOS 不可用。
+        "/comment/music":  Endpoint(apiPath: "/api/v1/resource/comments/R_SO_4_", crypto: .weapi),
+        "/comment/hot":    Endpoint(apiPath: "/api/v1/resource/hotcomments/R_SO_4_", crypto: .weapi),
+        "/comment/like":   Endpoint(apiPath: "/api/v1/comment/like", crypto: .weapi),
+        "/comment/unlike": Endpoint(apiPath: "/api/v1/comment/unlike", crypto: .weapi),
+
+        // MARK: 消息
+        "/msg/notices":         Endpoint(apiPath: "/api/msg/notices", crypto: .weapi),
+        "/msg/private":         Endpoint(apiPath: "/api/msg/private/users", crypto: .weapi),
+        "/msg/private/history": Endpoint(apiPath: "/api/msg/private/history", crypto: .weapi),
+        "/msg/comments":        Endpoint(apiPath: "/api/v1/user/comments/", crypto: .weapi),
+
+        // MARK: 账号数据
+        "/daily_signin":  Endpoint(apiPath: "/api/point/dailyTask", crypto: .eapi, orderedParamsKey: "dailySignin"),
+        "/user/record":   Endpoint(apiPath: "/api/v1/play/record", crypto: .weapi),
+        "/user/level":    Endpoint(apiPath: "/api/user/level", crypto: .weapi),
+        "/user/subcount": Endpoint(apiPath: "/api/subcount", crypto: .weapi),
     ]
 
     /// 查询端点。未知路由返回 nil —— 宁可显式失败，也不要静默走错加密方式。
@@ -86,4 +185,69 @@ public enum NeteaseEndpoint {
 
     /// 已覆盖的路由，便于测试断言
     public static var knownRoutes: [String] { Array(table.keys) }
+
+    // MARK: - eapi 有序参数
+
+    /// eapi 的签名覆盖整个 `JSON.stringify` 结果，**键序参与鉴权**。
+    ///
+    /// 键序必须与 `api/module/<route>.js` 里那个对象字面量的书写顺序逐字一致，
+    /// 否则算出的 MD5 与服务端对不上。所以每条 eapi 路由的顺序集中登记在
+    /// `orderedPayloads` 里，一处可查、可测。
+    ///
+    /// 另注：Node 侧会先给 `data` 追加 `e_r`，再追加 `header`，
+    /// 因此这两个键排在业务参数之后（由 `NeteaseDirectTransport.eapi` 补上）。
+    private static let orderedPayloads: [String: [String]] = [
+        // /api/toplist 与 /api/playlist/catalogue 都是 `request(uri, {}, ...)`，无参数
+        "toplist": [],
+        "playlistCatlist": [],
+        // search_hot.js: { type: 1111 }
+        "searchHot": ["type"],
+        // daily_signin.js: { type: 0 }（0=安卓端 3 经验，1=web 2 经验）
+        "dailySignin": ["type"],
+        // playlist_subscribe.js: { id, checkToken? }
+        "playlistSubscribe": ["id"],
+        // playlist_name_update.js: { id, name }
+        "playlistNameUpdate": ["id", "name"],
+        // playlist_subscribers.js: { id, limit, offset }
+        "playlistSubscribers": ["id", "limit", "offset"],
+        // playlist_tracks.js: { op, pid, tracks: JSON字符串, imme: 'true' }
+        "playlistTracks": ["op", "pid", "trackIds", "imme"],
+        // 以下四条是「crypto 从 .plain 改成 .eapi」之后才暴露出来的缺口。
+        // 键序直接抄自上游 module 的 `data` 对象字面量顺序 ——
+        // eapi 的签名对键序敏感，顺序错了就是签名失败，
+        // 而签名失败在界面上表现为「接口报错」，极难定位。
+        "likelist":           ["uid"],
+        "playlistDetailV6":   ["id", "n", "s"],
+        "lyricNew":           ["id", "cp", "tv", "lv", "rv", "kv", "yv", "ytv", "yrv"],
+    ]
+
+    /// 为 eapi 路由构造有序请求体。
+    ///
+    /// 返回 nil 表示该路由没有登记键序 —— 调用方应显式失败而不是随便拼一个顺序。
+    public static func orderedPayload(forRoute route: String, query: [String: String]) -> OrderedJSON.Value? {
+        guard let endpoint = table[route], endpoint.crypto == .eapi else { return nil }
+        guard let keys = orderedPayloads[endpoint.orderedParamsKey ?? ""] else { return nil }
+
+        var pairs: [(String, OrderedJSON.Value)] = []
+        for key in keys {
+            guard let raw = query[key] else { continue }
+            // Node 侧这些字段是数字/布尔，JSON.stringify 的输出不能带引号
+            switch key {
+            case "type":
+                guard let number = Int(raw) else { return nil }
+                pairs.append((key, .int(number)))
+            default:
+                pairs.append((key, .string(raw)))
+            }
+        }
+        // 未登记在册的键一律拒绝：拼错顺序的后果是签名失败，
+        // 而签名失败在界面上表现为「接口报错」，极难定位。
+        for key in query.keys where !keys.contains(key) {
+            return nil
+        }
+        return .object(pairs)
+    }
+
+    /// 登记过的 eapi 键序（测试用）
+    public static var eapiParamKeys: [String: [String]] { orderedPayloads }
 }

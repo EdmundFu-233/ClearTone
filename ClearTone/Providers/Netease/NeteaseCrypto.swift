@@ -1,13 +1,14 @@
 import Foundation
 import CommonCrypto
 
-/// 网易云 weapi 加密的纯 Swift 实现。
+/// 网易云 weapi / eapi 加密的纯 Swift 实现。
 ///
-/// ## 为什么需要它
+/// ## 当前状态：**已保留，但生产路径不调用它**
 ///
-/// macOS 版通过本地 Node.js 辅助进程（api-enhanced）访问网易云，weapi 加密
-/// 由 `util/crypto.js` 完成。iOS 上无法拉起子进程（没有 `Process()`），
-/// 打包 Node 二进制也不可行，因此加密必须原生实现。
+/// macOS 版通过本地 Node.js 辅助进程（api-enhanced）访问网易云，加密由
+/// `util/crypto.js` 完成。`ClearToneiOS` target 已移除，本文件目前没有生产调用方；
+/// 保留理由见 `NeteaseDirectTransport.swift` 顶部的说明，简言之：
+/// 这是唯一一份不依赖 Node 的加密实现，且已逐字节验证。
 ///
 /// 本文件的每一步都用 Node 侧（node-forge / CryptoJS）生成的标准答案
 /// 逐字节校验过，验证过程见 `docs/optimization-plan.md`。
@@ -102,6 +103,101 @@ public enum NeteaseCrypto {
         return String(tail[..<(tail.firstIndex(of: ";") ?? tail.endIndex)])
     }
 
+    // MARK: - eapi
+
+    /// eapi 固定密钥（16 字节 → AES-128）
+    private static let eapiKey = "e82ckenh8dichen8"
+    /// eapi 签名里夹在参数两侧的固定盐
+    private static let eapiSalt = "36cd479b6b5"
+
+    /// 构造 eapi 请求体参数。
+    ///
+    /// 步骤（逐行对标 `util/crypto.js` 的 `eapi()`）：
+    /// 1. `text = JSON.stringify(payload)` —— 参与签名，**键序敏感**
+    /// 2. `digest = md5("nobody" + uri + "use" + text + "md5forencrypt")`
+    /// 3. `data = uri + "-盐-" + text + "-盐-" + digest`
+    /// 4. `params = AES-128-ECB(data, eapiKey)` 的密文，**大写 hex**
+    ///
+    /// ## 第 4 步的两个坑
+    ///
+    /// api-enhanced 取的是 `encrypted.ciphertext` 而非 `encrypted.toString()`，
+    /// 也就是**不含 PKCS#7 填充尾块**的纯密文 —— 所以这里手动填充、
+    /// 再用无填充模式加密，输出长度恰好是原文长度向上取整到 16 的倍数。
+    ///
+    /// 另外 hex 是**大写**（`aesEncrypt` 里的 `.toUpperCase()`），
+    /// 小写会被服务端判为签名不匹配。
+    public static func eapi(uri: String, payload: OrderedJSON.Value) throws -> String {
+        let text = OrderedJSON.encode(payload)
+        let message = "nobody\(uri)use\(text)md5forencrypt"
+        let digest = md5Hex(message)
+        let plain = "\(uri)-\(eapiSalt)-\(text)-\(eapiSalt)-\(digest)"
+        guard let ciphertext = aesECBEncryptPadded(Data(plain.utf8), key: eapiKey) else {
+            throw CryptoError.encryptionFailed
+        }
+        var hex = ""
+        hex.reserveCapacity(ciphertext.count * 2)
+        for byte in ciphertext {
+            hex += String(format: "%02X", byte)
+        }
+        return hex
+    }
+
+    /// eapi 的 `data.header`。键序与 `util/request.js` 里的对象字面量严格一致，
+    /// 且值为 `undefined` 的键必须整个省略（`JSON.stringify` 会丢弃它们）。
+    ///
+    /// 顺序：osver · deviceId · os · appver · versioncode · mobilename ·
+    /// buildver · resolution · __csrf · channel · requestId，然后按需追加
+    /// MUSIC_U / MUSIC_A / X-antiCheatToken / NMTID。
+    public static func eapiHeader(
+        os: String,
+        osver: String,
+        appver: String,
+        versioncode: String,
+        deviceId: String,
+        resolution: String,
+        buildver: String,
+        channel: String?,
+        csrf: String,
+        musicU: String?,
+        musicA: String?,
+        antiCheatToken: String? = nil,
+        nmtid: String? = nil
+    ) -> OrderedJSON.Value {
+        var pairs: [(String, OrderedJSON.Value)] = [
+            ("osver", .string(osver)),
+            ("deviceId", .string(deviceId)),
+            ("os", .string(os)),
+            ("appver", .string(appver)),
+            ("versioncode", .string(versioncode)),
+            ("mobilename", .string("")),
+            ("buildver", .string(buildver)),
+            ("resolution", .string(resolution)),
+            ("__csrf", .string(csrf)),
+        ]
+        if let channel, !channel.isEmpty { pairs.append(("channel", .string(channel))) }
+        pairs.append(("requestId", .string(eapiRequestID())))
+        if let musicU, !musicU.isEmpty { pairs.append(("MUSIC_U", .string(musicU))) }
+        if let musicA, !musicA.isEmpty { pairs.append(("MUSIC_A", .string(musicA))) }
+        if let antiCheatToken, !antiCheatToken.isEmpty {
+            pairs.append(("X-antiCheatToken", .string(antiCheatToken)))
+        }
+        if let nmtid, !nmtid.isEmpty { pairs.append(("NMTID", .string(nmtid))) }
+        return .object(pairs)
+    }
+
+    /// 对标 `generateRequestId()`：`Date.now()` + `_` + 4 位零填充随机数
+    private static func eapiRequestID() -> String {
+        let stamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+        let suffix = String(format: "%04d", Int.random(in: 0...999))
+        return "\(stamp)_\(suffix)"
+    }
+
+    /// 对标 `now().toString().substr(0, 10)`：毫秒时间戳的前 10 位
+    public static func eapiBuildVersion() -> String {
+        let stamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+        return String(stamp.prefix(10))
+    }
+
     // MARK: - 内部
 
     private enum CryptoError: Error {
@@ -136,6 +232,49 @@ public enum NeteaseCrypto {
         guard status == CCCryptorStatus(kCCSuccess) else { return nil }
         output.length = written
         return output as Data
+    }
+
+    /// AES-128-ECB：手动补 PKCS#7，再用无填充模式加密出纯密文。
+    ///
+    /// 不直接用 `kCCOptionPKCS7Padding` + `CCCryptorStatus` 的输出，
+    /// 因为那会包含填充尾块，而 eapi 要的是 `ciphertext`（不含填充）。
+    private static func aesECBEncryptPadded(_ plaintext: Data, key: String) -> Data? {
+        let blockSize = 16
+        let padCount = blockSize - (plaintext.count % blockSize)
+        var padded = [UInt8](plaintext)
+        padded.append(contentsOf: [UInt8](repeating: UInt8(padCount), count: padCount))
+
+        let k = NSData(data: Data(key.utf8))
+        let p = NSData(data: Data(padded))
+        let output = NSMutableData(length: padded.count)!
+        var written = 0
+        // ECB 模式无 IV；不传 padding 选项 → 输入输出等长
+        let status = CCCrypt(
+            CCOperation(kCCEncrypt),
+            CCAlgorithm(kCCAlgorithmAES),
+            CCOptions(kCCOptionECBMode),
+            k.bytes, k.length,
+            nil,
+            p.bytes, p.length,
+            output.mutableBytes, output.length,
+            &written
+        )
+        guard status == CCCryptorStatus(kCCSuccess) else { return nil }
+        output.length = written
+        return output as Data
+    }
+
+    /// MD5，输出小写 hex（与 `CryptoJS.MD5(...).toString()` 一致）
+    public static func md5Hex(_ text: String) -> String {
+        let k = NSData(data: Data(text.utf8))
+        var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
+        CC_MD5(k.bytes, CC_LONG(k.length), &digest)
+        var hex = ""
+        hex.reserveCapacity(Int(CC_MD5_DIGEST_LENGTH) * 2)
+        for byte in digest {
+            hex += String(format: "%02x", byte)
+        }
+        return hex
     }
 
     /// 从 SubjectPublicKeyInfo DER 提取 RSA 模数（PKCS#1 RSAPublicKey 的第一个 INTEGER）

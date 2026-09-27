@@ -37,6 +37,12 @@ public enum PlaybackState: Equatable, Sendable {
         if case .buffering = self { return true }
         return false
     }
+
+    /// 播放源是否还在准备中（URL 在途，或 item 已挂上但还没 readyToPlay）
+    public var isLoading: Bool {
+        if case .loading = self { return true }
+        return false
+    }
 }
 
 /// 播放模式

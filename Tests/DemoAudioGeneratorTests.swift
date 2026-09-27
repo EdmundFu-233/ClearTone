@@ -1,7 +1,7 @@
 import XCTest
 import AVFoundation
 
-/// 演示音频生成的回归测试。
+/// 测试音频合成的回归测试。
 ///
 /// `writeWAV` 手写了裸指针写入，属于最容易写错的地方：
 /// 曾把 RIFF 约定值 `36 + dataSize`（= 文件大小 - 8）误当作文件长度来分配，
@@ -70,29 +70,29 @@ final class DemoAudioGeneratorTests: XCTestCase {
         XCTAssertGreaterThan(file.length, 44, "应读到实际音频样本")
     }
 
-    /// ensureDemoAudio 幂等：已存在且非空的文件不应被重写
-    func testEnsureDemoAudioIsIdempotent() async throws {
-        await DemoProvider.ensureDemoAudio()
-        let tone = DemoProvider.demoAudioDirectory().appendingPathComponent("tone_440.wav")
+    /// ensureFiles 幂等：已存在且非空的文件不应被重写
+    func testEnsureFilesIsIdempotent() async throws {
+        await DemoAudioGenerator.ensureFiles()
+        let tone = DemoAudioGenerator.directory().appendingPathComponent("tone_440.wav")
         let firstSize = try FileManager.default.attributesOfItem(atPath: tone.path)[.size] as? Int
         let firstMtime = try FileManager.default.attributesOfItem(atPath: tone.path)[.modificationDate] as? Date
 
         try await Task.sleep(for: .milliseconds(1100))
-        await DemoProvider.ensureDemoAudio()
+        await DemoAudioGenerator.ensureFiles()
 
         let secondSize = try FileManager.default.attributesOfItem(atPath: tone.path)[.size] as? Int
         let secondMtime = try FileManager.default.attributesOfItem(atPath: tone.path)[.modificationDate] as? Date
-        XCTAssertEqual(firstSize, secondSize, "已存在的演示音频不应被重新生成")
+        XCTAssertEqual(firstSize, secondSize, "已存在的测试音频不应被重新生成")
         XCTAssertEqual(firstMtime, secondMtime, "mtime 不应变化")
         XCTAssertGreaterThan(firstSize ?? 0, 44, "生成的音频不应只有头部")
     }
 
     /// 截断的残留文件（上次生成中断）应被重新生成
     func testTruncatedFileIsRegenerated() async throws {
-        let tone = DemoProvider.demoAudioDirectory().appendingPathComponent("tone_440.wav")
+        let tone = DemoAudioGenerator.directory().appendingPathComponent("tone_440.wav")
         try? FileManager.default.removeItem(at: tone)
         FileManager.default.createFile(atPath: tone.path, contents: Data([0x52, 0x49, 0x46, 0x46]))
-        await DemoProvider.ensureDemoAudio()
+        await DemoAudioGenerator.ensureFiles()
         let size = try FileManager.default.attributesOfItem(atPath: tone.path)[.size] as? Int
         XCTAssertGreaterThan(size ?? 0, 44, "只有 RIFF 魔数的残留文件应被判定为无效并重新生成")
     }

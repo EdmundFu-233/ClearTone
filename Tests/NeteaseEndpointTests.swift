@@ -2,35 +2,110 @@ import XCTest
 
 /// 辅助进程路由名 → 网易云原始接口的映射契约。
 ///
-/// 这张表是 iOS 直连的基础：**路由名对不上或加密方式选错，症状都是
-/// 「HTTP 200 但空 body」**，极难定位。所以每个条目都要锁住。
+/// 这张表是**路由登记表**：每个路由在 `api/module/*.js` 里的真实 uri 与
+/// 加密方式都逐个读过源码核对。
 ///
-/// 表的来源是逐个读 `api/module/*.js` 拿到的 uri 与 crypto，
-/// 并用纯 Swift 直连实测过 20/21 个接口 code 200。
+/// 两条测试各管一件事：
+/// - `testEveryRequestCallSiteIsMapped` 扫描所有 `request("...")` 调用点，
+///   保证不存在「调了但没登记」的路由；
+/// - 其余用例锁住每条路由的映射与 eapi 键序 —— 直连路径一旦重新启用，
+///   **路由名对不上或加密方式选错，症状都是「HTTP 200 但空 body」**，极难定位。
 final class NeteaseEndpointTests: XCTestCase {
 
     func testAllKnownRoutesResolve() {
-        // NeteaseProvider 实际会用到的全部路由
+        // NeteaseProvider / NeteaseSocialProvider 实际会用到的全部路由
         let routes = [
+            // 认证
             "/login/qr/key", "/login/qr/create", "/login/qr/check",
             "/user/account", "/logout",
-            "/cloudsearch",
-            "/playlist/detail", "/playlist/track/all",
-            "/album", "/artist/detail", "/artist/top/song", "/artist/album",
-            "/song/url/v1", "/song/url/match",
-            "/lyric/new",
-            "/user/playlist", "/likelist", "/like",
-            "/recommend/songs", "/recommend/resource", "/personalized",
+            // 搜索
+            "/cloudsearch", "/search/suggest", "/search/hot", "/search/hot/detail",
+            // 歌曲
+            "/song/detail", "/song/url/v1", "/song/url/match", "/lyric/new",
+            // 歌单
+            "/playlist/detail", "/playlist/track/all", "/playlist/create",
+            "/playlist/delete", "/playlist/name/update", "/playlist/tracks",
+            "/playlist/subscribe", "/playlist/unsubscribe", "/playlist/subscribers",
+            "/playlist/catlist", "/playlist/hot", "/top/playlist",
+            // 专辑 / 歌手
+            "/album", "/album/sub", "/album/unsub", "/album/sublist", "/album/newest",
+            "/artist/detail", "/artist/top/song", "/artist/album",
+            "/artist/sub", "/artist/unsub", "/artist/sublist",
+            // 用户数据
+            "/user/playlist", "/likelist", "/like", "/user/record",
+            "/user/level", "/user/subcount", "/daily_signin",
+            // 推荐
+            "/recommend/songs", "/recommend/resource", "/recommend/songs/dislike",
+            "/personalized", "/personalized/newsong", "/personal_fm",
+            "/simi/song", "/simi/artist",
+            // 榜单
+            "/toplist", "/top/song", "/top/album",
+            // 电台
             "/dj/catelist", "/dj/hot", "/dj/recommend", "/dj/program",
+            "/dj/detail", "/dj/sub", "/dj/unsub", "/dj/sublist",
+            // 评论
+            "/comment/music", "/comment/hot", "/comment/like", "/comment/unlike",
+            // 消息
+            "/msg/notices", "/msg/private", "/msg/private/history", "/msg/comments",
         ]
         for route in routes {
             XCTAssertNotNil(
                 NeteaseEndpoint.endpoint(forRoute: route),
-                "未映射的路由：\(route) —— iOS 端会直接抛错"
+                "未映射的路由：\(route) —— 直连路径会直接抛错"
             )
         }
         XCTAssertEqual(routes.count, NeteaseEndpoint.knownRoutes.count,
                        "若有未列入上表的路由，说明表与实际调用点脱节了")
+    }
+
+    /// `/song/detail` 曾在表里缺失，而 `fetchLikedSongs` 一直在调它。
+    /// 这条用例是为了不让它再消失一次。
+    func testSongDetailIsMapped() {
+        XCTAssertNotNil(NeteaseEndpoint.endpoint(forRoute: "/song/detail"))
+    }
+
+    /// 扫描源码里所有 `request("...")` 调用点，逐一确认在表中。
+    ///
+    /// 手工维护的路由清单迟早会漏（`/song/detail` 就是这么漏的）。
+    /// 这条测试把「表 ⊇ 实际调用点」变成自动检查，新增接口忘了登记会立刻红。
+    func testEveryRequestCallSiteIsMapped() throws {
+        let sourceDir = Self.sourceDirectory()
+        let files = try FileManager.default
+            .contentsOfDirectory(atPath: sourceDir)
+            .filter { $0.hasSuffix(".swift") }
+            .map { URL(fileURLWithPath: sourceDir).appendingPathComponent($0) }
+
+        var callSites: [String] = []
+        for file in files {
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            // 匹配 request("/xxx" 与 request("xxx"，覆盖三元表达式形式
+            let pattern = #"request\(\s*"(/[^"]+)""#
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                for match in regex.matches(in: text, range: range) {
+                    if let r = Range(match.range(at: 1), in: text) {
+                        callSites.append(String(text[r]))
+                    }
+                }
+            }
+        }
+
+        XCTAssertFalse(callSites.isEmpty, "没扫到任何 request 调用点，扫描逻辑本身坏了")
+        for route in Set(callSites).sorted() {
+            XCTAssertNotNil(
+                NeteaseEndpoint.endpoint(forRoute: route),
+                "调用了 \(route) 但 NeteaseEndpoint 里没登记 —— 直连路径会直接抛错"
+            )
+        }
+    }
+
+    private static func sourceDirectory() -> String {
+        // #filePath = <repo>/Tests/NeteaseEndpointTests.swift
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("ClearTone/Providers/Netease")
+            .path
     }
 
     func testUnknownRouteReturnsNil() {
@@ -49,10 +124,15 @@ final class NeteaseEndpointTests: XCTestCase {
         }
     }
 
-    /// 播放地址必须明文：走 weapi 会拿到空 body
-    func testPlayURLUsesPlainCrypto() {
+    /// 播放地址走 **xeapi**（`song_url_v1.js` 显式 `createOption(query, 'xeapi')`）。
+    ///
+    /// 之前这里断言 `.plain`，依据是「明文调用能拿到 body」——
+    /// 但那个观测是在**辅助进程**里做的，而辅助进程自己会按 module 选 xeapi。
+    /// 直连层按错误的 `.plain` 重建会得到错签名。
+    /// 实测日志：`helper.log` 里是 `[INFO] Request Success: [xeapi] /song/url/v1`。
+    func testPlayURLUsesXeapiCrypto() {
         let endpoint = NeteaseEndpoint.endpoint(forRoute: "/song/url/v1")!
-        XCTAssertEqual(endpoint.crypto, .plain)
+        XCTAssertEqual(endpoint.crypto, .xeapi)
         XCTAssertEqual(endpoint.apiPath, "/api/song/enhance/player/url/v1")
     }
 
@@ -81,24 +161,47 @@ final class NeteaseEndpointTests: XCTestCase {
         )
     }
 
-    /// 日推与歌单走不同加密 —— 两者都实测通过，但不能互换
+    /// `createOption(query)`（第二参缺省）的 module **全部是 eapi**，不是明文。
+    ///
+    /// 依据链条：`util/option.js:3` 给出 `crypto: ''` →
+    /// `util/request.js:218-221` 把 `''` 解析成 `APP_CONF.encrypt ? 'eapi' : 'api'` →
+    /// `util/config.json` 里 `encrypt: true`。
+    /// 另有 `helper.log` 的 `[INFO] Request Success: [eapi] <route>` 实测日志佐证。
+    ///
+    /// 这四条之前断言 `.plain` 并因此把错误值锁死 —— 照着表重写直连会得到错签名。
+    func testCreateOptionWithoutSecondArgMeansEapiNotPlain() {
+        for route in ["/playlist/detail", "/playlist/track/all", "/lyric/new", "/likelist"] {
+            let endpoint = NeteaseEndpoint.endpoint(forRoute: route)
+            XCTAssertEqual(endpoint?.crypto, .eapi, "\(route) 走的是 eapi，不是明文")
+        }
+    }
+
+    /// 日推走 weapi，歌单详情走 eapi —— 两者都实测通过，但不能互换
     func testRecommendAndPlaylistCryptoDiffer() {
         XCTAssertEqual(
             NeteaseEndpoint.endpoint(forRoute: "/recommend/songs")!.crypto, .weapi
         )
         XCTAssertEqual(
-            NeteaseEndpoint.endpoint(forRoute: "/playlist/detail")!.crypto, .plain
+            NeteaseEndpoint.endpoint(forRoute: "/playlist/detail")!.crypto, .eapi
         )
     }
 
-    /// 歌词明文可用，走 weapi 反而失败
-    func testLyricUsesPlainCrypto() {
-        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/lyric/new")!.crypto, .plain)
-    }
-
-    /// 收藏列表（读取）与收藏（写入）加密方式不同：读明文、写 weapi
-    func testReadAndWriteLikeUseDifferentCrypto() {
-        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/likelist")!.crypto, .plain)
-        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/like")!.crypto, .weapi)
+    /// eapi 键序里 module 的 data 对象键叫 `trackIds`，不是 `tracks`。
+    /// `playlist_tracks.js:10` 是 `trackIds: JSON.stringify(query.tracks.split(','))`，
+    /// 所以传输层给的值是 JSON 数组字符串。
+    func testPlaylistTracksOrderedParamUsesTrackIds() throws {
+        let payload = try XCTUnwrap(NeteaseEndpoint.orderedPayload(
+            forRoute: "/playlist/tracks",
+            query: ["op": "add", "pid": "1", "trackIds": #"["2","3"]"#, "imme": "true"]
+        ))
+        guard case .object(let pairs) = payload else {
+            return XCTFail("eapi 请求体应是对象，实际是 \(payload)")
+        }
+        XCTAssertEqual(pairs.map(\.0), ["op", "pid", "trackIds", "imme"])
+        // 键名错成 `tracks` 会被这里的「未登记键一律拒绝」挡下
+        XCTAssertNil(NeteaseEndpoint.orderedPayload(
+            forRoute: "/playlist/tracks",
+            query: ["op": "add", "pid": "1", "tracks": #"["2","3"]"#, "imme": "true"]
+        ), "键名必须是 trackIds")
     }
 }

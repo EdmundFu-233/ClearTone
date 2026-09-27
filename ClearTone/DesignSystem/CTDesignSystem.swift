@@ -2,6 +2,15 @@ import SwiftUI
 
 /// 设计系统 Token，统一管理颜色/排版/间距，支持深浅色
 public enum CTColors {
+    /// 沉浸式页面（正在播放）的**不透明**底色。
+    ///
+    /// 这一页的文字、进度、控件全是为深色背景设计的（历史上是硬编码 `.white`），
+    /// 所以底色必须恒为深色，不能依赖 Metal 背景层是否成功绘制：
+    /// 无 Metal 设备、首帧未提交、或浅色封面取色都可能让背景层失效，
+    /// 结果就是「白底白字」。把它做成设计系统里的一个常量而不是散在视图里，
+    /// 是为了让「这一页永远是深色」成为可检查的约定。
+    public static let immersiveBase = Color(red: 0.07, green: 0.07, blue: 0.09)
+
     // MARK: - 深色主题
     public enum Dark {
         public static let background = Color(hex: 0x111216)
@@ -116,6 +125,56 @@ struct CTPageHeader: View {
     }
 }
 
+/// 关闭按钮：弹窗与浮层的**唯一**关闭入口实现。
+///
+/// 抽出来是因为它带着两件逐处手写时必然漏掉的事：`accessibilityLabel`
+/// 与「最小命中区」—— SF Symbol 的固有尺寸只有约 13pt，低于 16pt 下限。
+///
+/// 刻意**不**加 `.keyboardShortcut(.cancelAction)`：sheet 本身就是模态窗口，
+/// Esc 由 AppKit 的 `cancelOperation:` 收尾，已经能关；再加一个快捷键只会
+/// 制造歧义 —— `AddToPlaylistSheet` 里嵌着 `PlaylistNameSheet`（带「取消」+ Esc），
+/// 两层模态都声明 `.cancelAction` 时谁先收到是不确定的。
+/// 非模态的下拉浮层要用 Esc 的话走 `.onExitCommand`（见 `SearchAssistPanel`）。
+struct CTCloseButton: View {
+    let onClose: () -> Void
+    /// 铺在深色沉浸背景（正在播放页）上时用亮色，其余用次要色
+    var onDarkBackground: Bool = false
+
+    var body: some View {
+        Button(action: onClose) {
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(onDarkBackground ? Color.white.opacity(0.8) : Color.secondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(L10n.Common.close)
+        .help(L10n.Common.close)
+    }
+}
+
+/// 弹窗页头：标题 + 关闭按钮。sheet 的统一头部长相。
+///
+/// 深色沉浸背景上的关闭按钮（正在播放页）不放这里 —— 那页是全出血的
+/// Metal 背景、没有页头，单独用 `CTCloseButton` 叠在左上角。
+struct CTSheetHeader: View {
+    let title: String
+    let onClose: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: CTSpacing.md) {
+            Text(title)
+                .font(CTTypography.sectionTitle)
+                .foregroundStyle(CTColors.textPrimary(for: colorScheme))
+            Spacer(minLength: 0)
+            CTCloseButton(onClose: onClose)
+        }
+        .padding(CTSpacing.lg)
+    }
+}
+
 /// Liquid Glass is reserved for controls; content retains an opaque reading surface.
 private struct CTGlassSurface: ViewModifier {
     var radius: CGFloat
@@ -139,3 +198,4 @@ extension View {
         modifier(CTGlassSurface(radius: radius))
     }
 }
+

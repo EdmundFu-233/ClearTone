@@ -104,12 +104,7 @@ public final class HelperProcessManager: ObservableObject {
             .appendingPathComponent("Logs/ClearTone")
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         let logURL = logDir.appendingPathComponent("helper.log")
-        // 日志轮转：原先只在启动时截断一次，运行期只追加。
-        // Node 对每个请求都打 INFO（含 ANSI 色码），崩溃重启循环还会不断重开句柄，
-        // 无人清理时可涨到百 MB 级。
-        Self.rotateLogIfNeeded(at: logURL)
-        // 日志句柄创建失败不应让状态卡在 .starting
-        let logHandle = (try? FileHandle(forWritingTo: logURL)) ?? FileHandle.nullDevice
+        let logHandle = Self.makeLogHandle(at: logURL)
         proc.standardOutput = logHandle
         proc.standardError = logHandle
 
@@ -139,8 +134,8 @@ public final class HelperProcessManager: ObservableObject {
             // 将子进程加入与主进程相同的进程组，确保主应用退出时子进程被杀死
             // 使用 setsid 的反向操作：不调用 setsid，让子进程属于主进程组
         } catch {
-            state = .failed("启动失败: \(error.localizedDescription)")
-            lastError = error.localizedDescription
+            state = .failed("启动失败: \(error.ctUserMessage)")
+            lastError = error.ctUserMessage
             throw MusicError.helperProcessUnavailable
         }
 
@@ -280,6 +275,39 @@ public final class HelperProcessManager: ObservableObject {
         process = nil
         port = 0
         authToken = ""
+    }
+
+    /// 打开辅助进程日志（追加写），必要时先创建文件。
+    ///
+    /// ## 这里曾经有一个静默失效的 bug
+    ///
+    /// `FileHandle(forWritingTo:)` **不会创建文件** —— 文件不存在时抛错。
+    /// 原实现是 `(try? FileHandle(forWritingTo: logURL)) ?? FileHandle.nullDevice`：
+    /// 错误被 `try?` 吞掉，于是句柄回落到 `/dev/null`，
+    /// **辅助进程的日志一条都不会落盘，而且没有任何报错**。
+    /// 只有当 `helper.log` 碰巧已经存在时才工作 ——
+    /// 于是「先手工建过文件」的机器上看日志正常，新机器上日志永远空白，
+    /// 而日志恰恰是排查辅助进程问题的唯一手段。
+    ///
+    /// 现在显式建文件并 seek 到末尾，保证多次启动之间是追加关系。
+    static func makeLogHandle(at url: URL, maxBytes: Int = 5 * 1024 * 1024) -> FileHandle {
+        let fm = FileManager.default
+        // 轮转：Node 对每个请求都打 INFO（含 ANSI 色码），崩溃重启循环还会不断
+        // 重开句柄，无人清理时可涨到百 MB 级。
+        rotateLogIfNeeded(at: url, maxBytes: maxBytes)
+
+        if !fm.fileExists(atPath: url.path) {
+            // createFile 返回 false 表示已存在或失败；两种情况都继续往下走，
+            // 下面的 open 才是真正的判断
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else {
+            // 兜底：open 的语义就是「不存在则创建」，与 forWritingTo 不同
+            if let handle = FileHandle(forWritingAtPath: url.path) { return handle }
+            return FileHandle.nullDevice
+        }
+        try? handle.seekToEnd()
+        return handle
     }
 
     /// 超过阈值就把 helper.log 轮转为 helper.log.1，保留最近两份。

@@ -113,35 +113,61 @@ enum PlaybackState {
 | Cookie/Token | Keychain | `KeychainStore`，kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly |
 | 播放队列 | Application Support | JSON 文件 |
 | 用户设置 | UserDefaults | 通过 `PersistenceStore` 包装 |
-| 演示音频 | Application Support | 首次启动生成 |
 
 ## 6. 目录结构
 
 ```
 ClearTone/
-  App/                 # 入口、窗口、菜单、AppState
+  App/                 # 入口、窗口、菜单、AppState（导航栈 + 歌单写操作）
   Core/
-    Models/            # Song/Playlist/LyricLine 等
+    Models/            # MusicProvider(播放闭环) + MusicSocialProvider(社区/资料库)
     Networking/        # HelperProcessManager
     Persistence/       # PersistenceStore
-    Security/          # KeychainStore
+    Search/            # SearchSession + SearchAssistStore（状态机，放这里才能被测）
+    Security/          # KeychainStore + PlaintextCredentialStore
     Logging/           # CTLog
   Providers/
-    Netease/           # NeteaseProvider + LRCParser
+    Netease/           # NeteaseProvider(+SocialProvider 扩展) + LRCParser
+                       # + NeteaseEndpoint(路由登记表) + 直连/加密层(暂无生产调用方)
     Local/             # LocalProvider
-    Demo/              # DemoProvider + DemoAudioGenerator
-  Playback/            # PlayerController + PlayQueue
+    Demo/              # DemoAudioGenerator（仅供测试夹具使用）
+  Playback/            # PlayerController + PlayQueue + SongQuality + AudioCache
   Features/
-    Discover/ Search/ Library/ Playlist/ NowPlaying/ Settings/ Login/
-  DesignSystem/        # CTColors/CTTypography/CTSpacing/L10n
+    Album/ Artist/ Comments/ Discover/ Library/ Login/ NowPlaying/
+    Playlist/ Profile/ Radio/ Search/ Settings/ Shared/ Social/
+  DesignSystem/        # CTColors/CTTypography/CTSpacing/L10n + CoverImage
   Rendering/           # Metal renderer + shader + SpectrumAnalyzer
   Resources/
     HelperRuntime/     # Node.js + api-enhanced
     Assets.xcassets/
-Tests/                 # 单元测试
+Tests/                 # 单元测试（33 个文件 / 327 项，全部离线）
 docs/                  # 文档
-scripts/               # 构建脚本
+scripts/               # 构建与测试脚本
 ```
+
+## 6.1 两个 Provider 协议
+
+| 协议 | 覆盖 | 实现者 |
+|---|---|---|
+| `MusicProvider` | 播放闭环：登录、搜索、播放地址、歌词、队列 | Netease / Local |
+| `MusicSocialProvider` | 社区与资料库：歌单写操作、收藏、榜单、评论、消息、等级 | 仅 Netease |
+
+拆成两个是因为后者**只有在线账号才有**。塞进 `MusicProvider` 会迫使
+`LocalProvider` 写几十个 `throw .notLoggedIn`，噪音大且无信息量。
+
+## 6.2 已无生产调用方的代码
+
+`Providers/Netease/` 下的 `NeteaseDirectTransport` / `NeteaseCrypto` /
+`OrderedJSON` 是一套**不经辅助进程直连网易云**的完整实现（weapi 双重 AES +
+raw RSA、eapi MD5 + AES-ECB），加密链路已与 Node 标准答案逐字节对齐
+（`Tests/NeteaseEapiTests.swift`，18 项）。
+
+`ClearToneiOS` target 移除后它没有调用方，但保留：
+1. 它是唯一不依赖 Node 的实现 —— 去掉 169MB Node 依赖时这就是路基；
+2. `NeteaseEndpoint` 同时是**路由登记表**，
+   `NeteaseEndpointTests.testEveryRequestCallSiteIsMapped` 扫描所有
+   `request("...")` 调用点，保证不存在「调了但没登记」的路由
+   （`/song/detail` 当初就是这么漏的）。
 
 ## 7. 决策记录
 

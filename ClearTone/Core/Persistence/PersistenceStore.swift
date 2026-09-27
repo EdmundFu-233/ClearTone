@@ -12,19 +12,43 @@ public final class PersistenceStore: Sendable {
     /// 建目录只做一次：原先是计算属性，每次访问都执行一次 mkdir 系统调用，
     /// 而 saveQueue 每 5 秒就会被调用一次。
     /// 用 let + 一次性求值，也保证单元测试通过环境变量注入的目录能被缓存住。
-    private let storageURL: URL = {
-        let dir: URL
-        // 单元测试可通过环境变量把持久化隔离到临时目录，避免覆盖开发机的真实队列
+    /// 持久化根目录。`DemoAudioGenerator` 的测试音频目录也挂在它下面，
+    /// 这样 `CLEARTONE_TEST_STORAGE_DIR` 一个开关就能把两者一起隔离。
+    nonisolated public static let storageRoot: URL = {
         let override = getenv("CLEARTONE_TEST_STORAGE_DIR").map { String(cString: $0) }
         if let override, !override.isEmpty {
-            dir = URL(fileURLWithPath: override, isDirectory: true)
-        } else {
-            dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appendingPathComponent("ClearTone", isDirectory: true)
+            return URL(fileURLWithPath: override, isDirectory: true)
         }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("ClearTone", isDirectory: true)
+    }()
+
+    private let storageURL: URL = {
+        let dir = PersistenceStore.storageRoot
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        purgeOrphanedDemoAudio(in: dir)
         return dir
     }()
+
+    /// 删掉演示模式留下的 `DemoAudio/`（约 16MB 的合成 WAV）。
+    ///
+    /// 演示模式移除后生产代码再也不生成或读取它，但老安装的目录会一直留在磁盘上。
+    /// 挂在 `storageURL` 的初始化里：那是全 App 第一个碰到持久化根目录的地方，
+    /// 且只求值一次 —— 不会每次 `saveQueue` 都去 stat 一遍。
+    ///
+    /// 无条件删是安全的：`DemoAudioGenerator` 是按需重建的（测试里
+    /// `ensureFiles()` 会重新合成），删掉只会在下次用到时重新生成。
+    private static func purgeOrphanedDemoAudio(in root: URL) {
+        let dir = root.appendingPathComponent("DemoAudio", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: dir)
+            CTLog.general.info("已清理演示模式遗留的音频目录")
+        } catch {
+            // 删不掉（权限/文件占用）不是致命问题，下个版本再试
+            CTLog.general.error("清理演示音频目录失败: \(CTLog.sanitize(error.localizedDescription))")
+        }
+    }
 
     func saveQueue(_ queue: PersistedQueue) {
         let url = storageURL.appendingPathComponent("queue.json")
@@ -35,7 +59,18 @@ public final class PersistenceStore: Sendable {
     func loadQueue() -> PersistedQueue? {
         let url = storageURL.appendingPathComponent("queue.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(PersistedQueue.self, from: data)
+        guard var queue = try? JSONDecoder().decode(PersistedQueue.self, from: data) else { return nil }
+        queue.items = queue.items.filter { Self.isNotLegacyDemoSong($0.song) }
+        // items 为空也要照常返回：调用方靠它恢复音量/播放模式/音质。
+        return queue
+    }
+
+    /// 迁移：演示模式已移除，它留下的歌曲 id 固定是 `demo-1`…`demo-20`。
+    ///
+    /// `SongSource` 的容错解码把它们降级成了 `.netease`，留着只会变成永远播不了的行
+    /// （还会拿不存在的 id 去打网易云接口）。队列、liked 缓存、最近播放三处都要过这一道。
+    private static func isNotLegacyDemoSong(_ song: Song) -> Bool {
+        !song.id.hasPrefix("demo-")
     }
 
     public func clearQueue() {
@@ -78,6 +113,20 @@ public final class PersistenceStore: Sendable {
             try? await writePending()
         }
 
+        /// 排入快照并**在同一 actor 上立刻落盘**。
+        ///
+        /// 退出时不能用「先 `schedule` 再另起一个 Task `flushNow`」：
+        /// 两个 Task 在 actor 上的先后没有保证，`flushNow` 完全可能先跑而刷了个空；
+        /// 而且 `applicationWillTerminate` 返回后进程立刻结束，那两个 Task
+        /// 根本没机会执行。合成一个原子方法才既有序又等得到。
+        func persistAndFlush(queue: PersistedQueue?, recentSongs: [Song]?) async {
+            flushTask?.cancel()
+            flushTask = nil
+            if let queue { pendingQueue = queue }
+            if let recentSongs { pendingRecent = recentSongs }
+            try? await writePending()
+        }
+
         /// 「清空队列」用：丢弃所有待写内容，避免清空后又被旧快照写回来
         func reset() {
             flushTask?.cancel()
@@ -101,21 +150,38 @@ public final class PersistenceStore: Sendable {
             pendingQueue = nil
             pendingRecent = nil
             flushTask = nil
-            guard let queue, let recent else { return }
-            try await Task.detached(priority: .utility) {
-                try Self.writeSnapshots(queue: queue, recent: recent)
-            }.value
+            // 两条链路各自独立触发：队列编辑/播放进度只 schedule(queue:)，
+            // 切歌才同时 schedule(recent:)。所以必须**分别**判空、分别写。
+            //
+            // 原来的 `guard let queue, let recent else { return }` 是合取守卫，
+            // 而上面两行已经先把 pending 清空了 —— 于是「只改了队列」这一轮
+            // 的快照被永久丢弃（不是延后重试）。后果是：切歌之后的所有队列变更
+            // （清空、加歌、拖动排序、播放模式、音量、音质、播放进度）
+            // 一律不落盘，⌘Q 退出时也一样。
+            if let queue {
+                try await Task.detached(priority: .utility) {
+                    try Self.writeQueueSnapshot(queue)
+                }.value
+            }
+            if let recent {
+                try await Task.detached(priority: .utility) {
+                    try Self.writeRecentSnapshot(recent)
+                }.value
+            }
         }
 
-        private static func writeSnapshots(queue: PersistedQueue, recent: [Song]) throws {
-            let queueData = try JSONEncoder().encode(queue)
-            if queueData.count <= maxBytes {
-                try queueData.write(to: PersistenceStore.shared.queueFileURL, options: [.atomic])
-            }
-            // 最近播放与设置同源，仍写 UserDefaults，保持与 loadRecentSongs 的读取路径一致
-            if let recentData = try? JSONEncoder().encode(recent), recentData.count <= maxBytes {
-                UserDefaults.standard.set(recentData, forKey: PersistenceStore.shared.settingKey(for: "recentSongs"))
-            }
+        private static func writeQueueSnapshot(_ queue: PersistedQueue) throws {
+            let data = try JSONEncoder().encode(queue)
+            guard data.count <= maxBytes else { return }
+            try data.write(to: PersistenceStore.shared.queueFileURL, options: [.atomic])
+        }
+
+        /// 最近播放与设置同源，仍写 UserDefaults，保持与 `loadRecentSongs` 的读取路径一致
+        private static func writeRecentSnapshot(_ recent: [Song]) throws {
+            guard let data = try? JSONEncoder().encode(recent), data.count <= maxBytes else { return }
+            UserDefaults.standard.set(
+                data, forKey: PersistenceStore.shared.settingKey(for: "recentSongs")
+            )
         }
     }
 
@@ -166,7 +232,8 @@ public final class PersistenceStore: Sendable {
     }
 
     public func loadCachedLikedSongs() -> [Song] {
-        loadSetting(forKey: "cachedLikedSongs", as: [Song].self) ?? []
+        (loadSetting(forKey: "cachedLikedSongs", as: [Song].self) ?? [])
+            .filter { Self.isNotLegacyDemoSong($0) }
     }
 
     /// 全量收藏 id（约 60KB）。心形状态的判断依据，必须与详情列表分开存：
@@ -212,7 +279,8 @@ public final class PersistenceStore: Sendable {
     }
 
     public func loadRecentSongs() -> [Song] {
-        loadSetting(forKey: "recentSongs", as: [Song].self) ?? []
+        (loadSetting(forKey: "recentSongs", as: [Song].self) ?? [])
+            .filter { Self.isNotLegacyDemoSong($0) }
     }
 }
 
@@ -220,13 +288,58 @@ public final class PersistenceStore: Sendable {
 public struct AppSettings: Codable, Sendable {
     public var themeMode: CTThemeMode = .system
     public var resumePlaybackOnLaunch: Bool = false
-    public var closeToMenuBar: Bool = true
+    /// 点「关闭」时对应用做什么。
+    public enum CloseBehavior: String, Codable, CaseIterable, Sendable {
+        /// 关窗后继续在后台播放（菜单栏不出现图标）
+        case keepPlaying = "继续后台播放"
+        /// 关窗后缩到菜单栏
+        case minimizeToMenuBar = "缩到菜单栏"
+        /// 关窗即退出应用
+        case quit = "退出应用"
+
+        public var displayName: String { rawValue }
+
+        var help: String {
+            switch self {
+            case .keepPlaying:
+                return "关闭窗口但继续在后台播放，菜单栏不出现图标（可用 ⌘⇧M 打开迷你播放器）"
+            case .minimizeToMenuBar:
+                return "关闭窗口并在菜单栏显示图标，从那里控制播放"
+            case .quit:
+                return "关闭窗口即完全退出（等同 ⌘Q）"
+            }
+        }
+    }
+
+    /// 关窗行为。默认 `.keepPlaying` —— 与 `applicationShouldTerminateAfterLastWindowClosed`
+    /// 原来的返回值一致，不改变既有用户的习惯。
+    public var closeBehavior: CloseBehavior = .keepPlaying
+
+    /// 菜单栏是否**常驻**（与 `closeBehavior` 正交）。
+    ///
+    /// 打开后只要应用在运行就显示菜单栏图标，不管窗口开不开；
+    /// 关掉时图标只在 `.minimizeToMenuBar` 且没有可见窗口时出现。
+    /// 判定规则集中在 `MenuBarVisibilityPolicy`，不在视图里散落。
+    public var menuBarAlwaysVisible: Bool = false
+
+    /// 迷你播放器是否置顶
+    public var miniPlayerAlwaysOnTop: Bool = true
     public var performanceMode: PerformanceMode = .auto
-    public var spectrumMode: SpectrumMode = .real
+    /// 默认 `.ambient`。
+    ///
+    /// 原先默认 `.real`（真实频谱），但**没有任何代码产生过频谱数据** ——
+    /// MTAudioProcessingTap 那条路已被删除（会让缓存的 OPUS 播放卡在缓冲中），
+    /// spectrum 数组恒为全零。于是「真实频谱」这个选项选中后
+    /// 与「环境动画」渲染完全一样：spec §13 明令禁止的「假频谱」。
+    /// 现在真实频谱已从选项里移除，不再对用户承诺做不到的事。
+    public var spectrumMode: SpectrumMode = .ambient
     public var lyricOffset: TimeInterval = 0
     public var preferredQuality: AudioQuality.QualityLevel = .exhigh
     public var audioCacheEnabled: Bool = true   // 播放过的歌缓存为 96kbps OPUS
-    public var customAPIServer: String = ""  // 开发/高级配置
+    // 原先有 `customAPIServer`：设置页里是个可编辑的 TextField，
+    // 但**没有任何代码读取它** —— 辅助进程地址由 HelperProcessManager 每次
+    // 启动随机生成（回环 + 随机端口 + 一次性令牌），无法从外部指定。
+    // 作为「可编辑但无效果」的控件违反 spec §8/§13，已连同设置页一起移除。
 
     public enum PerformanceMode: String, Codable, CaseIterable, Sendable {
         case auto = "自动"
@@ -235,9 +348,63 @@ public struct AppSettings: Codable, Sendable {
         case static_ = "静态"
     }
 
+    /// 背景呈现方式。
+    ///
+    /// **没有 `real`（真实频谱）选项** —— 曾经有，但它拿不到真实采样：
+    /// `MTAudioProcessingTapStorage` 不在 SDK 头文件里，
+    /// `MTAudioProcessingTapGetStorage` 返回的是 `void**` 而不是回调指针，
+    /// 没法安全地把处理器交给实时线程；强行挂 tap 会与 AVPlayer 重新协商
+    /// 音频格式，导致 48kHz OPUS/CAF 缓存直接播不出来
+    /// （见 `docs/architecture.md` 与 `docs/optimization-plan.md` P1-21）。
+    ///
+    /// 真要实现，路径是 `AVAssetReader` 对**已缓存的本地文件**做离线分析 ——
+    /// 那只能覆盖缓存过的歌，远程流无从下手，所以也不适合作为通用选项。
     public enum SpectrumMode: String, Codable, CaseIterable, Sendable {
-        case real = "真实频谱"
         case ambient = "环境动画"
         case off = "关闭"
+
+        /// 容错解码：未知值一律落到 `.ambient`。
+        ///
+        /// 老用户存下过 `"真实频谱"`（`real` 已被移除），这个枚举必须自己能扛住。
+        /// 更大的防线在 `AppSettings.init(from:)` —— 逐字段兜底，
+        /// 一个枚举不认识不会连累主题、音质、缓存开关。
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = SpectrumMode(rawValue: raw) ?? .ambient
+        }
+    }
+
+    /// 全部字段取默认值。
+    ///
+    /// 必须显式写：一旦自定义了 `init(from:)`，编译器就不再合成
+    /// 那个「每个参数都有默认值」的成员初始化器，`AppSettings()` 会报
+    /// missing argument for parameter 'from'。
+    public init() {}
+
+    /// 字段级容错解码。
+    ///
+    /// 编译器合成的 `init(from:)` 是**整体成败**的：任何一个键的值不认识
+    /// （老版本写下的旧枚举、手改过的偏好文件、写到一半的 JSON），
+    /// 整个 `decode` 抛错，`loadSetting` 兜底成 `AppSettings()` ——
+    /// 用户的音质、歌词偏移、缓存开关全被悄悄重置，而界面上看不出发生过任何事。
+    ///
+    /// 这里改成逐字段 `decodeIfPresent` + 各自兜底：坏一个字段只丢那一个字段。
+    /// 顺带的好处是新增字段不必再担心老数据缺键。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? container.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+
+        themeMode = value(.themeMode, CTThemeMode.system)
+        resumePlaybackOnLaunch = value(.resumePlaybackOnLaunch, false)
+        closeBehavior = value(.closeBehavior, CloseBehavior.keepPlaying)
+        menuBarAlwaysVisible = value(.menuBarAlwaysVisible, false)
+        miniPlayerAlwaysOnTop = value(.miniPlayerAlwaysOnTop, true)
+        performanceMode = value(.performanceMode, PerformanceMode.auto)
+        spectrumMode = value(.spectrumMode, SpectrumMode.ambient)
+        lyricOffset = value(.lyricOffset, 0)
+        preferredQuality = value(.preferredQuality, AudioQuality.QualityLevel.exhigh)
+        audioCacheEnabled = value(.audioCacheEnabled, true)
     }
 }

@@ -5,6 +5,8 @@ struct QueuePanelView: View {
     @EnvironmentObject var player: PlayerController
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) var colorScheme
+    /// 拖放悬停态：拖到位必须给反馈，否则用户不知道能不能放
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +30,8 @@ struct QueuePanelView: View {
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
+                .help(L10n.Common.close)
+                .accessibilityLabel(L10n.Common.close)
             }
             .padding(CTSpacing.lg)
 
@@ -56,6 +60,21 @@ struct QueuePanelView: View {
         }
         .frame(width: 320)
         .background(CTColors.panel(for: colorScheme))
+        // 拖到位时整块高亮 + 描边，让「松手就入队」这件事有预期
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 0)
+                    .strokeBorder(CTColors.accent(for: colorScheme), lineWidth: 2)
+            }
+        }
+        .dropDestination(for: SongTransfer.self) { items, _ in
+            let pool = player.queue.items.map(\.song) + player.recentlyPlayed
+            let resolved = SongTransfer.resolveSongs(items, pool: pool)
+            guard !resolved.isEmpty else { return false }
+            player.appendToQueue(resolved)
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+        .help("把歌曲拖到这里可加入队列末尾")
     }
 }
 
@@ -102,6 +121,8 @@ struct QueueItemRow: View {
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
+                .help("从队列移除")
+                .accessibilityLabel("从队列移除：\(item.song.title)")
             }
         }
         .padding(.vertical, CTSpacing.xs)

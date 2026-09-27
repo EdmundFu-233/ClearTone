@@ -1,6 +1,6 @@
 import Foundation
 
-/// 统一的音乐数据提供方协议，隔离上游差异（真实网易云 / 本地 / 演示）
+/// 统一的音乐数据提供方协议，隔离上游差异（真实网易云 / 本地）
 public protocol MusicProvider: Sendable {
     var identifier: String { get }
     var displayName: String { get }
@@ -62,6 +62,14 @@ public struct SearchResult: Sendable {
 
     public init(songs: [Song] = [], artists: [Artist] = [], albums: [Album] = [], playlists: [Playlist] = [], totalCount: Int = 0, hasMore: Bool = false) {
         self.songs = songs; self.artists = artists; self.albums = albums; self.playlists = playlists; self.totalCount = totalCount; self.hasMore = hasMore
+    }
+
+    /// 四种结果全空才算「没搜到」。
+    ///
+    /// 早期只判断 songs 是否为空，于是「搜专辑有结果、但当前类型是单曲」
+    /// 会被判成无结果而显示空白页。
+    public var isEmpty: Bool {
+        songs.isEmpty && artists.isEmpty && albums.isEmpty && playlists.isEmpty
     }
 }
 

@@ -23,7 +23,7 @@ struct RadioView: View {
                 .padding(CTSpacing.xl)
 
             if !categories.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: CTSpacing.sm) {
                         categoryChip(title: "全部", id: nil)
                         ForEach(categories) { category in
@@ -164,8 +164,12 @@ struct RadioDetailView: View {
     @State private var station: RadioStation?
     @State private var programs: [RadioProgram] = []
     @State private var isLoading = false
+    @State private var isLoadingMore = false
+    @State private var hasMore = true
+    @State private var page = 1
     @State private var errorMessage: String?
     @State private var loadToken = UUID()
+    @State private var isSubscribed: Bool?
 
     private let provider = NeteaseProvider.shared
     private let pageSize = 30
@@ -221,7 +225,7 @@ struct RadioDetailView: View {
                 .font(CTTypography.caption)
                 .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 
-                if !playablePrograms.isEmpty {
+                HStack(spacing: CTSpacing.md) {
                     Button {
                         player.play(songs: playablePrograms.compactMap(\.song))
                     } label: {
@@ -229,6 +233,14 @@ struct RadioDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(playablePrograms.isEmpty)
+
+                    SubscribeButton(
+                        target: .radio(radioID),
+                        title: "收藏电台",
+                        isSubscribed: isSubscribed
+                    ) { newValue in
+                        await toggleSubscribe(newValue)
+                    }
                 }
             }
             Spacer()
@@ -245,10 +257,29 @@ struct RadioDetailView: View {
                 EmptyStateView(icon: "waveform", title: "节目", message: "该电台还没有节目")
             }
         } else {
-            List(playablePrograms) { program in
-                RadioProgramRow(program: program) {
-                    player.play(songs: playablePrograms.compactMap(\.song),
-                                startAt: playablePrograms.firstIndex(of: program) ?? 0)
+            List {
+                ForEach(playablePrograms) { program in
+                    RadioProgramRow(program: program) {
+                        player.play(songs: playablePrograms.compactMap(\.song),
+                                    startAt: playablePrograms.firstIndex(of: program) ?? 0)
+                    }
+                    .onAppear {
+                        // 电台节目此前固定只取一页 30 期，接口明明支持 offset
+                        if program.id == playablePrograms.last?.id {
+                            Task { await loadMorePrograms() }
+                        }
+                    }
+                }
+                if isLoadingMore {
+                    HStack {
+                        Spacer()
+                        ProgressView("加载中...").controlSize(.small)
+                        Spacer()
+                    }
+                } else if hasMore && !programs.isEmpty {
+                    Button("加载更多节目") { Task { await loadMorePrograms() } }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .listStyle(.plain)
@@ -265,18 +296,63 @@ struct RadioDetailView: View {
             let loaded = try await provider.fetchRadioPrograms(radioID: radioID, page: 1, limit: pageSize)
             guard loadToken == token, !Task.isCancelled else { return }
             programs = loaded.reversed().map { $0 }
-            // 电台名称：从节目里带不出来（dj/program 不返回电台名），
-            // 单独查一次热门/推荐列表代价大，这里用节目数兜底展示
-            if station == nil {
-                station = RadioStation(id: radioID, name: "电台",
-                                       programCount: loaded.count)
-            }
+            page = 1
+            hasMore = loaded.count >= pageSize
+            // 电台名与订阅状态：dj/program 不返回电台信息，
+            // 但 dj/detail 会返回，且它**不需要登录**（dj/sublist 才需要）
+            await loadStationDetail(token: token)
         } catch {
             guard loadToken == token else { return }
             errorMessage = CTLog.sanitize(error.localizedDescription)
         }
         guard loadToken == token else { return }
         isLoading = false
+    }
+
+    private func loadMorePrograms() async {
+        guard hasMore, !isLoadingMore, !isLoading else { return }
+        let token = loadToken
+        isLoadingMore = true
+        defer { if loadToken == token { isLoadingMore = false } }
+        do {
+            let next = page + 1
+            let loaded = try await provider.fetchRadioPrograms(
+                radioID: radioID, page: next, limit: pageSize
+            )
+            guard loadToken == token, !Task.isCancelled else { return }
+            // 接口按创建时间升序返回，页面要倒序，所以新一页要接在前面
+            programs = loaded.reversed().map { $0 } + programs
+            page = next
+            hasMore = loaded.count >= pageSize
+        } catch {
+            guard loadToken == token else { return }
+            hasMore = false
+        }
+    }
+
+    /// 电台名 + 订阅状态
+    private func loadStationDetail(token: UUID) async {
+        do {
+            let detail = try await provider.fetchRadioStationDetail(radioID: radioID)
+            guard loadToken == token, !Task.isCancelled else { return }
+            station = detail
+            isSubscribed = detail.isSubscribed
+        } catch {
+            guard loadToken == token else { return }
+            // 拿不到就退回节目数兜底，不要让整页空掉
+            if station == nil {
+                station = RadioStation(id: radioID, name: "电台", programCount: programs.count)
+            }
+        }
+    }
+
+    private func toggleSubscribe(_ subscribe: Bool) async {
+        do {
+            try await provider.subscribeRadio(id: radioID, subscribe: subscribe)
+            isSubscribed = subscribe
+        } catch {
+            errorMessage = error.ctUserMessage
+        }
     }
 }
 

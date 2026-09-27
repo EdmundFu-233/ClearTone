@@ -26,7 +26,6 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
     /// 目标帧率，由 SwiftUI 侧按性能模式设置
     public var targetFramesPerSecond: Int = 60
 
-    private var isPaused: Bool = false
     private var frameCount: UInt64 = 0
 
     /// draw 循环内零分配用的定长存储（定长元组不能用下标，改用固定结构体）
@@ -127,18 +126,12 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    public func pause() {
-        isPaused = true
-    }
-
-    public func resume() {
-        isPaused = false
-    }
-
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     public func draw(in view: MTKView) {
-        guard !isPaused, animationEnabled,
+        // 暂停由 SwiftUI 侧的 isAnimating（绑 scenePhase）→ MTKView.isPaused 承担，
+        // 这里原先还有一个从没人调用的 pause()/resume() + isPaused 判断，纯死代码
+        guard animationEnabled,
               let device = device,
               let commandQueue = commandQueue,
               let pipelineState = pipelineState,

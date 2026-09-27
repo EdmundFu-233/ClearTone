@@ -2,14 +2,11 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
-#if os(macOS)
 import AppKit
-/// 封面图在两个平台上的统一别名
+
+/// 封面图类型别名。保留这个名字而不是直接写 NSImage：
+/// MediaPlayer 的 artwork 回调与 CoverLoader 都用它，语义比具体类型清楚。
 typealias PlatformImage = NSImage
-#elseif os(iOS)
-import UIKit
-typealias PlatformImage = UIImage
-#endif
 
 /// 全局唯一播放控制器，管理 AVPlayer、状态、队列、系统媒体集成
 @MainActor
@@ -33,6 +30,130 @@ public final class PlayerController: ObservableObject {
     @Published public private(set) var actualQuality: AudioQuality?
     /// 当前播放是否来自本地音频缓存
     @Published public private(set) var isCurrentFromCache = false
+    /// 单曲音质覆盖（最新在前）。有覆盖的歌一定走网易源，不用本地缓存。
+    @Published public private(set) var songQualityOverrides: [SongQualityOverride] = []
+
+    // MARK: - 倍速播放
+
+    /// 当前播放速率。
+    ///
+    /// 用 `AVPlayer.defaultRate` 而不是每次 `play()` 后改 `rate`：前者会被
+    /// `play()` 采纳，一次设置对后续所有 resume/seek 完成路径都生效 ——
+    /// 否则每条「恢复播放」的分支都得记得补一句，漏一条就会退回 1.0x。
+    @Published public private(set) var playbackRate: Float = 1.0
+
+    /// 可选档位。与网易云/QQ 音乐一致按「常用整数倍」给，而不是连续滑杆 ——
+    /// 连续调速在流媒体上会一直触发重新缓冲。
+    public static let availableRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+
+    /// 倍速展示文案，如「1.5×」。
+    ///
+    /// 刻意不用 `%.2g`：`%.2g` 是**两位有效数字**，1.25 会显示成「1.2×」、
+    /// 1.75 会显示成「1.8×」—— 播放的是 1.25x，界面却说 1.2x。
+    /// 档位都是 0.25 的整数倍，两位小数去掉多余的 0 就够。
+    public static func rateLabel(_ rate: Float) -> String {
+        guard abs(rate - 1.0) > 0.01 else { return "1×" }
+        var text = String(format: "%.2f", (rate * 100).rounded() / 100)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text + "×"
+    }
+
+    /// 切换倍速。1.0 视为「正常」，UI 上不显示倍率。
+    public func setPlaybackRate(_ rate: Float) {
+        let clamped = min(max(rate, 0.25), 3.0)
+        guard clamped != playbackRate else { return }
+        playbackRate = clamped
+        applyRateToPlayer()
+        // 写进队列快照：重启后不该把用户的倍速偏好丢掉
+        persistState(structureChanged: false)
+        updateNowPlayingInfo()
+    }
+
+    /// 是否处于非正常倍速（播放栏据此显示倍率徽标）
+    public var isRateAdjusted: Bool { abs(playbackRate - 1.0) > 0.01 }
+
+    /// 当前倍速的展示文案；正常速度时为空串。
+    public var playbackRateLabel: String {
+        isRateAdjusted ? Self.rateLabel(playbackRate) : ""
+    }
+
+    /// 把速率落到播放器上。`defaultRate` 对之后的 `play()` 生效；
+    /// 已在播放时也要立刻改 `rate`，否则要等到下一次 resume。
+    private func applyRateToPlayer() {
+        guard let player else { return }
+        player.defaultRate = playbackRate
+        if playbackState.isPlaying || playbackState.isBuffering {
+            player.rate = playbackRate
+        }
+    }
+
+    // MARK: - 睡眠定时器
+
+    /// 到点后自动暂停。`nil` 表示未设置。
+    @Published public private(set) var sleepTimerEndDate: Date?
+    private var sleepTimerTask: Task<Void, Never>?
+
+    /// 睡眠定时器剩余秒数（0 表示未设置）。供 UI 每秒刷新倒计时。
+    @Published public private(set) var sleepTimerRemaining: TimeInterval = 0
+
+    /// 设置睡眠定时器。`minutes` <= 0 视为取消。
+    public func setSleepTimer(minutes: Double) {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        guard minutes > 0 else {
+            sleepTimerEndDate = nil
+            sleepTimerRemaining = 0
+            return
+        }
+        let end = Date().addingTimeInterval(minutes * 60)
+        sleepTimerEndDate = end
+        sleepTimerRemaining = minutes * 60
+
+        sleepTimerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let remaining = end.timeIntervalSinceNow
+                guard remaining > 0 else { break }
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.sleepTimerRemaining = max(0, remaining)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.sleepTimerEndDate = nil
+                self.sleepTimerRemaining = 0
+                // 只暂停，不清队列、不停止 —— 用户醒来后按播放即可继续
+                self.pause()
+            }
+        }
+    }
+
+    public func cancelSleepTimer() {
+        setSleepTimer(minutes: 0)
+    }
+
+    /// 「此刻在放什么」的可读描述：主信息是实际码率/格式，缓存状态只作次要信息。
+    ///
+    /// 视图（播放栏 / 全屏播放页 / 迷你播放器窗口）统一从这里取，
+    /// 文案规则只在一处（`PlayingSourceFormatter`）定义。
+    /// 不是 @Published：与 `actualQuality` / `isCurrentFromCache` 同生命周期，
+    /// 它们变化时本属性随之变化，读它的视图本来就会重算。
+    public var playingSourceInfo: PlayingSourceInfo? {
+        let song = currentSong
+        let meta = song.flatMap { AudioCacheManager.shared.meta(for: $0.id) }
+        return PlayingSourceFormatter.describe(
+            actualQuality: actualQuality,
+            requestedLevel: requestedQuality,
+            isFromCache: isCurrentFromCache,
+            cacheFormat: meta?.formatName,
+            cacheBitrateKbps: meta?.bitrateKbps,
+            isCaching: song.map { AudioCacheManager.shared.cachingSongIDs.contains($0.id) } ?? false
+        )
+    }
 
     /// 播放进度。
     ///
@@ -54,9 +175,6 @@ public final class PlayerController: ObservableObject {
     // MARK: - Private
     private var player: AVPlayer?
     private var playerItem: AVPlayerItem?
-    /// 是否处于前台。iOS 用：后台时跳过 2Hz 的 UI 进度更新（音频不受影响）。
-    private var isForeground = true
-
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
     private var bufferObserver: NSKeyValueObservation?
@@ -68,8 +186,6 @@ public final class PlayerController: ObservableObject {
     private var timeControlObserver: NSKeyValueObservation?
 
     private var provider: MusicProvider = NeteaseProvider.shared
-    private var localProvider = LocalProvider()
-    private var demoProvider = DemoProvider.shared
 
     private var currentGeneration: UInt = 0
     private var consecutiveFailures: Int = 0
@@ -92,16 +208,24 @@ public final class PlayerController: ObservableObject {
     private var isUserSeeking = false
     private var autoAdvanceTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
+    /// 拉流是否正在进行（URL 请求已发出、结果还没回来）。
+    /// 不能用「播放器上没有 item」来代替：自动失败切换走到队列末尾时会把状态置成
+    /// .idle 且同样没有 item，那时若当成「还在准备」，resume() 就只会翻意图、
+    /// 把状态改成 .loading —— 而没有任何请求在跑，界面会永远转圈。
+    private var isLoadInFlight = false
     private var pendingRestoreTime: TimeInterval?
     private var pendingAutoplay = true
     private var lastProgressSaveAt = Date.distantPast
     private let progressSaveInterval: TimeInterval = 5
 
-    private var isDemoMode = false
+    /// 单曲音质覆盖的持久化 key 与容量上限
+    private static let songQualityOverridesKey = "songQualityOverrides"
+    private static let maxSongQualityOverrides = 200
 
     private init() {
         setupRemoteCommands()
         recentlyPlayed = PersistenceStore.shared.loadRecentSongs()
+        songQualityOverrides = loadSongQualityOverrides()
         let restored = loadPersistedState()
         // 设置页的音质是权威值：队列文件里的可能落后（例如先改设置、还没播放过）
         let settings = PersistenceStore.shared.loadSetting(forKey: "appSettings", as: AppSettings.self)
@@ -127,10 +251,6 @@ public final class PlayerController: ObservableObject {
     }
 
     // MARK: - 公共配置
-
-    public func setDemoMode(_ enabled: Bool) {
-        isDemoMode = enabled
-    }
 
     public func setProvider(_ provider: MusicProvider) {
         self.provider = provider
@@ -189,10 +309,19 @@ public final class PlayerController: ObservableObject {
         isUserSeeking = false
         actualQuality = nil
         isCurrentFromCache = false
-        // 切歌开始时立即停止旧播放器，避免旧歌曲的时间观察者继续写进新歌曲进度
-        teardownPlayer()
+        // 切歌一开始就停掉旧播放器：解除 item + 暂停，旧歌曲的时间观察者
+        // 随 detachCurrentItem 一起摘掉，A 的时钟不会继续写进 B 的进度。
+        // 只 detach 不 teardownPlayer —— AVPlayer 实例必须跨曲复用（见
+        // detachCurrentItem 的说明）：每次换歌重建会重新协商解码器与输出路由，
+        // 切歌处会出现中断、延迟与 CPU 尖峰。startPlayback 会在需要时新建实例。
+        detachCurrentItem()
 
-        playbackState = .loading(songID: song.id)
+        // 「不自动出声」的一路（重启恢复、暂停中切音质）状态直接给 .paused：
+        // 拉流窗口里用户看到的必须是「▶ 播放」而不是「⏸ 暂停」——
+        // 播放按钮的图标由 isPlayIntentActive 决定，.loading 恒为 true，
+        // 若这里给 .loading，按钮会显示成暂停、点下去却是「开始播放」，
+        // 语义正好反过来（见 togglePlayPause 的 .loading 分支）。
+        playbackState = autoplay ? .loading(songID: song.id) : .paused(songID: song.id)
         currentSong = song
         duration = song.duration
         currentTime = restoreTime ?? 0
@@ -201,6 +330,7 @@ public final class PlayerController: ObservableObject {
         pendingAutoplay = autoplay
 
         persistState(structureChanged: true)
+        isLoadInFlight = true
         loadTask = Task { await loadAndPlay(song: song, generation: generation) }
     }
 
@@ -213,21 +343,36 @@ public final class PlayerController: ObservableObject {
                     throw MusicError.fileNotFound
                 }
                 playable = PlayableURL(url: url, quality: AudioQuality(level: .unknown, isActual: true))
-            case .demo:
-                playable = try await demoProvider.fetchPlayableURL(songID: song.id, quality: requestedQuality)
             case .netease:
-                if let cached = AudioCacheManager.shared.cachedItem(for: song.id) {
-                    // 优先播放本地缓存（96kbps OPUS）
+                // 单曲音质覆盖优先于全局设置；有覆盖就一定走网易源（跳过本地缓存），
+                // 否则默认吃缓存（96kbps OPUS，秒开）
+                let override = qualityOverride(for: song.id)
+                let level = SongQualityPolicy.effectiveLevel(override: override, global: requestedQuality)
+                if SongQualityPolicy.useLocalCache(hasOverride: override != nil),
+                   let cached = AudioCacheManager.shared.cachedItem(for: song.id) {
+                    // 登记「正在播放的缓存曲目」：`AudioCacheManager.trimIfNeeded`
+                    // 会跳过它，否则可能删掉 AVPlayer 正在读的文件。
+                    // 原先 `setCurrentCachedSong` 全工程零调用方，那条保护形同虚设。
+                    AudioCacheManager.shared.setCurrentCachedSong(song.id)
                     playable = PlayableURL(
                         url: cached.url,
-                        quality: AudioQuality(level: .unknown, bitrate: cached.bitrateKbps, isActual: true),
+                        // 缓存文件的编码就是缓存管线的输出格式（OPUS CAF）
+                        quality: AudioQuality(level: .unknown, bitrate: cached.bitrateKbps,
+                                              isActual: true, codec: cached.formatName),
                         isCached: true
                     )
                 } else {
-                    let remote = try await provider.fetchPlayableURL(songID: song.id, quality: requestedQuality)
+                    var remote = try await provider.fetchPlayableURL(songID: song.id, quality: level)
+                    // 无损（FLAC）接口常把 br 报成 0，用 size×8/时长 反算真实平均码率，
+                    // 否则播放栏只能显示「无损」而看不出实际拿到了多少
+                    if remote.quality.bitrate == nil {
+                        remote.quality.bitrate = SongQualityPolicy.derivedBitrateKbps(
+                            sizeBytes: remote.sizeBytes, duration: song.duration
+                        )
+                    }
                     playable = remote
-                    // 完整歌曲才缓存（试听流不缓存）
-                    if !remote.isPreview {
+                    // 完整歌曲才缓存；被点名要某个音质的歌不写（96k OPUS 对它是降级）
+                    if SongQualityPolicy.shouldWriteCache(hasOverride: override != nil, isPreview: remote.isPreview) {
                         AudioCacheManager.shared.cacheInBackground(songID: song.id, sourceURL: remote.url)
                     }
                 }
@@ -236,11 +381,16 @@ public final class PlayerController: ObservableObject {
             // 已切换歌曲或播放已停止：在途 URL 响应作废，不得再改状态/重建播放器
             guard generation == currentGeneration, playbackState.songID == song.id else { return }
 
+            // 拉流结束。item 刚接上、还没 readyToPlay，状态仍是 .loading，
+            // 那段时间由 `playbackState.isLoading` 继续表示「还在准备」
+            isLoadInFlight = false
             actualQuality = playable.quality
             isCurrentFromCache = playable.isCached
             CTLog.playback.info("播放源: \(playable.isCached ? "缓存" : "在线", privacy: .public) id=\(song.id, privacy: .public) 质量=\(playable.quality.level.rawValue, privacy: .public)")
             try startPlayback(url: playable.url, song: song, generation: generation)
         } catch {
+            // 只有仍属于当前代次的那次拉流才配改动这个标志
+            if generation == currentGeneration { isLoadInFlight = false }
             guard generation == currentGeneration else { return }
             handlePlayError(error, for: song)
         }
@@ -262,6 +412,11 @@ public final class PlayerController: ObservableObject {
         player?.isMuted = isMuted
 
         let item = AVPlayerItem(url: url)
+        // 倍速时保持音调。不设的话 1.5x 会变成「花栗鼠」，
+        // 而这是变速播放最容易被用户当成 bug 的一环。
+        // .timeDomain 是变调算法里最快的一种，流媒体上延迟最小；
+        // .spectral 音质更好但 CPU 开销大，远程流上容易掉帧。
+        item.audioTimePitchAlgorithm = .timeDomain
         playerItem = item
 
         // 状态监听
@@ -347,9 +502,6 @@ public final class PlayerController: ObservableObject {
                 // 校验代次：旧歌曲的时钟不得写入新歌曲或已停止的播放器
                 guard let self = self, generation == self.currentGeneration,
                       !self.isUserSeeking, self.currentSong != nil else { return }
-                // 后台跳过 UI 进度更新（音频照常播放，system 由 PlaybackRate 外推）。
-                // 2Hz 的 @Published 会让整棵视图树重算，进后台时纯属浪费功耗。
-                guard self.isForeground else { return }
                 self.currentTime = time.seconds
                 self.timePublisher.send(time.seconds)
                 // 不在这里调 updateNowPlayingElapsedTime()：写 nowPlayingInfo 字典会触发
@@ -426,6 +578,7 @@ public final class PlayerController: ObservableObject {
                     guard finished else { return }
                     // 采用 seek 期间用户最新的播放意图（pause/resume 会同步 pendingAutoplay）
                     if self.pendingAutoplay {
+                        self.player?.defaultRate = self.playbackRate
                         self.player?.play()
                         self.playbackState = .playing(songID: songID)
                     } else {
@@ -436,7 +589,10 @@ public final class PlayerController: ObservableObject {
                 }
             }
         } else {
-            if pendingAutoplay { player.play() }
+            if pendingAutoplay {
+                player.defaultRate = playbackRate
+                player.play()
+            }
             playbackState = pendingAutoplay
                 ? .playing(songID: songID)
                 : .paused(songID: songID)
@@ -458,6 +614,20 @@ public final class PlayerController: ObservableObject {
     }
 
     public func resume() {
+        // 播放源还在准备中（URL 在途，或 item 已挂上但还没 readyToPlay）：
+        // 只把意图翻成播放，**不重新拉流** —— 走 beginPlay 会递增代次、取消正在途的
+        // 请求并从头再来一遍（用户会听到重新加载，进度也可能被重置）。
+        // 真正出声由 startAudio 在 ready 之后按最新意图决定。
+        if isPreparingPlayback {
+            pendingAutoplay = true
+            if let songID = playbackState.songID {
+                // 现在确实有一场播放在进行（只是还没准备好）：显示「加载中 + 暂停图标」，
+                // 等 startAudio 落到 .playing；按钮语义与图标这才一致
+                playbackState = .loading(songID: songID)
+            }
+            updateNowPlayingPlaybackState()
+            return
+        }
         if player == nil {
             // 播放器尚未建立（如重启后从持久化恢复）：重建播放并按用户意图恢复进度
             beginRestoredPlayback(autoplay: true)
@@ -469,11 +639,24 @@ public final class PlayerController: ObservableObject {
             return
         }
         pendingAutoplay = true
+        // defaultRate 必须在 play() 之前设好：play() 会把它当作起始速率
+        player?.defaultRate = playbackRate
         player?.play()
         if let songID = playbackState.songID {
             playbackState = .playing(songID: songID)
         }
         updateNowPlayingPlaybackState()
+    }
+
+    /// 当前是否处于「有歌要播、但播放源还没准备好」的窗口。
+    ///
+    /// 两种来源：URL 还在途（`isLoadInFlight`），或 item 已挂上但还没 readyToPlay
+    /// （状态仍是 .loading）。**刻意不看「播放器上有没有 item」** ——
+    /// 播放失败且队列已空时状态是 .idle、item 也空，但那时并没有请求在跑，
+    /// 当成「还在准备」会让 resume() 翻完意图就返回，界面永远转圈。
+    private var isPreparingPlayback: Bool {
+        guard currentSong != nil else { return false }
+        return isLoadInFlight || playbackState.isLoading
     }
 
     /// 从持久化状态重建播放（重启后调用），恢复保存的进度
@@ -487,29 +670,14 @@ public final class PlayerController: ObservableObject {
         beginRestoredPlayback(autoplay: false)
     }
 
-    /// 场景切换回调（iOS 用；macOS 不调用）。
-    ///
-    /// 切后台**不暂停音频** —— info.plist 已声明 `UIBackgroundModes: audio`，
-    /// 锁屏与切后台都应继续播放。这里只处理两件事：
-    /// 1. 进后台时停掉高频 UI 刷新（省电，进度条改为低频更新）
-    /// 2. 回前台时立刻同步一次进度，避免显示过期位置
-    public func setScenePhase(_ phase: ScenePhaseBridge) {
-        #if os(iOS)
-        // 回前台时立刻同步一次进度，避免进度条停在离开时的位置
-        if phase == .active, let player, currentSong != nil, !isUserSeeking {
-            let t = player.currentTime().seconds
-            if t.isFinite {
-                currentTime = t
-                timePublisher.send(t)
-            }
-        }
-        isForeground = (phase == .active)
-        #endif
-    }
-
-    public func togglePlayPause() {        switch playbackState {
+    public func togglePlayPause() {
+        switch playbackState {
         case .playing, .buffering: pause()
-        case .loading: break   // 加载中不响应，交给 readyToPlay 后的意图分支
+        case .loading:
+            // 加载中按钮显示的是「⏸ 暂停」（loading 也算 play intent），点它必须真的有反应。
+            // 原先这里是 `break`：图标摆着暂停、点下去毫无动静。
+            // 按当前意图决定往哪边翻，ready 之后由 startAudio 采纳最新意图。
+            if pendingAutoplay { pause() } else { resume() }
         case .paused, .idle, .ended: resume()
         case .failed:
             // 失败态下点播放：重新尝试当前歌曲（重置失败计数与重试次数）
@@ -530,9 +698,11 @@ public final class PlayerController: ObservableObject {
     }
 
     public func previous() {
-        // 只有存在真实播放器时才应用“超过 3 秒回到开头”，
-        // 否则重启后恢复的暂停态按上一首处理
-        if player != nil, currentTime > 3 {
+        // 只有「播放器上确实挂着 item」时才应用“超过 3 秒回到开头”，
+        // 否则重启后恢复的暂停态按上一首处理；
+        // 换歌加载窗口内（实例复用、item 已摘除）currentTime 还是上一首的，
+        // 此时必须按上一首处理，不能被 seek(0) 吃掉。
+        if player?.currentItem != nil, currentTime > 3 {
             seek(to: 0)
             return
         }
@@ -587,6 +757,24 @@ public final class PlayerController: ObservableObject {
         persistState(structureChanged: true)
     }
 
+    /// 顺序播放 → 列表循环 → 单曲循环 → 随机，按播放栏按钮的同一顺序轮转
+    public func cyclePlayMode() {
+        let next: PlayMode
+        switch queue.mode {
+        case .sequential: next = .loopAll
+        case .loopAll: next = .loopOne
+        case .loopOne: next = .shuffle
+        case .shuffle: next = .sequential
+        }
+        setPlayMode(next)
+    }
+
+    /// 相对当前进度跳转。菜单/键盘的 ±15 秒。
+    public func seek(by seconds: TimeInterval) {
+        let target = min(max(0, currentTime + seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
+        commitSeek(to: target)
+    }
+
     // MARK: - 队列操作
 
     public func appendToQueue(_ song: Song) {
@@ -617,6 +805,26 @@ public final class PlayerController: ObservableObject {
         stopPlayback()
     }
 
+    /// 批量追加到队列末尾。
+    ///
+    /// 逐首调用 `appendToQueue` 会为每首歌各触发一次持久化写入：
+    /// 1000 首的歌单点「添加到队列」就是 1000 次 JSON 编码 + 落盘。
+    /// 批量接口只写一次。
+    public func appendToQueue(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        queue.append(contentsOf: songs)
+        persistState(structureChanged: true)
+    }
+
+    /// 批量插到当前歌曲之后（保持传入顺序）。
+    public func insertNext(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        for song in songs {
+            queue.insertNext(song)
+        }
+        persistState(structureChanged: true)
+    }
+
     public func moveQueueItems(fromOffsets: IndexSet, toOffset: Int) {
         queue.move(fromOffsets: fromOffsets, toOffset: toOffset)
         persistState(structureChanged: true)
@@ -635,12 +843,68 @@ public final class PlayerController: ObservableObject {
         guard requestedQuality != level else { return }
         requestedQuality = level
         persistState(structureChanged: true)
-        // 当前歌曲按新音质重新拉流，保留进度与播放状态
-        if let song = currentSong, playbackState.songID == song.id {
-            let time = currentTime
-            let autoplay = playbackState.isPlaying
-            beginPlay(song, restoreTime: time > 0 ? time : nil, autoplay: autoplay)
+        // 当前歌曲按新音质重新拉流，保留进度与播放状态。
+        // 有单曲覆盖时不受影响：那一首要的就是它自己指定的音质。
+        if let song = currentSong, playbackState.songID == song.id, qualityOverride(for: song.id) == nil {
+            reloadCurrentSongForQualityChange()
         }
+    }
+
+    // MARK: 单曲音质覆盖
+
+    /// 为某一首歌单独指定音质。
+    ///
+    /// - Parameter level: nil = 取消覆盖，回到全局设置
+    public func setQualityOverride(_ level: AudioQuality.QualityLevel?, for songID: String) {
+        let normalized = level == .unknown ? nil : level
+        if normalized == qualityOverride(for: songID) { return }
+        if let normalized = normalized {
+            songQualityOverrides.removeAll { $0.songID == songID }
+            songQualityOverrides.insert(SongQualityOverride(songID: songID, level: normalized), at: 0)
+            // 覆盖表只增不减会让它随听歌量无限膨胀；只保留最近改动的这些
+            if songQualityOverrides.count > Self.maxSongQualityOverrides {
+                songQualityOverrides.removeLast(songQualityOverrides.count - Self.maxSongQualityOverrides)
+            }
+        } else {
+            songQualityOverrides.removeAll { $0.songID == songID }
+        }
+        saveSongQualityOverrides()
+        // 当前这首立刻按新音质重拉（保留进度与播放状态）
+        if let song = currentSong, song.id == songID {
+            reloadCurrentSongForQualityChange()
+        }
+    }
+
+    public func qualityOverride(for songID: String) -> AudioQuality.QualityLevel? {
+        songQualityOverrides.first { $0.songID == songID }?.level
+    }
+
+    /// 这首歌实际会用到的音质
+    public func effectiveQuality(for songID: String) -> AudioQuality.QualityLevel {
+        SongQualityPolicy.effectiveLevel(override: qualityOverride(for: songID), global: requestedQuality)
+    }
+
+    /// 当前播放是否走了单曲音质覆盖（= 正在用网易源而不是本地缓存）
+    public var currentSongUsesOverride: Bool {
+        guard let song = currentSong else { return false }
+        return qualityOverride(for: song.id) != nil
+    }
+
+    /// 换音质后重拉当前这首：进度与播放状态都保住
+    private func reloadCurrentSongForQualityChange() {
+        guard let song = currentSong else { return }
+        let time = currentTime
+        let autoplay = playbackState.isPlaying || playbackState.isBuffering || pendingAutoplay
+        beginPlay(song, restoreTime: time > 0 ? time : nil, autoplay: autoplay)
+    }
+
+    private func loadSongQualityOverrides() -> [SongQualityOverride] {
+        PersistenceStore.shared.loadSetting(forKey: Self.songQualityOverridesKey, as: [SongQualityOverride].self) ?? []
+    }
+
+    private func saveSongQualityOverrides() {
+        // UserDefaults 同步写：这是一次性的用户点击，不是高频路径
+        PersistenceStore.shared.saveSetting(songQualityOverrides, forKey: Self.songQualityOverridesKey)
     }
 
     // MARK: - 结束处理
@@ -659,7 +923,8 @@ public final class PlayerController: ObservableObject {
         // 同一次失败可能同时触发 KVO .failed 与 FailedToPlayToEndTime，忽略重复回调
         if case .failed(let failedID, _) = playbackState, failedID == song.id { return }
 
-        let message = error.localizedDescription
+        // 失败原因会显示在播放栏上，必须走脱敏出口
+        let message = error.ctUserMessage
         playbackState = .failed(songID: song.id, reason: message)
         CTLog.playback.error("播放失败 [\(song.title)]: \(message)")
 
@@ -712,7 +977,8 @@ public final class PlayerController: ObservableObject {
             currentTime: currentTime,
             volume: volume,
             isMuted: isMuted,
-            requestedQuality: requestedQuality
+            requestedQuality: requestedQuality,
+            playbackRate: playbackRate
         )
     }
 
@@ -733,9 +999,10 @@ public final class PlayerController: ObservableObject {
     }
 
     /// 立即保存最新状态（退出、显式边界）
-    public func persistNow() {
-        persistState(structureChanged: true)
-        Task { await PersistenceStore.PersistenceWriter.shared.flushNow() }
+    public func persistNow() async {
+        await PersistenceStore.PersistenceWriter.shared.persistAndFlush(
+            queue: makeSnapshot(), recentSongs: recentlyPlayed
+        )
     }
 
     private func loadPersistedState() -> Bool {
@@ -749,6 +1016,17 @@ public final class PlayerController: ObservableObject {
         volume = data.volume
         isMuted = data.isMuted
         requestedQuality = data.requestedQuality
+        // 倍速此前只写不读：`makeSnapshot` 每次都存、`PersistedQueue` 还专门给了
+        // `= 1.0` 默认值兼容旧文件，可 `loadPersistedState` 从来没读过它，
+        // 于是「重启后保留倍速」这个承诺（写进代码注释的）根本没实现。
+        // 夹到可选档位内：旧文件里存过任意浮点数的话不该带进来。
+        if Self.availableRates.contains(playbackRate) {
+            self.playbackRate = data.playbackRate
+        } else {
+            playbackRate = Self.availableRates.min(by: {
+                abs($0 - data.playbackRate) < abs($1 - data.playbackRate)
+            }) ?? 1.0
+        }
         currentSong = queue.currentItem?.song
         duration = currentSong?.duration ?? 0
         currentTime = data.currentTime
@@ -807,6 +1085,7 @@ public final class PlayerController: ObservableObject {
         cancelAutoAdvance()
         loadTask?.cancel()
         loadTask = nil
+        isLoadInFlight = false
         seekTask?.cancel()
         isUserSeeking = false
         // 停止播放是彻底边界：销毁播放器实例，避免空转的解码器与音频会话
@@ -818,6 +1097,8 @@ public final class PlayerController: ObservableObject {
         pendingRestoreTime = nil
         actualQuality = nil
         isCurrentFromCache = false
+        // 复位缓存保护：换歌/停止后上一首的缓存文件不再被占用
+        AudioCacheManager.shared.setCurrentCachedSong(nil)
         retrySongID = ""
         sameSongRetries = 0
         playbackState = .idle
@@ -918,6 +1199,8 @@ struct PersistedQueue: Codable {
     var volume: Float
     var isMuted: Bool
     var requestedQuality: AudioQuality.QualityLevel
+    /// 倍速。带默认值是为了兼容旧版本写下的 queue.json（缺字段时按 1.0 读）
+    var playbackRate: Float = 1.0
 }
 
 /// MPRemoteCommand target 的持有者。

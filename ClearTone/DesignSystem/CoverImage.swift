@@ -140,6 +140,72 @@ final class CoverLoader {
         return result
     }
 
+    /// 头像：与封面共用同一条下载链路，但烘成**圆形裁剪**的位图。
+    ///
+    /// 原先有个独立的 `AvatarLoader`，与本 loader 逻辑重复，且缺了三样东西：
+    /// 在途去重（消息列表滚动会把同一头像请求十几次）、磁盘缓存、
+    /// 以及不可达 host 的换镜像重试。合并后头像和封面走完全一样的策略。
+    ///
+    /// 圆角必须在**图片层**裁：菜单标签会绕过 SwiftUI 的 `.clipShape(Circle())`，
+    /// 只靠视图裁剪会露出方角。
+    func avatar(url: URL?, pointSize: CGFloat) async -> NSImage? {
+        guard let url else { return nil }
+        let sized = Self.sizedURL(url, pointSize: pointSize)
+        let key = "avatar:" + sized.absoluteString
+
+        if let cached = memory.object(forKey: key as NSString) { return cached }
+        if let existing = inFlight[key] { return await existing.value }
+
+        let task = Task<NSImage?, Never> { [session] in
+            guard let raw = await Self.fetchImage(session: session, from: sized, pointSize: pointSize)
+            else { return nil }
+            return Self.bakeCircular(raw, pointSize: pointSize)
+        }
+        inFlight[key] = task
+        let result = await task.value
+        inFlight[key] = nil
+        if let result {
+            let cost = Int(result.size.width * result.size.height) * 4
+            memory.setObject(result, forKey: key as NSString, cost: cost)
+        }
+        return result
+    }
+
+    /// 居中裁成正方形并烘成圆形位图。
+    ///
+    /// 和 `downsample` 一样**立即栅格化**：返回带 drawingHandler 的惰性 NSImage
+    /// 会在任意绘制线程上执行闭包，那里没有主线程保证。
+    static func bakeCircular(_ image: NSImage, pointSize: CGFloat) -> NSImage {
+        let side = max(1, pointSize * 2)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(side), pixelsHigh: Int(side),
+            bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return image }
+        rep.size = NSSize(width: side, height: side)
+
+        let rect = NSRect(x: 0, y: 0, width: side, height: side)
+        let src = image.size
+        let crop = min(src.width, src.height)
+        let srcRect = NSRect(
+            x: (src.width - crop) / 2, y: (src.height - crop) / 2,
+            width: crop, height: crop
+        )
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSBezierPath(ovalIn: rect).addClip()
+        image.draw(in: rect, from: srcRect, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let baked = NSImage(size: NSSize(width: side, height: side))
+        baked.addRepresentation(rep)
+        return baked
+    }
+
     /// 下载并解码图片；连接失败时换一个 host 重试。
     ///
     /// 实测同一张封面的路径部分在 p1~p8 上通用，但某些 host 在当前网络下

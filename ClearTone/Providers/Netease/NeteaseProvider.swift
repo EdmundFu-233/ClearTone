@@ -43,10 +43,8 @@ public actor NeteaseProvider: MusicProvider {
         self.decoder = JSONDecoder()
     }
 
-    #if os(macOS)
     @MainActor
     private var helper: HelperProcessManager { HelperProcessManager.shared }
-    #endif
 
     // MARK: - 认证
 
@@ -143,22 +141,22 @@ public actor NeteaseProvider: MusicProvider {
         switch type {
         case .song:
             if let songs = result["songs"] as? [[String: Any]] {
-                searchResult.songs = songs.compactMap { mapSong($0) }
+                searchResult.songs = songs.compactMap { Self.mapSong($0) }
             }
             searchResult.totalCount = result["songCount"] as? Int ?? 0
         case .artist:
             if let artists = result["artists"] as? [[String: Any]] {
-                searchResult.artists = artists.map { mapArtist($0) }
+                searchResult.artists = artists.map { Self.mapArtist($0) }
             }
             searchResult.totalCount = result["artistCount"] as? Int ?? 0
         case .album:
             if let albums = result["albums"] as? [[String: Any]] {
-                searchResult.albums = albums.map { mapAlbum($0) }
+                searchResult.albums = albums.map { Self.mapAlbum($0) }
             }
             searchResult.totalCount = result["albumCount"] as? Int ?? 0
         case .playlist:
             if let playlists = result["playlists"] as? [[String: Any]] {
-                searchResult.playlists = playlists.map { mapPlaylist($0) }
+                searchResult.playlists = playlists.map { Self.mapPlaylist($0) }
             }
             searchResult.totalCount = result["playlistCount"] as? Int ?? 0
         }
@@ -175,12 +173,12 @@ public actor NeteaseProvider: MusicProvider {
         let json = try parseJSON(data)
         guard let playlistDict = json["playlist"] as? [String: Any] else { throw MusicError.invalidResponse }
 
-        let playlist = mapPlaylist(playlistDict)
+        let playlist = Self.mapPlaylist(playlistDict)
         let trackIds = (playlistDict["trackIds"] as? [[String: Any]])?.compactMap { $0["id"] } ?? []
         let totalCount = playlistDict["trackCount"] as? Int ?? trackIds.count
 
         // 只取前 50 首用于展示，完整分页用 fetchPlaylistTracks
-        let tracks = (playlistDict["tracks"] as? [[String: Any]])?.compactMap { mapSong($0) } ?? []
+        let tracks = (playlistDict["tracks"] as? [[String: Any]])?.compactMap { Self.mapSong($0) } ?? []
 
         return PlaylistDetail(playlist: playlist, tracks: tracks, totalTrackCount: totalCount)
     }
@@ -194,7 +192,7 @@ public actor NeteaseProvider: MusicProvider {
         ], cookie: cookie, cacheTTL: 300)
         let json = try parseJSON(data)
         guard let songs = json["songs"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-        return songs.compactMap { mapSong($0) }
+        return songs.compactMap { Self.mapSong($0) }
     }
 
     /// 已完整拉取过的歌单曲目：命中则完全不发请求，二次进入歌单瞬时显示
@@ -290,8 +288,8 @@ public actor NeteaseProvider: MusicProvider {
         let data = try await request("/album", query: ["id": id], cacheTTL: 600)
         let json = try parseJSON(data)
         guard let albumDict = json["album"] as? [String: Any] else { throw MusicError.invalidResponse }
-        let album = mapAlbum(albumDict)
-        let songs = (json["songs"] as? [[String: Any]])?.compactMap { mapSong($0) } ?? []
+        let album = Self.mapAlbum(albumDict)
+        let songs = (json["songs"] as? [[String: Any]])?.compactMap { Self.mapSong($0) } ?? []
 
         let playlist = Playlist(
             id: album.id, name: album.name, coverURL: album.coverURL,
@@ -306,15 +304,15 @@ public actor NeteaseProvider: MusicProvider {
         let json = try parseJSON(data)
         guard let artistDict = json["data"] as? [String: Any],
               let artistInfo = artistDict["artist"] as? [String: Any] else { throw MusicError.invalidResponse }
-        let artist = mapArtist(artistInfo)
+        let artist = Self.mapArtist(artistInfo)
 
         let songsData = try await request("/artist/top/song", query: ["id": id], cacheTTL: 600)
         let songsJSON = try parseJSON(songsData)
-        let hotSongs = (songsJSON["songs"] as? [[String: Any]])?.compactMap { mapSong($0) } ?? []
+        let hotSongs = (songsJSON["songs"] as? [[String: Any]])?.compactMap { Self.mapSong($0) } ?? []
 
         let albumsData = try await request("/artist/album", query: ["id": id, "limit": "20"], cacheTTL: 600)
         let albumsJSON = try parseJSON(albumsData)
-        let albums = (albumsJSON["hotAlbums"] as? [[String: Any]])?.map { mapAlbum($0) } ?? []
+        let albums = (albumsJSON["hotAlbums"] as? [[String: Any]])?.map { Self.mapAlbum($0) } ?? []
 
         return ArtistDetail(artist: artist, hotSongs: hotSongs, albums: albums)
     }
@@ -338,6 +336,7 @@ public actor NeteaseProvider: MusicProvider {
         var standardURL: URL?
         var standardQuality: AudioQuality?
         var standardIsPreview = false
+        var standardSizeBytes: Int?
         do {
             let data = try await request("/song/url/v1", query: ["id": songID, "level": level], cookie: cookie, cacheTTL: 240)
             let json = try parseJSON(data)
@@ -353,15 +352,19 @@ public actor NeteaseProvider: MusicProvider {
                 let isPreview = hasTrial || br == 128012 || br == 128018
                 standardURL = primary
                 standardIsPreview = isPreview
+                // FLAC（level=lossless/hires）常常 br=0，只给 size。
+                // 码率留给上层用 size×8/时长 反算，这里不拿 0 当码率。
+                standardSizeBytes = first["size"] as? Int
                 standardQuality = AudioQuality(
-                    level: mapQualityLevel(first["level"] as? String),
-                    bitrate: br.map { $0 / 1000 },
+                    level: Self.mapQualityLevel(first["level"] as? String),
+                    bitrate: br.map { $0 / 1000 }.flatMap { $0 > 0 ? $0 : nil },
                     sampleRate: first["sr"] as? Int,
                     bitDepth: nil,
-                    isActual: true
+                    isActual: true,
+                    codec: Self.codecName(encodeType: first["encodeType"] as? String, url: primary)
                 )
                 if !isPreview, await isStreamReachable(primary) {
-                    return PlayableURL(url: primary, quality: standardQuality!)
+                    return PlayableURL(url: primary, quality: standardQuality!, sizeBytes: standardSizeBytes)
                 }
             }
         } catch {
@@ -387,7 +390,7 @@ public actor NeteaseProvider: MusicProvider {
         //    试听流仍标记 isPreview，调用方据此跳过音频缓存
         if let url = standardURL {
             let q = standardQuality ?? AudioQuality(level: .unknown, isActual: true)
-            return PlayableURL(url: url, quality: q, isPreview: standardIsPreview)
+            return PlayableURL(url: url, quality: q, isPreview: standardIsPreview, sizeBytes: standardSizeBytes)
         }
         throw MusicError.noPlayableURL
     }
@@ -477,7 +480,7 @@ public actor NeteaseProvider: MusicProvider {
         let data = try await request("/user/playlist", query: ["uid": userID], cookie: cookie, cacheTTL: 120)
         let json = try parseJSON(data)
         guard let playlists = json["playlist"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-        return playlists.map { mapPlaylist($0) }
+        return playlists.map { Self.mapPlaylist($0) }
     }
 
     /// 喜欢列表的**全量**歌曲 id。
@@ -516,7 +519,7 @@ public actor NeteaseProvider: MusicProvider {
                 cookie: cookie, cacheTTL: 300
             )
             guard let songs = (try parseJSON(detailData)["songs"] as? [[String: Any]]) else { continue }
-            result.append(contentsOf: songs.compactMap { mapSong($0) })
+            result.append(contentsOf: songs.compactMap { Self.mapSong($0) })
         }
         return result
     }
@@ -541,7 +544,7 @@ public actor NeteaseProvider: MusicProvider {
         let data = try await request("/personalized", query: ["limit": "20"], cookie: cookie, cacheTTL: 600)
         let json = try parseJSON(data)
         guard let result = json["result"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-        return result.map { mapPlaylist($0) }
+        return result.map { Self.mapPlaylist($0) }
     }
 
     public func fetchDailyRecommendSongs() async throws -> [Song] {
@@ -550,7 +553,7 @@ public actor NeteaseProvider: MusicProvider {
         let json = try parseJSON(data)
         guard let dataDict = json["data"] as? [String: Any],
               let dailySongs = dataDict["dailySongs"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-        return dailySongs.compactMap { mapSong($0) }
+        return dailySongs.compactMap { Self.mapSong($0) }
     }
 
     // MARK: - 电台（DJ / 播客）
@@ -587,10 +590,10 @@ public actor NeteaseProvider: MusicProvider {
     private func parseRadioStations(_ data: Data) throws -> [RadioStation] {
         let json = try parseJSON(data)
         guard let radios = json["djRadios"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-        return radios.compactMap { mapRadioStation($0) }
+        return radios.compactMap { Self.mapRadioStation($0) }
     }
 
-    private func mapRadioStation(_ dict: [String: Any]) -> RadioStation? {
+    nonisolated static func mapRadioStation(_ dict: [String: Any]) -> RadioStation? {
         guard let id = dict["id"] else { return nil }
         let dj = dict["dj"] as? [String: Any] ?? [:]
         return RadioStation(
@@ -600,7 +603,9 @@ public actor NeteaseProvider: MusicProvider {
             programCount: (dict["programCount"] as? Int) ?? 0,
             subscriberCount: (dict["subCount"] as? Int) ?? 0,
             creatorName: dj["nickname"] as? String,
-            categoryName: dict["categoryName"] as? String,
+            // 实测：分类字段叫 `category`（不是 categoryName）；
+            // `/dj/sublist` 用 category，`/dj/hot` 用 categoryName，两个都认
+            categoryName: dict["categoryName"] as? String ?? dict["category"] as? String,
             descriptionText: dict["desc"] as? String,
             isSubscribed: (dict["isSub"] as? Int) == 1
         )
@@ -625,7 +630,7 @@ public actor NeteaseProvider: MusicProvider {
         guard let id = dict["id"] else { return nil }
         // 节目自带 mainSong，结构与标准歌曲一致，直接复用 mapSong
         let mainSong = dict["mainSong"] as? [String: Any]
-        let song = mainSong.flatMap { mapSong($0) }
+        let song = mainSong.flatMap { Self.mapSong($0) }
         // 时长是毫秒；节目级 duration 优先，缺失时取歌曲的
         let durationMs = (dict["duration"] as? Int)
             ?? (mainSong?["duration"] as? Int)
@@ -651,7 +656,7 @@ public actor NeteaseProvider: MusicProvider {
     /// 网易云对 `/like` 这类写接口用 GET 调用时会返回
     /// `code: 524 / 当前环境异常，已取消喜欢` —— 同一首歌、同一 cookie，
     /// POST 返回 200 而 GET 返回 524。请求方法错了会被当成风控请求而静默拒绝。
-    private func request(
+    func request(
         _ path: String,
         query: [String: String] = [:],
         cookie: String? = nil,
@@ -665,14 +670,6 @@ public actor NeteaseProvider: MusicProvider {
             return entry.data
         }
 
-        #if os(iOS)
-        // iOS 无法拉起辅助进程（没有 Process()，且 node 是 macOS 二进制），
-        // 改为直连：路由名翻译成网易云原始 uri，自行完成加密。
-        let data = try await directRequest(
-            path, query: query, cookie: cookie, cacheTTL: cacheTTL, method: method
-        )
-        return data
-        #else
         try await helper.startIfNeeded()
         let url = try await helper.makeURL(path: path, query: query)
         var request = URLRequest(url: url)
@@ -717,67 +714,14 @@ public actor NeteaseProvider: MusicProvider {
         } catch let error as URLError where error.code == .notConnectedToInternet || error.code == .networkConnectionLost {
             throw MusicError.networkUnavailable
         } catch {
-            if let musicError = error as? MusicError { throw musicError }
-            throw MusicError.unknown(error.localizedDescription)
+            // 走归一化：URLError 的语义（超时/断网/取消）不再被 localizedDescription 抹掉，
+            // 且文案不再随系统语言变化
+            throw MusicError.from(error)
         }
-        #endif
     }
 
-    #if os(iOS)
-    /// iOS 直连实现。
-    ///
-    /// 与辅助进程版的差异只有「谁来翻译路由名、谁来加密」，
-    /// 缓存、错误映射、解析逻辑完全共用。
-    private func directRequest(
-        _ path: String,
-        query: [String: String],
-        cookie: String?,
-        cacheTTL: TimeInterval?,
-        method: String
-    ) async throws -> Data {
-        guard let endpoint = NeteaseEndpoint.endpoint(forRoute: path) else {
-            // 未知路由显式失败：静默走错加密方式会得到「HTTP 200 空 body」
-            CTLog.general.error("未映射的接口路由: \(CTLog.sanitize(path))")
-            throw MusicError.apiError(code: -1, message: "接口未适配：\(path)")
-        }
 
-        let cacheKey = Self.cacheKey(
-            path: path, query: query, hasCookie: !(cookie ?? "").isEmpty
-        )
-
-        // 辅助进程接受 GET/POST 两种；直连统一用 POST。
-        // 写操作必须 POST（GET 时网易云返回 524/405）。
-        let data: Data
-        switch endpoint.crypto {
-        case .plain:
-            data = try await NeteaseDirectTransport.shared.plainAPI(
-                endpoint.apiPath, params: query, cookie: cookie
-            )
-        case .weapi:
-            data = try await NeteaseDirectTransport.shared.weapi(
-                endpoint.apiPath, params: query, cookie: cookie
-            )
-        }
-
-        // 会话失效：部分接口 HTTP 200 + body code=301
-        if data.count <= 64 * 1024,
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           (json["code"] as? Int) == 301 {
-            throw sessionExpiredError()
-        }
-
-        if method == "GET", let ttl = cacheTTL, ttl > 0 {
-            responseCacheBytes += data.count - (responseCache[cacheKey]?.data.count ?? 0)
-            responseCache[cacheKey] = CacheEntry(
-                data: data, expiresAt: Date().addingTimeInterval(ttl)
-            )
-            enforceResponseCacheLimits()
-        }
-        return data
-    }
-    #endif
-
-    private func parseJSON(_ data: Data) throws -> [String: Any] {
+    func parseJSON(_ data: Data) throws -> [String: Any] {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MusicError.invalidResponse
         }
@@ -865,24 +809,33 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     // MARK: - 模型映射
+    //
+    // 全部是**纯函数**，因此标 `nonisolated static`：
+    // 1. 不碰 actor 状态，隔离没有意义；
+    // 2. 调用方（含单元测试）不必把非 Sendable 的 `[String: Any]`
+    //    跨隔离边界传进来 —— Swift 6 会把那判成 data race。
 
-    private func mapSong(_ dict: [String: Any]) -> Song? {
+    nonisolated static func mapSong(_ dict: [String: Any]) -> Song? {
         guard let id = dict["id"] else { return nil }
         let idString = String(describing: id)
         let title = dict["name"] as? String ?? "未知歌曲"
 
         let artists = (dict["ar"] as? [[String: Any]]) ?? (dict["artists"] as? [[String: Any]]) ?? []
-        let artistModels = artists.map { mapArtist($0) }
+        let artistModels = artists.map { Self.mapArtist($0) }
 
         var album: Album?
         if let al = dict["al"] as? [String: Any] {
-            album = mapAlbum(al)
+            album = Self.mapAlbum(al)
         } else if let albumDict = dict["album"] as? [String: Any] {
-            album = mapAlbum(albumDict)
+            album = Self.mapAlbum(albumDict)
         }
 
-        let duration = (dict["dt"] as? Double ?? dict["duration"] as? Double ?? 0) / 1000.0
-        let coverURL = (dict["al"] as? [String: Any])?["picUrl"] as? String ?? (dict["album"] as? [String: Any])?["picUrl"] as? String
+        let duration = (Self.number(dict["dt"]) ?? Self.number(dict["duration"]) ?? 0) / 1000.0
+        // 三个来源都要认：/song/detail 给 al.picUrl，搜索简要给 album.picUrl，
+        // 而 /personalized/newsong 把封面放在**顶层** picUrl
+        let coverURL = (dict["al"] as? [String: Any])?["picUrl"] as? String
+            ?? (dict["album"] as? [String: Any])?["picUrl"] as? String
+            ?? dict["picUrl"] as? String
 
         let st = dict["st"] as? Int ?? 0
         let isPlayable = st >= 0
@@ -897,20 +850,20 @@ public actor NeteaseProvider: MusicProvider {
         )
     }
 
-    private func mapArtist(_ dict: [String: Any]) -> Artist {
+    nonisolated static func mapArtist(_ dict: [String: Any]) -> Artist {
         let id = String(describing: dict["id"] ?? "0")
         let name = dict["name"] as? String ?? "未知歌手"
         return Artist(id: id, name: name)
     }
 
-    private func mapAlbum(_ dict: [String: Any]) -> Album {
+    nonisolated static func mapAlbum(_ dict: [String: Any]) -> Album {
         let id = String(describing: dict["id"] ?? "0")
         let name = dict["name"] as? String ?? "未知专辑"
         let coverURL = (dict["picUrl"] as? String).flatMap(URL.init)
         return Album(id: id, name: name, coverURL: coverURL)
     }
 
-    private func mapPlaylist(_ dict: [String: Any]) -> Playlist {
+    nonisolated static func mapPlaylist(_ dict: [String: Any]) -> Playlist {
         let id = String(describing: dict["id"] ?? "0")
         let name = dict["name"] as? String ?? "未知歌单"
         let coverURL = ((dict["coverImgUrl"] as? String) ?? (dict["picUrl"] as? String)).flatMap(URL.init)
@@ -921,7 +874,23 @@ public actor NeteaseProvider: MusicProvider {
                         creatorName: creator, descriptionText: description, source: .netease)
     }
 
-    private func mapQualityLevel(_ level: String?) -> AudioQuality.QualityLevel {
+    /// 从 JSON 值里取数字。
+    ///
+    /// 不能直接 `as? Double`：`JSONSerialization` 把整数解成 `Int` 型
+    /// `NSNumber` 时，`as? Double` 会失败（Swift 不会做 Int→Double 的
+    /// 有损判断），于是时长变成 0、计数变成默认值 —— 而且不报错，很难查。
+    nonisolated static func number(_ value: Any?) -> Double? {
+        switch value {
+        case let n as Double: return n
+        case let n as Int: return Double(n)
+        case let n as Int64: return Double(n)
+        case let n as NSNumber: return n.doubleValue
+        case let s as String: return Double(s)
+        default: return nil
+        }
+    }
+
+    nonisolated static func mapQualityLevel(_ level: String?) -> AudioQuality.QualityLevel {
         switch level {
         case "standard": return .standard
         case "higher": return .higher
@@ -931,9 +900,28 @@ public actor NeteaseProvider: MusicProvider {
         default: return .unknown
         }
     }
+
+    /// 播放源的实际编码。播放栏要显示「编码 + 码率」——
+    /// 只写「极高 320k」看不出是 MP3 还是 AAC，无损也看不出是不是 FLAC。
+    ///
+    /// 优先用接口的 `encodeType`，缺失时退回 URL 扩展名
+    /// （Netease 的 CDN 路径就是 `xxx.flac` / `xxx.mp3` / `xxx.m4a`）。
+    nonisolated static func codecName(encodeType: String?, url: URL?) -> String? {
+        let raw = (encodeType?.trimmingCharacters(in: .whitespaces)).flatMap { $0.isEmpty ? nil : $0 }
+        let token = raw ?? url?.pathExtension
+        guard let token = token?.lowercased(), !token.isEmpty else { return nil }
+        switch token {
+        case "mp3": return "MP3"
+        case "aac", "m4a", "m4b": return "AAC"
+        case "flac": return "FLAC"
+        case "alac": return "ALAC"
+        case "opus": return "OPUS"
+        case "wav", "wave": return "WAV"
+        default: return token.uppercased()
+        }
+    }
 }
 
-#if os(macOS)
 // MARK: - HelperProcessManager 便捷扩展
 extension HelperProcessManager {
     @MainActor
@@ -947,4 +935,3 @@ extension HelperProcessManager {
         }
     }
 }
-#endif

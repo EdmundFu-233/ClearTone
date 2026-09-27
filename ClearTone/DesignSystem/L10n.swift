@@ -28,7 +28,6 @@ public enum L10n {
         public static let volume = "音量"
         public static let queue = "播放队列"
         public static let lyrics = "歌词"
-        public static let demoMode = "演示模式"
     }
 
     public enum Sidebar {
@@ -72,8 +71,6 @@ public enum L10n {
         public static let about = "关于"
         public static let theme = "主题"
         public static let language = "语言"
-        public static let demoMode = "演示模式"
-        public static let demoModeHint = "使用内置演示数据，无需登录"
         public static let apiServer = "API 服务地址（开发/高级）"
         public static let apiServerHint = "仅用于开发调试，默认使用内置本地服务"
         public static let closeBehavior = "关闭窗口时"
@@ -83,9 +80,6 @@ public enum L10n {
         public static let resumePlaybackHint = "恢复上次播放位置，但不自动出声"
         public static let dynamicBackground = "动态背景"
         public static let spectrum = "频谱显示"
-        public static let spectrumReal = "真实频谱"
-        public static let spectrumAmbient = "环境动画"
-        public static let spectrumOff = "关闭"
         public static let lyricOffset = "歌词偏移"
         public static let performanceMode = "性能模式"
         public static let performanceAuto = "自动"

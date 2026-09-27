@@ -42,6 +42,9 @@ struct SettingsView: View {
                         // 统一入口：同步到播放器并对当前歌曲立即按新音质重新拉流
                         player.setRequestedQuality(newValue)
                     }
+                    Text("默认音质。只对「本地没有缓存、必须走在线流」时生效；要让某一首固定用某个音质（并跳过缓存），在播放栏或正在播放页点音源标签。")
+                        .font(CTTypography.caption)
+                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 
                     Divider()
 
@@ -49,7 +52,7 @@ struct SettingsView: View {
                         .onChange(of: settings.settings.audioCacheEnabled) { _, newValue in
                             AudioCacheManager.shared.isEnabled = newValue
                         }
-                    Text("听过的网易云歌曲会转成 96kbps OPUS 缓存，再次播放优先使用缓存；受约束 VBR，实际平均码率随内容浮动")
+                    Text("听过的网易云歌曲会转成 96kbps OPUS 缓存，再次播放优先使用缓存（默认走缓存，秒开）；受约束 VBR，实际平均码率随内容浮动。缓存码率低于标准档，想听无损/Hi-Res 时在播放栏或正在播放页点音源标签，给这一首指定音质，那次就走网易源、不吃缓存。")
                         .font(CTTypography.caption)
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 
@@ -103,6 +106,42 @@ struct SettingsView: View {
                             Text(mode.rawValue).tag(mode)
                         }
                     }
+                    .help("背景呈现方式。真实频谱需要读取音频采样，\n"
+                          + "当前播放链路拿不到，因此不提供该选项。")
+                }
+
+                // 窗口与关闭行为
+                SettingsSection(title: "窗口") {
+                    Picker("关闭窗口时", selection: $settings.settings.closeBehavior) {
+                        ForEach(AppSettings.CloseBehavior.allCases, id: \.self) { behavior in
+                            Text(behavior.displayName).tag(behavior)
+                        }
+                    }
+                    .help(settings.settings.closeBehavior.help)
+
+                    Toggle("菜单栏常驻", isOn: $settings.settings.menuBarAlwaysVisible)
+                        .toggleStyle(.switch)
+                        .help("只要应用在运行就显示菜单栏图标，不受「关闭窗口时」影响。\n"
+                              + "关掉它时，图标只在选了「缩到菜单栏」且当前没有窗口时出现。")
+
+                    Toggle("迷你播放器置顶", isOn: $settings.settings.miniPlayerAlwaysOnTop)
+                        .toggleStyle(.switch)
+                }
+
+                // 歌词
+                SettingsSection(title: "歌词") {
+                    HStack {
+                        Text("时间偏移")
+                        Spacer()
+                        Text(offsetDescription)
+                            .font(CTTypography.caption)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                            .monospacedDigit()
+                    }
+                    Text("字幕比音频早/晚时在这里微调，也可以在正在播放页直接调。")
+                        .font(CTTypography.caption)
+                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 // 账号
@@ -122,17 +161,6 @@ struct SettingsView: View {
                     }
                 }
 
-                // 演示模式
-                SettingsSection(title: L10n.Settings.demoMode) {
-                    Toggle(L10n.Settings.demoMode, isOn: Binding(
-                        get: { appState.isDemoMode },
-                        set: { appState.setDemoMode($0) }
-                    ))
-                    Text(L10n.Settings.demoModeHint)
-                        .font(CTTypography.caption)
-                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                }
-
                 // 高级
                 SettingsSection(title: L10n.Settings.advanced) {
                     HStack {
@@ -142,11 +170,23 @@ struct SettingsView: View {
                             .buttonStyle(.borderless)
                     }
                     if showAPIConfig {
-                        TextField("http://127.0.0.1:3000", text: $settings.settings.customAPIServer)
-                            .textFieldStyle(.roundedBorder)
-                        Text(L10n.Settings.apiServerHint)
+                        // 明确写成「未接线」，而不是留一个可编辑的输入框。
+                        //
+                        // 原先这里是个能打字、能保存、但**没有任何代码读取**的
+                        // TextField：`customAPIServer` 在整个工程里只出现在
+                        // 设置模型和这个控件里。辅助进程地址是
+                        // HelperProcessManager 自己生成的随机端口（安全模型要求
+                        // 每次启动都换），没法从设置里指定。
+                        // spec §8「每个可点按钮都必须能用」与 §13「不做空壳按钮」
+                        // 都禁止这种控件，所以改成只读的说明文字。
+                        Text("未接线")
+                            .font(CTTypography.caption)
+                            .foregroundStyle(CTColors.accent(for: colorScheme))
+                        Text("辅助进程地址由应用在启动时自动分配（随机端口 + 一次性令牌），"
+                             + "不接受外部指定 —— 这是安全模型的一部分，不是一个待填的空框。")
                             .font(CTTypography.caption)
                             .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     // 诊断信息
@@ -175,6 +215,15 @@ struct SettingsView: View {
         }
         .background(CTColors.background(for: colorScheme))
     }
+
+    /// 偏移的可读描述。与歌词页的显示规则保持一致。
+    private var offsetDescription: String {
+        let value = settings.settings.lyricOffset
+        guard abs(value) >= 0.001 else { return "0.0 秒" }
+        return value > 0
+            ? String(format: "提前 %.1f 秒", value)
+            : String(format: "延后 %.1f 秒", -value)
+    }
 }
 
 struct SettingsSection<Content: View>: View {
@@ -200,4 +249,5 @@ struct SettingsSection<Content: View>: View {
             .cornerRadius(CTRadius.medium)
         }
     }
+
 }

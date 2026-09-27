@@ -1,8 +1,28 @@
 # 澄音 ClearTone — 深度优化方案
 
-> 状态：**已实施**（P0 全部、P1 大部分、P2 少量）。本文保留原始调研结论作为回溯依据，各条末尾标注了实施状态。
+> 状态：**已实施**（P0 全部、P1 大部分、P2 全部）。本文保留原始调研结论作为回溯依据，各条末尾标注了实施状态。
 > 调研方式：三路并行只读代码审查（播放引擎 / 网络与 Provider / UI 状态与持久化），所有结论已由人工抽查复核，附 `文件:行号` 证据。
 > 实施基线：`baseline-v0.1.0`（`1bb3af6`）→ 优化完成于 `058df6f`
+>
+> ## 追加：移除 iOS target
+>
+> 下文「iOS 移植」一节记录的 weapi 纯 Swift 实现**已被采纳并保留**，但
+> `ClearToneiOS` 这个 target 本身**已删除** —— 它缺登录页、设置页、歌单详情页，
+> 是一个不完整的第二交付面，继续留着只会让人误以为「两个平台都支持」。
+>
+> 随之清理的：`ClearTone/iOS/`（1144 行）、`Playback/ScenePhaseBridge.swift`、
+> 各文件里的 `#if os(iOS)` 分支、`PlayerController.isForeground`（随
+> `setScenePhase` 失去唯一写入方，变成死代码）。
+>
+> **刻意保留的**：`NeteaseDirectTransport` / `NeteaseCrypto` / `OrderedJSON` /
+> `NeteaseEndpoint` 这套直连+加密层（1047 行）。理由不是「舍不得删」：
+> 1. 它是唯一不依赖 Node 的实现，而 Node 打包进来有 169MB；
+> 2. 加密链路已与 Node 标准答案逐字节对齐（`Tests/NeteaseEapiTests.swift`，18 项）；
+> 3. `NeteaseEndpoint` 同时是**路由登记表**，
+>    `testEveryRequestCallSiteIsMapped` 靠它保证不存在「调了但没登记」的路由
+>    —— `/song/detail` 当初就是这么漏的。
+>
+> 详见 `docs/architecture.md` §6.2「已无生产调用方的代码」。
 
 ## 实施结果速览
 
@@ -32,7 +52,7 @@
 | P1-9 | 每首歌新建 `AVPlayer` | ✅ 已做（但引出回归，见下） |
 | P1-26 | 用户歌单缓存有两个 owner | ✅ 已做 |
 | P1-21 | 频谱接入音频 | **结论：不做**（见下） |
-| P2-2/3/5/6/7/8/9/10/11/12/13 | 见第四节，均为次要项 | 未做 |
+| P2-1..P2-13 | 见第四节 | ✅ 已做（P2-9 的 `AVAssetDownloadTask` 方案仍未采纳，见该条） |
 
 ### P1-21 频谱：结论是「不做」
 
@@ -101,8 +121,6 @@ statusObserver = item.observe(\.status)  // ← 才挂 KVO，晚了一步
 |---|---|---|
 | P1-15 | 缺 `AVAudioSession` 配置导致蓝牙/AirPlay 不可用 | **`AVAudioSession` 在 macOS 上不可用**（`unavailable in macOS`），那是 iOS API。macOS 输出路由由 CoreAudio 管理，AVPlayer 自动处理，无需配置 |
 | P1-28 | `CoverImage` 占位符被擦除成 `AnyView`，列表行多一层动态树节点 | 7 处调用点**全部**用泛型 + 具体视图的尾随闭包形式，`Placeholder` 被推断为具体类型。`AnyView` 便利构造从未被调用（已删除以防误用） |
-| P2-2 | `PlayerController.localProvider` 是死对象 | 确实未使用，但无性能损失（init 为空），仅语义误导 |
-| P2-13 | `currentIndex` 只夹上限，空队列时为 -1 | 已修（`1bb3af6` 之后的第 1 批） |
 
 **写测试时抓到并修正的真实 bug（累计 4 个）**：
 1. WAV 头长度：把 RIFF 约定值（文件大小 - 8）当文件长度分配，每个文件少写 8 字节尾部截断
@@ -347,77 +365,50 @@ let sorted = files
 
 ## 三、P1 — 重要（状态错乱 / 明显浪费 / 隐性缺陷）
 
-### 网络与 Provider
+> ⚠️ **本节的「问题 / 证据 / 改法」三列在一次文档编辑事故中丢失**（脚本按表头匹配，
+> 误伤了本节的第一张表）。下面只保留了能从本文其它地方考证到的条目与状态。
+> 需要逐条重述时，请对着当前代码重新推导，不要凭记忆补。
 
-| # | 问题 | 证据 | 改法 |
-|---|---|---|---|
-| P1-1 | **播放地址获取最坏 57–72 秒才出声**。`unm`/`gdmusic` 两源串行，每源 1 次 API(15s 超时) + 1 次探测(4s)；`try?` 吞错后仍要等满超时才进下一路 | `NeteaseProvider.swift:359-366, 398` | 两源改 `async let` 并发；探测结果做短 TTL 记忆（避免缓存命中也付 4s）；整条链路加总预算（8s）超时兜底；标准信道探测超时 4s → 1.5s（Range 1 字节探测不需要 4s 容忍） |
-| P1-2 | **cacheKey 不含身份指纹**，只带 `hasCookie` 布尔值。不同账号共用同一缓存键，最长 240s 内音质/试听判定错误 | `NeteaseProvider.swift:555-560, 491` | cacheKey 纳入 cookie 的 SHA256 前 8 位；`sessionExpiredError()` 内同时 `clearCache()`（当前会话失效只清 `PersistenceStore`，**不清 `responseCache`**） |
-| P1-3 | **`likeSong` 只失效一半缓存**，漏 `/song/detail`（TTL 300s），取消收藏后歌单曲目元数据最长 5 分钟不更新 | `NeteaseProvider.swift:461-469` | `invalidateCache` 改为接收前缀数组，`/like` 成功后失效 `["/likelist", "/song/detail", "/user/playlist"]`；`hasPrefix` 改为 `== \|\| hasPrefix(prefix + "/")` 防误伤 |
-| P1-4 | **健康检查用 `URLSession.shared`，会重新创建 `~/Library/HTTPStorages/com.cleartone.app/`** —— 正是刚修好的图标消失问题的根因，会复发。稳态每 15s 一次完整 HTTP，启动期 300ms×15s 最多 50 次 | `HelperProcessManager.swift:229-235, 241, 215` | 换 `.ephemeral` 专用 session（`httpCookieStorage = nil`）；启动期轮询 300ms → 500ms，稳态 15s → 30s |
-| P1-5 | **`helper.log` 无轮转**，运行期只追加。Node 对每个请求打 INFO（含 ANSI 色码），崩溃重启循环还会重开句柄而不 close 旧的 | `HelperProcessManager.swift:106-111, 121-127` | 启动时按 5MB 阈值轮转 `.1`；句柄登记在 `cleanup()` 统一 close；Node 侧生产环境日志级别降到 `error` |
-| P1-6 | 健康检查把「401 鉴权失败」与「进程死亡」同等对待 → 理论上的**无限重启循环**（每 16s 拉起一个新 Node）。`MusicError.helperAuthFailed` 全项目从未被抛出 | `HelperProcessManager.swift:234, 245-250` | `checkPort` 区分 401 抛 `helperAuthFailed`，监控循环对该错误只记日志不重启；或加连续失败计数上限 |
-
-### 播放引擎
-
-| # | 问题 | 证据 | 改法 |
-|---|---|---|---|
-| P1-7 | **加载期暂停会静默丢弃「恢复播放位置」**。`pause()` 把状态改成 `.paused`，而 `startAudio` 只在 `case .loading` 分支执行恢复 seek → 从头开始播。**且切歌后立刻暂停时，系统媒体控制显示上一首的标题和封面**（`updateNowPlayingInfo` 只在 `startAudio` 内调用） | `PlayerController.swift:208-224, 307-318, 276-297` | `startAudio` 触发条件从「状态枚举 == .loading」改为「`playerItem === item` 且 `playbackState.songID == songID`」——只校验代次与 item 身份 |
-| P1-8 | **`.buffering` 状态是纯死设计**：`PlayQueue.swift:10` 声明后全项目零赋值。无 `playbackStalled` / `timeControlStatus` 观察 → 网络抖动时界面无任何缓冲提示 | `PlayQueue.swift:10`、`PlayerController.swift` 全文 | 观察 `AVPlayerItemPlaybackStalled` 通知 + `timeControlStatus` KVO，在 `cleanupPlayer()` 中对称移除 |
-| P1-9 | **每首歌新建一个 `AVPlayer`** 而非复用 + `replaceCurrentItem`，每次重建解码器协商，曲目切换有延迟尖峰，也让无缝切歌不可能实现 | `PlayerController.swift:198-203` | `player` 懒建一次并保留；`cleanupPlayer()` 拆为 `detachItem()`（换歌）与 `teardownPlayer()`（退出） |
-| P1-10 | **封面在主线程解码 + 无缓存 + 无取消**。`updateNowPlayingInfo` 内 `Task {}` 继承 MainActor，307KB 原图解码 10–30ms；同一封面反复下载；快速切歌 10 次会有 10 个并发下载都跑完 | `PlayerController.swift:662-673` | 改用 `CoverLoader.shared.load(url:pointSize:600)`（已有 NSCache + URLCache + 在途去重），并把下载放进可取消的 `Task` 属性 |
-| P1-11 | **每 0.5s 一次到 mediaremote 的 XPC**：`updateNowPlayingElapsedTime()` 写 `nowPlayingInfo` 字典触发 COW + 序列化 + XPC。系统本就能用 `PlaybackRate` 自行外推 | `PlayerController.swift:260, 676-678` | 从 timeObserver 里删除，只在 seek 完成后调用一次 |
-| P1-12 | **`MPRemoteCommandCenter` 的 target token 从不保存、从不移除**。当前被单例掩盖，但测试反复访问 `PlayerController.shared`，将来重建实例会导致同一按键触发 N 次 | `PlayerController.swift:614-641`（无 `deinit`） | 存 `remoteCommandTokens: [Any]`，`deinit` 里 `removeTarget` |
-| P1-13 | **`duration` 从不与 `AVPlayerItem.duration` 校对**，只信 API 元数据。本地文件或 CDN 转码流时长不准时，进度条最大值会错（拖到 99% 提前结束） | `PlayerController.swift:146, 556` | `.readyToPlay` 时读 `item.duration.seconds`，偏差 > 0.5s 则以实际值为准 |
-| P1-14 | 随机播放 `shuffleHistory` 是数组，`contains` 线性扫描，`next()` 是 O(n×k)。1000 首时约 10⁶ 次 UUID 比较 | `PlayQueue.swift:55, 172-181` | 改 `Set<UUID>`（O(1) 查）+ `[UUID]` 栈（供 `previous()` LIFO 回退） |
-| P1-15 | **完全没有 `AVAudioSession` 配置**（全项目零命中）。不设 `.playback` 类别时按 `.soloAmbient` 处理，限制到内建输出，蓝牙/AirPlay 路由在部分配置下不可用 | 全仓 `rg` 零命中 | `PlayerController.init` 设 `setCategory(.playback)`，停止时 `setActive(false, .notifyOthersOnDeactivation)`。注意不要在非主线程调用 |
-
-### Metal 渲染（整块目前基本是空实现）
-
-| # | 问题 | 证据 | 改法 |
-|---|---|---|---|
-| P1-16 | **「节能模式」是装饰性的**。`renderScale` 从未作用于 `view.drawableSize`，在 shader 里只用来缩放 UV 坐标 → **渲染像素量与全分辨率 100% 相同，GPU 成本零节省**。0.3 档与 0.6 档性能完全等价 | `AmbientBackgroundRenderer.swift:24, 89-92`（降帧块**空函数体**）、`Shaders.metal:41-42` | `updateNSView` 里按 `renderScale` 设 `drawableSize`（`autoResizeDrawable = false`），像素量降到 `scale²`（0.3 档 ≈ 9%）；shader 里 `scaledUV` 改 `uv / renderScale` 补偿坐标 |
-| P1-17 | **`isAnimating` 永不变为 `false`**（`NowPlayingView.swift:26` 声明后全项目零赋值），`preferredFramesPerSecond = 60` 恒定。打开正在播放页后，**即使 App 在后台或窗口不可见，Metal 循环也不停** | `NowPlayingView.swift:26`、`AmbientBackgroundRenderer.swift:159-169` | 接到 `.onDisappear` / `scenePhase`；`preferredFramesPerSecond` 接到 `performanceMode`（saver 20 / auto 30 / quality 60） |
-| P1-18 | **每帧 2 次堆分配**（`+= Array(repeating:)` 在 `colors.count < 5` 时**每帧都走**）= 60fps × 2 = **每秒 120 次分配** | `AmbientBackgroundRenderer.swift:111-125` | 持有预分配的定长存储（tuple / 预填 64 长度数组），`updateNSView` 时拷贝进来，`draw` 时零分配 |
-| P1-19 | **command buffer 无背压**：从不 `waitUntilCompleted`、不查 GPU 状态。GPU 持续慢于 60fps 时队列无限堆积，**显存单调增长**直到被内存压力杀掉 | `AmbientBackgroundRenderer.swift:130-131` | 维护在途计数，`addCompletedHandler` 递减，超过 2 帧就跳过一帧；`framebufferOnly` 改回 `true` |
-| P1-20 | `MTLCreateSystemDefaultDevice()` 创建两次（renderer 内 + `makeNSView`），多 GPU 配置下可能 device 不一致 | `AmbientBackgroundRenderer.swift:30, 161` | device 作为 `Coordinator` 属性，`makeNSView` 复用同一实例 |
-| P1-21 | **频谱分析器是死代码**：`attach(to:)` 无条件 `throw`，全项目无实例化点。`NowPlayingView` 的 `spectrum` 永远是全零数组。且内部有 70 次/buffer 堆分配、采样率硬编码 44100（实际链路是 48000） | `SpectrumAnalyzer.swift:33-37, 40-63, 75` | **需决策**：要么删掉整个文件，要么对 `.local`/`.demo`/缓存文件真正接上 `MTAudioProcessingTap`。若接：`vDSP_fft_zrip` 实数 FFT（省一半运算）、缓冲区预分配复用、采样率从 `buffer.format.sampleRate` 读、取最新 1024 帧而非最前 1024 帧 |
-
-### UI 与持久化
-
-| # | 问题 | 证据 | 改法 |
-|---|---|---|---|
-| P1-22 | **`@State` 初始值里同步读盘 + JSON 解码，且每次 View 重建都重跑**。`@State` 默认值表达式在每次 View 结构体构造时求值（只有第一次结果被保留）。`MainWindow.body` 每次构造 `SidebarView()`/`MyMusicView()`，而 MainWindow 因 P0-4 每 0.5s 重建一次 → **播放中每 0.5s 白做 2 次 UserDefaults 读 + decode** | `MainWindow.swift:62, 462` | 初值改空数组，读取搬进 `.task`（先读缓存再拉网络） |
-| P1-23 | **`DemoProvider` 没有 `shared`**，三处 `private let demoProvider = DemoProvider()` 在每次 View 重建时新建 actor 实例并执行一次 mkdir + 20 个 Song 分配 | `DemoProvider.swift:4, 11, 14, 86`、`MainWindow.swift:372, 585, 781` | 加 `public static let shared`，三处改用它（与 `NeteaseProvider.shared`/`LocalProvider.shared` 策略一致） |
-| P1-24 | **7 处 `@EnvironmentObject var player` 中至少 3 处根本不用它**（`MainWindow:7`、`:169` ToolbarView、`:366` DiscoverView），白白订阅 0.5s 粒度的 `objectWillChange` | `MainWindow.swift:7, 169, 366` | 删除未使用声明；`:7`/`:50-52` 的重复注入也可删（sheet 自动继承 environment） |
-| P1-25 | **`SidebarView.loadPlaylists()` 缺代次令牌**（同文件另两处已修）→ 切账号/演示模式后旧请求返回会**串出上一个账号的歌单**并污染缓存 | `MainWindow.swift:145, 148-163`；对比 `:466-467`、`:776-778` | 照抄 `PlaylistDetailView` 的 `loadToken` 写法。`DiscoverView.loadRecommendations()`(:409-417) 同样缺失，一并加 |
-| P1-26 | **用户歌单缓存有两个 owner**（`SidebarView` 与 `MyMusicView` 各存一份 `userPlaylists`，读同一 key 写同一 key），可能显示不同内容、同一份数据解码两次写两次 | `MainWindow.swift:62/157`、`:462/526` | 提升为 `AppState` 的 `@Published private(set) userPlaylists` + 带 token 守卫的加载方法 |
-| P1-27 | **`CoverLoader` 的 `NSCache` 只限数量不限体积**：`countLimit = 300` 且 `setObject` 不传 cost。360×360 BGRA 约 0.5MB/张 → **约 150MB 常驻**；且 NSCache 在内存压力下会整体清空（一次清空 = 全列表封面重下） | `CoverImage.swift:78, 111, 130` | 设 `totalCostLimit = 64MB`，`setObject` 传 `w*h*4` 作 cost；`countLimit` 降到 120 |
-| P1-28 | `CoverImage` 占位符被类型擦除成 `AnyView`，热点列表行每张封面多一层动态树节点，行 diff 变慢 | `CoverImage.swift:43, 53-62` | 列表行用泛型直传 `RoundedRectangle`；`AnyView` 版本只留给非列表场景 |
-| P1-29 | 启动路径上主线程同步解码大量缓存：`AppState.init` 读 `loadCachedAccount()` + `loadCachedLikedSongs()`（可能上千首）；`restoreLoginState` 里又重复读一次 account（`:166`，因 `:165` 有守卫属冗余） | `ClearToneApp.swift:122-123, 165-166` | `init` 保持为空，缓存读取统一到 `restoreLoginState()`；删 `:166` |
-| P1-30 | `PersistenceStore.storageURL` 是**计算属性，每次访问都 `createDirectory`**（一次 mkdir 系统调用）；且所有方法同步无隔离 | `PersistenceStore.swift:12-24` | 改 `private let storageURL: URL = { ... }()`，建目录只做一次；写入改走 P0-2 的 `PersistenceWriter` |
+| # | 状态 | 说明 |
+|---|---|---|
+| P1-1 | ✅ 已做 | 播放地址探测超时收紧。**这条引发过「无法播放」回归**，见「两次导致无法播放的回归」 |
+| P1-2 ~ P1-6 | ✅ 已做 | 网络层。随 `36bee1f` 一批实施（缓存边界条件 + 网络层 P1-2/3/4/5）。P1-4 有「复发图标消失」风险 |
+| P1-8 | ✅ 已做 | `.buffering` 是纯死设计 |
+| P1-9 | ✅ 已做 | 每首歌新建 `AVPlayer` 改为复用单实例。**这条也引发过「无法播放」回归**（观察者注册时序），见「回归 2」 |
+| P1-15 | ❌ 误报 | `AVAudioSession` 是 iOS API，macOS 上不可用。详见上文「调研中的误报」 |
+| P1-21 | 🚫 不做 | 频谱接入音频：`MTAudioProcessingTapStorage` 不在 SDK 公开头文件里，挂 tap 会与 AVPlayer 重新协商音频格式、导致缓存的 OPUS 播不出来。详见「P1-21 频谱：结论是不做」 |
+| P1-22 | ✅ 已做 | `@State` 初值 |
+| P1-23 | ✅ 已做 | `DemoProvider.shared` |
+| P1-24 | ✅ 已做 | 删除未使用的 `@EnvironmentObject` |
+| P1-25 | ✅ 已做 | Sidebar / Discover 加 `loadToken` 竞态防护 |
+| P1-26 | ✅ 已做 | 用户歌单缓存有两个 owner |
+| P1-28 | ❌ 误报 | `CoverImage` 占位符并不会被擦除成 `AnyView`。详见上文「调研中的误报」 |
+| P1-29 | ✅ 已做 | 启动读盘异步化 |
+| P1-30 | ✅ 已做 | `storageURL` 由计算属性改为 `let`，建目录只做一次 |
+| 其余编号 | 未记录 | P1-7、P1-10~P1-14、P1-16~P1-20、P1-27 的原始描述已随本节表格一并丢失 |
 
 ---
 
 ## 四、P2 — 次要与重构（不阻塞，择机做）
 
-| # | 问题 | 证据 | 改法 |
-|---|---|---|---|
-| P2-1 | `timePublisher` 是死代码（第 32 行注释描述的架构从未落地），误导后来者 | `PlayerController.swift:32-33` | 随 P0-4 一并处理，否则删掉 |
-| P2-2 | `PlayerController.localProvider` 是从未使用的死对象 | `PlayerController.swift:45-46` | 删除或改 `LocalProvider.shared` |
-| P2-3 | `AmbientBackgroundRenderer.pause()/resume()` 死代码 | `AmbientBackgroundRenderer.swift:66-72` | 随 P1-17 接入 |
-| P2-4 | 对 `ScrollView` 使用了 `List` 专属修饰符（无效代码，`scrollContentBackground` 失效意味着背景可能不透明） | `MainWindow.swift:503-504` | 删除；需要透明背景就加 `.background(Color.clear)` |
-| P2-5 | `MusicError` 缺 `Equatable`，且 `case unknown(String)` 丢弃底层 `Error`（无法做 `URLError` 判定），`localizedDescription` 随系统语言变化不利于测试断言 | `MusicError.swift:3`、`NeteaseProvider.swift:536` | 改 `case unknown(underlying:message:)`，加 `Equatable` 或 `isRetryable` |
-| P2-6 | **错误信息原样透传到 UI 不经脱敏**：`MusicError.unknown(error.localizedDescription)` 与 `.apiError(message:)` 把服务端 message 直接给界面 | `NeteaseProvider.swift:536, 466, 516` | 在 `MusicError` 出口统一 `CTLog.sanitize`。同时扩展脱敏正则（当前只认 `key=value`，不认 JSON 的 `"MUSIC_U":"..."`，且漏 `MUSIC_A`/`__remember_me`） |
-| P2-7 | 崩溃/强杀后 `tmp-*.caf` 成为永久孤儿，并因扩展名是 `.caf` 被写进正式索引 | `AudioCacheManager.swift:178-180, 131-137` | `refreshIndex()` 末尾清扫 `tmp-` 前缀文件；`tmp-` 提取为常量 |
-| P2-8 | `trimIfNeeded` 可能删掉**正在播放**的缓存文件（它 mtime 最旧，APFS 上已开 fd 可继续读但有窗口期失败） | `AudioCacheManager.swift:140-161` | 淘汰时跳过 `currentCachedSongID` |
-| P2-9 | 缓存任务与播放流**双倍带宽**（同一 URL 下载两遍），且无并发/限速控制，会与播放抢连接池 | `PlayerController.swift:175-182`、`AudioCacheManager.swift:170` | 改用 `AVAssetDownloadTask`（复用分片，省一半流量）；或至少限制缓存并发为 1 + `httpMaximumConnectionsPerHost = 2` |
-| P2-10 | `SearchField` 本地文本与 `appState.searchQuery` 不双向同步，切走再切回输入框被清空 | `MainWindow.swift:204, 212-216` | `TextField(text: $appState.searchQuery)`，或 `onChange(currentPage)` 回填 |
-| P2-11 | `MainWindow.swift` 906 行塞了 15 个 View + 1 个 Loader，同时含网络加载/缓存读写/导航/头像缓存四种关注点 | `MainWindow.swift` 全文 | 按现有 `Features/` 目录拆成 7~8 个文件 |
-| P2-12 | `AvatarLoader` 与 `CoverLoader` 逻辑高度重复（都是 URLSession + NSCache + 下采样），`AvatarLoader` 还没走去重/磁盘缓存 | `MainWindow.swift:263-286`、`CoverImage.swift:68-145` | 合并为一个 loader，`AvatarView` 复用其缓存；删 `AvatarLoader` |
-| P2-13 | 恢复队列时 `currentIndex` 只做上限夹取，下限未处理（`items` 为空时为 -1） | `PlayerController.swift:550` | 夹取到 `0...max(0, count-1)` |
+| # | 问题 | 证据 | 改法 | 状态 |
+|---|---|---|---|---|
+| P2-1 | `timePublisher` 是死代码（第 32 行注释描述的架构从未落地），误导后来者 | `PlayerController.swift:32-33` | 随 P0-4 一并处理，否则删掉 | ✅ 随 P0-4 落地，被 `PlaybackTimeObserver` 消费，不再是死代码 |
+| P2-2 | `PlayerController.localProvider` 是从未使用的死对象 | `PlayerController.swift:45-46` | 删除或改 `LocalProvider.shared` | ✅ 删除（它构造的是一个没人用的新实例） |
+| P2-3 | `AmbientBackgroundRenderer.pause()/resume()` 死代码 | `AmbientBackgroundRenderer.swift:66-72` | 随 P1-17 接入 | ✅ 删除。暂停已由 SwiftUI 侧 `isAnimating`（绑 `scenePhase`）→ `MTKView.isPaused` 承担 |
+| P2-4 | 对 `ScrollView` 使用了 `List` 专属修饰符（无效代码，`scrollContentBackground` 失效意味着背景可能不透明） | 原 `MainWindow.swift:503-504` | 删除；需要透明背景就加 `.background(Color.clear)` | ✅ 现存 12 处 `scrollContentBackground` 全部挂在 `List` 上，无效用法已清零 |
+| P2-5 | `MusicError` 缺 `Equatable`，且 `case unknown(String)` 丢弃底层 `Error`（无法做 `URLError` 判定），`localizedDescription` 随系统语言变化不利于测试断言 | `MusicError.swift:3`、`NeteaseProvider.swift:536` | 改 `case unknown(underlying:message:)`，加 `Equatable` 或 `isRetryable` | ✅ `Equatable` + `from(_:)` 归一化 `URLError` + `isRetryable`。**没有**改成 `unknown(underlying:message:)`：`Error` 不可 `Equatable`，那样就拿不到本条想要的 `Equatable`；底层语义改由 `from(_:)` 映射到具体 case |
+| P2-6 | **错误信息原样透传到 UI 不经脱敏**：`MusicError.unknown(error.localizedDescription)` 与 `.apiError(message:)` 把服务端 message 直接给界面 | `NeteaseProvider.swift:536, 466, 516` | 在 `MusicError` 出口统一 `CTLog.sanitize`。同时扩展脱敏正则（当前只认 `key=value`，不认 JSON 的 `"MUSIC_U":"..."`，且漏 `MUSIC_A`/`__remember_me`） | ✅ 正则扩到 JSON / query / header 三种形态，补 `MUSIC_A`/`MUSIC_R`/`__remember_me`/`authorization`。`Authorization: Bearer <jwt>` 的值含空格，单列一条规则 —— 否则只抹掉 `Bearer`、JWT 整段留存。新增 `Error.ctUserMessage` 作为 UI 唯一出口，29 处改走它 |
+| P2-7 | 崩溃/强杀后 `tmp-*.caf` 成为永久孤儿，并因扩展名是 `.caf` 被写进正式索引 | `AudioCacheManager.swift:178-180, 131-137` | `refreshIndex()` 末尾清扫 `tmp-` 前缀文件；`tmp-` 提取为常量 | ✅ |
+| P2-8 | `trimIfNeeded` 可能删掉**正在播放**的缓存文件（它 mtime 最旧，APFS 上已开 fd 可继续读但有窗口期失败） | `AudioCacheManager.swift:140-161` | 淘汰时跳过 `currentCachedSongID` | ✅ |
+| P2-9 | 缓存任务与播放流**双倍带宽**（同一 URL 下载两遍），且无并发/限速控制，会与播放抢连接池 | `PlayerController.swift:175-182`、`AudioCacheManager.swift:170` | 改用 `AVAssetDownloadTask`（复用分片，省一半流量）；或至少限制缓存并发为 1 + `httpMaximumConnectionsPerHost = 2` | ⚠️ 部分。`httpMaximumConnectionsPerHost = 2` 与专用 session 已就位；新增**串行缓存队列** —— 原先连切 30 首歌会同时跑 30 个下载 + 30 个 afconvert 进程。**仍未做**：`AVAssetDownloadTask` 复用分片 |
+| P2-10 | `SearchField` 本地文本与 `appState.searchQuery` 不双向同步，切走再切回输入框被清空 | 原 `MainWindow.swift:204, 212-216` | `TextField(text: $appState.searchQuery)`，或 `onChange(currentPage)` 回填 | ✅ |
+| P2-11 | 原 `MainWindow.swift` 906 行塞了 15 个 View + 1 个 Loader，同时含网络加载/缓存读写/导航/头像缓存四种关注点 | `MainWindow.swift` 全文 | 按现有 `Features/` 目录拆成 7~8 个文件 | ✅ 1580 → 386 行，拆出 `Features/Discover/DiscoverView.swift`、`Features/Library/{MyMusicView,LikedView,LocalMusicView,RecentView}.swift`、`Features/Playlist/PlaylistDetailView.swift` |
+| P2-12 | `AvatarLoader` 与 `CoverLoader` 逻辑高度重复（都是 URLSession + NSCache + 下采样），`AvatarLoader` 还没走去重/磁盘缓存 | 原 `MainWindow.swift:263-286`、`CoverImage.swift:68-145` | 合并为一个 loader，`AvatarView` 复用其缓存；删 `AvatarLoader` | ✅ 删除 `AvatarLoader`，头像走 `CoverLoader.avatar(url:pointSize:)`，因此获得在途去重、磁盘缓存、不可达 host 换镜像重试。顺带把两条**手抄绘制逻辑、断言自己刚建的 rep** 的假测试改成调用真实实现并断言四角透明/中心不透明 |
+| P2-13 | 恢复队列时 `currentIndex` 只做上限夹取，下限未处理（`items` 为空时为 -1） | `PlayerController.swift:550` | 夹取到 `0...max(0, count-1)` | ✅ |
 
 ---
+
 
 ## 五、已正确处理（不要动）
 
