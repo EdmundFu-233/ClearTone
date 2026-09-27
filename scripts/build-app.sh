@@ -32,12 +32,24 @@ ENTITLEMENTS="$(mktemp -t cleartone-entitlements).plist"
 log() { printf '\033[1m==> %s\033[0m\n' "$1"; }
 
 # ---- 0. 前置检查 -------------------------------------------------------
+# 三项分别对应 ./scripts/setup-helper.sh 的三个步骤，且只有第 3 项是
+# `api/` 入库之后新增的。少任何一项的报错都很难定位：node 缺失会在第 4 步
+# 签嵌套代码时才炸，node_modules 缺失要到第 4b 步自检才炸 —— 那时已经
+# 编完、签完、跑了两个分钟，错误还只是一串 MODULE_NOT_FOUND。
 if [ ! -x ClearTone/Resources/HelperRuntime/bin/node ]; then
-  echo "错误：辅助进程运行时缺失。先执行 ./scripts/setup-helper.sh" >&2
+  echo "错误：缺少辅助进程的 Node 运行时。" >&2
+  echo "      执行 ./scripts/setup-helper.sh（从 nodejs.org 下载约 104MB）" >&2
   exit 1
 fi
 if [ ! -f ClearTone/Resources/HelperRuntime/api/app.js ]; then
-  echo "错误：HelperRuntime/api 缺失。先执行 ./scripts/setup-helper.sh" >&2
+  echo "错误：缺少 HelperRuntime/api（辅助进程的业务代码）。" >&2
+  echo "      执行 ./scripts/setup-helper.sh" >&2
+  exit 1
+fi
+if [ ! -d ClearTone/Resources/HelperRuntime/api/node_modules ]; then
+  echo "错误：缺少 HelperRuntime/api/node_modules（约 45MB，不入库）。" >&2
+  echo "      执行 ./scripts/setup-helper.sh，会在 api/ 下跑 npm ci" >&2
+  echo "      它是硬依赖：辅助进程启动时会 require axios / crypto-js / node-forge。" >&2
   exit 1
 fi
 

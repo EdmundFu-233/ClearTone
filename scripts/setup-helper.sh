@@ -35,7 +35,7 @@ else
     echo "Node.js 已存在，跳过下载"
 fi
 
-# 2. 下载 NeteaseCloudMusicApiEnhanced
+# 2. 取得 NeteaseCloudMusicApiEnhanced 的业务代码
 API_DIR="/tmp/api-enhanced"
 if [ ! -f "$RUNTIME_DIR/api/app.js" ]; then
     echo "克隆 NeteaseCloudMusicApiEnhanced..."
@@ -43,18 +43,28 @@ if [ ! -f "$RUNTIME_DIR/api/app.js" ]; then
         rm -rf "$API_DIR"
     fi
     git clone --depth 1 https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git "$API_DIR"
-
-    echo "安装依赖..."
-    cd "$API_DIR"
-    npm install --omit=dev --ignore-scripts
-
     echo "复制到 runtime 目录..."
     cp -r "$API_DIR"/* "$RUNTIME_DIR/api/"
-
     echo "清理..."
     rm -rf "$API_DIR"
 else
     echo "API 已存在，跳过下载"
+fi
+
+# 2b. 安装依赖。**必须与上面那步解耦。**
+#
+# api/ 现在是入库的，所以全新 clone 里 `api/app.js` 一定存在 —— 原来把
+# `npm install` 放在「app.js 不存在」的分支里，clone 出来的人永远走 else，
+# node_modules 永远装不上。而它是硬依赖：app.js → server → module/* →
+# util/request.js 会 require('axios') / ('crypto-js') / ('node-forge')。
+# 症状是 App 能开、界面正常，但辅助进程一起来就退，日志里是一串
+# MODULE_NOT_FOUND。build-app.sh 的前置检查现在会拦下来。
+if [ ! -d "$RUNTIME_DIR/api/node_modules" ]; then
+    echo "安装 API 依赖（npm ci）..."
+    cd "$RUNTIME_DIR/api"
+    npm ci --omit=dev --ignore-scripts
+else
+    echo "API 依赖已存在，跳过安装"
 fi
 
 # 3. 添加健康检查端点
