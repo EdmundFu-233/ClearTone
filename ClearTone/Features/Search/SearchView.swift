@@ -317,10 +317,7 @@ struct SongRowView: View {
                             .font(CTTypography.caption)
                             .foregroundStyle(CTColors.accent(for: colorScheme))
                     }
-                    Text(song.artistNames)
-                        .font(CTTypography.caption)
-                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                        .lineLimit(1)
+                    ArtistNameLinks(artists: song.artists)
                 }
             }
 

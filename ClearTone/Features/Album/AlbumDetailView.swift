@@ -59,10 +59,21 @@ struct AlbumDetailView: View {
                     .font(CTTypography.pageTitle)
                     .foregroundStyle(CTColors.textPrimary(for: colorScheme))
                 if let artist = detail?.playlist.creatorName {
-                    Button(artist) { /* 歌手 id 未知时不跳，避免死链 */}
-                        .buttonStyle(.plain)
-                        .font(CTTypography.body)
-                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    // 以前这里是 `Button(artist) { /* 歌手 id 未知时不跳，避免死链 */ }`
+                    // —— 一个能聚焦、能点、什么都不做的空按钮。
+                    // 现在 `PlaylistDetail.artistID` 带回了 id（见 fetchAlbumDetail），
+                    // 真的能跳；拿不到 id 时退回纯文本，不给用户一个骗人的按钮。
+                    if let artistID = detail?.artistID {
+                        Button(artist) { appState.openArtist(artistID) }
+                            .buttonStyle(.plain)
+                            .font(CTTypography.body)
+                            .foregroundStyle(CTColors.accent(for: colorScheme))
+                            .help("查看歌手：\(artist)")
+                    } else {
+                        Text(artist)
+                            .font(CTTypography.body)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    }
                 }
                 Text("\(tracks.count) 首歌曲")
                     .font(CTTypography.caption)

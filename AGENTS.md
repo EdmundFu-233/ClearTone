@@ -108,30 +108,58 @@ scripts/               # 构建与测试脚本
 ## 测试
 
 ```bash
-# 运行全部测试
+# 推荐：跑全部离线单测（脚本会做持久化隔离，必须用它而不是裸 xctest）
+./scripts/run-tests.sh
+
+# 运行全部测试（含 App target，会编 Metal 资源）
 xcodebuild -project ClearTone.xcodeproj -scheme ClearTone -configuration Debug test
-
-# 只跑离线单测目标（不构建 App，绕开 Metal 工具链问题）
-xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration Debug build \
-  CODE_SIGNING_ALLOWED=NO
-xattr -cr build/Debug/ClearToneTests.xctest && codesign --force --sign - build/Debug/ClearToneTests.xctest
-xcrun xctest -XCTest PlayQueueTests build/Debug/ClearToneTests.xctest
-
-# 注意：测试 bundle 若位于带扩展属性的目录（iCloud/File Provider 同步的桌面等），
-# 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
-# 用上面的 xattr -cr 清掉再 ad-hoc 签一次即可。
 ```
 
-当前覆盖（**33 个测试文件 / 327 项**，全部离线可跑且全绿）：
+### ⚠️ 离线单测必须**先编 App target**
+
+```bash
+# 顺序不能反。第一步产出 build/Debug/ClearTone.swiftmodule，
+# 第二步的测试目标靠 -I build/Debug 才能 import 到它。
+xcodebuild -project ClearTone.xcodeproj -target ClearTone -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO
+xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+原因：App 的 `PRODUCT_NAME` 是中文「澄音」，Swift 会跟着把**模块名**也定成
+「澄音」，于是 Debug 下产出的是 `build/Debug/澄音.swiftmodule` ——
+**没有** `ClearTone.swiftmodule`，而所有测试文件都写着 `@testable import ClearTone`。
+所以 App 目标上钉了 `PRODUCT_MODULE_NAME: ClearTone`（见 `project.yml`）。
+
+在这之前它靠显式模块构建里「从同一 target 源文件隐式拼出 ClearTone 模块」那条
+兜底路径编过，而那条路径**只要 `Tests/` 下新增任何一个文件就会失效**，报的是
+`Unable to resolve module dependency: 'ClearTone'` —— 一个完全不提真正原因的
+错误（基线代码 + 一个 6 行的空测试文件即可必现）。
+
+两个**不要**：
+- 不要在 `ClearToneTests` 上加 `dependencies: [target: ClearTone]`。
+  测试目标自己就编译了 `ClearTone/**` 的源文件，多一次链接会去找
+  `ClearTone.app`（target 名），而产物叫 `澄音.app`，ld 直接失败。
+- 不要绕过 `scripts/run-tests.sh` 裸跑 `xctest`：脚本用
+  `CLEARTONE_TEST_STORAGE_DIR` 把持久化重定向到临时目录，裸跑会写到真实用户目录
+  （`SongQualityPolicyTests` 有断言专门拦这个）。
+
+测试 bundle 若位于带扩展属性的目录（iCloud/File Provider 同步的桌面等），
+签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
+用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
+
+当前覆盖（**37 个测试文件 / 374 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
 | 播放队列 | PlayQueueTests / ShuffleHistoryTests / DoubleClickPlaybackTests |
 | 播放器异步状态 | PlayerControllerTests（停止作废在途请求、切歌停表、加载期暂停/续播、切音质保进度）、SeekTokenTests、PlaybackStateSemanticsTests |
 | 搜索状态机 | SearchSessionTests（分页不读草稿、清空作废在途请求、旧响应丢弃）/ SearchSessionPaginationTests（**四种类型都能翻页**、分页锁）/ SearchAssistStoreTests（联想节流、历史） |
+| **会话失效判定** | **SessionExpiryGuardTests**（单次 301/403 不定罪、需 `/user/account` 旁证、探针在途不递归、复位） |
+| **歌手资料页** | **ArtistProfileSessionTests**（换歌手清空、offset 由已加载条数推导、翻页失败保留旧数据、迟到响应丢弃、followed 不被后续页抹掉）/ **ArtistProfileParsingTests**（`cover`/`avatar` 才是头像、MV 的 `artistName`/`imgurl16v9`、eapi 键序与重命名） |
 | 歌词 / 电台 / 每日推荐 | LRCParserTests / RadioParsingTests / RadioContractTests / DailyRecommendTests |
 | 社区与资料库 | NeteaseSocialParsingTests（评论/通知/私信/榜单/等级/热搜的**字段名**逐个对着上游 `home.md` 核） |
-| 接口契约 | NeteaseEndpointTests（含 `testEveryRequestCallSiteIsMapped` 扫描调用点）/ NeteaseEapiTests（eapi 与 Node 逐字节对照） |
+| 接口契约 | NeteaseEndpointTests（含 `testEveryRequestCallSiteIsMapped` 扫描调用点）/ NeteaseEapiTests（eapi 与 Node 逐字节对照，含 module 写死参数的 `constants` 登记） |
 | 加解密 | NeteaseCryptoTests / NeteaseEapiTests |
 | 封面 | CoverImageTests / CoverImageRetryTests / CoverImageThreadSafetyTests |
 | 缓存 / 频谱 | AudioCacheManagerPolicyTests / ResponseCacheLimitsTests / SpectrumProcessorTests |
@@ -142,6 +170,12 @@ xcrun xctest -XCTest PlayQueueTests build/Debug/ClearToneTests.xctest
 重定向到临时目录，`SearchAssistStoreTests` 注入独立 UserDefaults suite）。
 **真正联网的接口验证只能靠实机跑 App** —— 离线测试能证明「我们读的键名与接口约定一致」，
 不能证明「接口真的返回了这些字段」。
+
+> **可测性约定**：`project.yml` 把 `Features/**` 排除在测试 target 之外，
+> 所以放在那里的 store 一个都测不到（`LibraryStore` / `CommentsStore` /
+> `SocialStore` 都是这么废掉的）。**有状态机的东西放 `Core/`** ——
+> 照 `Core/Search/SearchSession.swift` 与 `Core/Artist/ArtistProfileSession.swift`
+> 的样子，纯逻辑在 `Core/`，SwiftUI 壳留在 `Features/`。
 
 ### eapi 向量的产生方式
 

@@ -24,10 +24,7 @@ struct MiniPlayerView: View {
                     Text(player.currentSong?.title ?? "未在播放")
                         .font(CTTypography.bodyMedium)
                         .lineLimit(1)
-                    Text(player.currentSong?.artistNames ?? "")
-                        .font(CTTypography.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    ArtistNameLinks(artists: player.currentSong?.artists ?? [])
                 }
 
                 Spacer()

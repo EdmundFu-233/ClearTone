@@ -89,14 +89,8 @@ struct MyMusicView: View {
             }
             .environmentObject(appState)
         }
-        .alert("操作失败", isPresented: Binding(
-            get: { appState.lastWriteError != nil },
-            set: { if !$0 { appState.clearWriteError() } }
-        )) {
-            Button("好") { appState.clearWriteError() }
-        } message: {
-            Text(appState.lastWriteError ?? "")
-        }
+        // 写操作失败统一由 MainWindow 的 WriteErrorToast 呈现，
+        // 原来这个 alert 会和 toast 重复报同一件事。
     }
 
     @ViewBuilder

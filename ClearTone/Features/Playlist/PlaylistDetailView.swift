@@ -146,14 +146,8 @@ struct PlaylistDetailView: View {
         } message: {
             Text("确定要从这个歌单移除选中的 \(pendingRemoval.count) 首歌曲吗？")
         }
-        .alert("操作失败", isPresented: Binding(
-            get: { appState.lastWriteError != nil },
-            set: { if !$0 { appState.clearWriteError() } }
-        )) {
-            Button("好") { appState.clearWriteError() }
-        } message: {
-            Text(appState.lastWriteError ?? "")
-        }
+        // 写操作失败不再在这里弹 alert：MainWindow 的 WriteErrorToast
+        // 已经在窗口级统一呈现 lastWriteError，两处都弹会重复报同一件事。
         // 歌单 ID 或登录态变化时重新加载
         .task(id: "\(playlistID)-\(appState.dataContextKey)") { await load() }
     }

@@ -77,8 +77,14 @@ public struct PlaylistDetail: Sendable {
     public var playlist: Playlist
     public var tracks: [Song]
     public var totalTrackCount: Int
-    public init(playlist: Playlist, tracks: [Song], totalTrackCount: Int) {
+    /// 专辑的艺人 id。歌单没有这个概念，所以是 optional。
+    ///
+    /// 之前专辑页那个歌手名是个 `Button(artist) { }` —— 有焦点、能点、什么都不做，
+    /// 因为当时只往 `Playlist.creatorName` 里塞了名字，id 根本没地方放。
+    public var artistID: String?
+    public init(playlist: Playlist, tracks: [Song], totalTrackCount: Int, artistID: String? = nil) {
         self.playlist = playlist; self.tracks = tracks; self.totalTrackCount = totalTrackCount
+        self.artistID = artistID
     }
 }
 

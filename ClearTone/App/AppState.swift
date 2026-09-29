@@ -139,8 +139,12 @@ public class AppState: ObservableObject {
 
     private func handleSessionExpired() {
         guard isLoggedIn || account != nil else { return }
-        CTLog.security.warning("登录状态已失效，已清除本地会话，请重新登录")
-        clearSession(clearLikedCache: true)
+        CTLog.security.warning("登录状态已失效，请重新登录")
+        // **只清身份，不清用户数据。** 早期这里传的是 clearLikedCache: true，
+        // 于是「网易云一次风控拒绝 → 弹扫码」会把本地红心（2808 首）与
+        // 歌单缓存一起删掉。用户重新扫码后这些数据要重新拉几百个请求。
+        // 真掉线也不该删 —— 缓存只是「可能过期」，重新登录后会被覆盖。
+        clearSession(clearLikedCache: false)
         needsReLogin = true
         isLoginPresented = true
     }
@@ -193,8 +197,9 @@ public class AppState: ObservableObject {
     /// 登录成功（供登录流程调用）
     func didLogin(account info: AccountInfo) {
         applyAccount(info)
-        // 避免上一个账号的缓存数据串号
+        // 避免上一个账号的缓存数据串号，并复位会话闸门
         Task { await provider.clearCache() }
+        Task { await provider.resetSessionGuard() }
     }
 
     /// 退出登录：清除服务端会话与本地缓存
@@ -232,7 +237,8 @@ public class AppState: ObservableObject {
         // 关键：让所有在途的用户数据请求作废
         accountGeneration += 1
         userPlaylistsToken = UUID()
-        pageHistory.removeAll()
+        // 注意这里**不动 pageHistory**：掉线与「用户在哪一页」无关，
+        // 重置导航栈会把用户从详情页里踹出来，重新登录后还要再点回去。
         PersistenceStore.shared.clearCachedAccount()
         if clearLikedCache {
             PersistenceStore.shared.clearCachedLikedSongs()
@@ -326,6 +332,16 @@ public class AppState: ObservableObject {
     /// 最近一次写操作的错误信息，供 UI 展示
     @Published var lastWriteError: String?
     func clearWriteError() { lastWriteError = nil }
+
+    /// 把任意错误转成写操作提示。
+    ///
+    /// 视图层原先只有 `createPlaylist` / `deletePlaylist` 那几条路径会设
+    /// `lastWriteError`，其余写操作失败只进日志 —— 界面上一点反馈都没有。
+    /// 详情页（歌手关注、评论点赞…）现在统一走这里。
+    func publishWriteError(_ error: Error) {
+        CTLog.general.error("写操作失败: \(CTLog.sanitize(error.localizedDescription))")
+        lastWriteError = error.ctUserMessage
+    }
 
     // MARK: - 收藏
 
@@ -426,6 +442,9 @@ public class AppState: ObservableObject {
             likedIDs = previousIDs
             likedSongs = previousSongs
             likesVersion += 1
+            // 失败必须让用户看见。原来只写日志，界面表现是「心形弹回去、
+            // 什么都不说」，用户只会以为 App 卡了。
+            lastWriteError = error.ctUserMessage
             return wasLiked
         }
     }

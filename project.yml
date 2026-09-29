@@ -39,6 +39,19 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.app
         PRODUCT_NAME: 澄音
+        # **必须显式钉住 Swift 模块名。**
+        #
+        # `PRODUCT_NAME` 是中文「澄音」，Swift 会跟着把它当成模块名，于是
+        # Debug 下产出的是 `build/Debug/澄音.swiftmodule` —— 没有
+        # `ClearTone.swiftmodule`。而 ClearToneTests 里所有文件都写着
+        # `@testable import ClearTone`。
+        #
+        # 之前它能编过，靠的是显式模块构建里「从同一 target 的源文件隐式拼出
+        # ClearTone 模块」这条兜底路径。那条路径极其脆弱：**只要 Tests/ 下
+        # 新增任何一个文件**（哪怕内容只有 6 行），模块就再也拼不出来，
+        # 报的是 `Unable to resolve module dependency: 'ClearTone'` ——
+        # 一个完全不提真正原因的错误。基线代码 + 一个空测试文件必现。
+        PRODUCT_MODULE_NAME: ClearTone
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         ENABLE_HARDENED_RUNTIME: YES
@@ -104,6 +117,14 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ML3D4RN65N
+    # 注意：**不要**在这里加 `dependencies: [target: ClearTone]`。
+    #
+    # 测试目标自己就编译了 ClearTone/** 的源文件，加依赖会多一次链接；
+    # 而链接去找 `ClearTone.app`（target 名），产物却叫 `澄音.app`，
+    # 于是 ld 报 "library not found"。
+    #
+    # 正确的离线测试顺序见 AGENTS.md：先编 App 产出
+    # `build/Debug/ClearTone.swiftmodule`，再编测试目标。
 
 schemes:
   ClearTone:

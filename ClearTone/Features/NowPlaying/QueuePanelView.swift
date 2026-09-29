@@ -107,10 +107,7 @@ struct QueueItemRow: View {
                     )
                     .lineLimit(1)
 
-                Text(item.song.artistNames)
-                    .font(CTTypography.caption)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                    .lineLimit(1)
+                ArtistNameLinks(artists: item.song.artists)
             }
 
             Spacer()

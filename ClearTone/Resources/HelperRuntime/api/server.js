@@ -1,4 +1,5 @@
 require('dotenv').config()
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const express = require('express')
@@ -193,6 +194,20 @@ async function constructServer(moduleDefs) {
   app.set('trust proxy', true)
 
   // ClearTone 鉴权中间件：必须在所有路由之前
+  //
+  // 只做两件事：校验 X-CT-Token、把 X-CT-Cookie 暂存到 `req.ctCookie`。
+  //
+  // **注入 query/body 的一步被刻意去掉了**（ClearTone 改动）：
+  //   - `req.query` 在 Express 5 里是每次访问都重算的 getter，
+  //     `req.query.cookie = x` 写的是一个用完即弃的对象，从来没生效过；
+  //   - `req.body` 那条当时"能用"纯属侥幸：本中间件跑在 body-parser **之前**，
+  //     `req.body` 此刻是 undefined，于是 `req.body = req.body || {}` 新建了一个
+  //     带 cookie 的 `{}`；而 body-parser 的 read.js 遇到**空 body** 时直接
+  //     `next()` 不覆盖它，cookie 就这样活了下来。
+  //     一旦 App 改成带 body 的 POST，read.js 就会用解析结果整个替换 req.body，
+  //     cookie 被静默丢弃 → 所有请求变匿名 → 写接口一律回 301。
+  // 现在改成把 cookie 放在 request 自己的属性上，由下面的路由处理器统一取，
+  // 与 body 有没有内容彻底解耦。
   const expectedToken = process.env.CT_AUTH_TOKEN
   if (expectedToken) {
     app.use((req, res, next) => {
@@ -215,13 +230,8 @@ async function constructServer(moduleDefs) {
         req.headers['x-apicache-bypass'] = 'true'
       }
 
-      // 从 X-CT-Cookie 注入网易云 cookie
-      const ctCookie = req.headers['x-ct-cookie']
-      if (ctCookie) {
-        req.query.cookie = ctCookie
-        req.body = req.body || {}
-        req.body.cookie = ctCookie
-      }
+      // 从 X-CT-Cookie 取网易云 cookie，交给路由处理器注入 query
+      req.ctCookie = req.headers['x-ct-cookie'] || ''
       next()
     })
   }
@@ -295,8 +305,33 @@ async function constructServer(moduleDefs) {
 
   /**
    * Cache
+   *
+   * ClearTone 改动（两处，都是必须的）：
+   *
+   * 1. **只缓存 GET。** 这份 apicache 是 vendored 的老版本，全文没有
+   *    `req.method` 过滤，于是 POST 的 200 响应也会被存下来并在 2 分钟内
+   *    重放 —— 表现是「点收藏没反应」「刚建的歌单不出现」。
+   * 2. **缓存键带上账号。** 默认键是
+   *    `hostname + originalUrl + JSON.stringify(req.cookies)`，而
+   *    `req.cookies` 解析自 `Cookie:` 请求头，ClearTone 从不发这个头
+   *    （凭据走 `X-CT-Cookie`），所以键里恒为 `{}` —— 切账号后
+   *    `/user/account`、`/recommend/songs` 会命中**上一个账号**的缓存。
+   *    这里用 cookie 的哈希做后缀区分，不把凭据本身写进键
+   *    （键会进 debug 日志）。
    */
-  app.use(cache('2 minutes', (_, res) => res.statusCode === 200))
+  app.use(
+    cache(
+      '2 minutes',
+      (req, res) => req.method === 'GET' && res.statusCode === 200,
+      // 第三个参数是 localOptions（不是另一个时长）：
+      // `appendKey` 可以是函数，用它的返回值给缓存键加后缀。
+      { appendKey: (req) => {
+          const ctCookie = req.headers['x-ct-cookie'] || ''
+          if (!ctCookie) return 'anon'
+          return crypto.createHash('sha256').update(ctCookie).digest('hex').slice(0, 16)
+        } },
+    ),
+  )
 
   /**
    * Special Routers
@@ -317,7 +352,19 @@ async function constructServer(moduleDefs) {
   for (const moduleDef of moduleDefinitions) {
     // Register the route.
     app.all(moduleDef.route, async (req, res) => {
-      ;[req.query, req.body].forEach((item) => {
+      // X-CT-Cookie 在鉴权中间件里存到了 req.ctCookie（见上面的说明）。
+      //
+      // 这里**必须先拷一份**再注入：`req.query` 在 Express 5 里是每次访问
+      // 都重新解析 URL 的 getter（lib/request.js:217 `defineGetter`），
+      // 直接 `req.query.cookie = x` 写的是一个用完即弃的对象，从来没生效过。
+      // 旧代码里真正起作用的是 `req.body` 那条，而它依赖「body 恰好是空的」
+      // 这个偶然条件：一旦 App 发带 body 的 POST，body-parser 就会整个替换
+      // req.body，cookie 被静默丢弃 → 所有请求变匿名 → 写接口一律回 301。
+      const rawQuery = Object.assign({}, req.query)
+      if (req.ctCookie) {
+        rawQuery.cookie = req.ctCookie
+      }
+      ;[rawQuery, req.body].forEach((item) => {
         // item may be undefined (some environments / middlewares).
         // Guard access to avoid "Cannot read properties of undefined (reading 'cookie')".
         if (item && typeof item.cookie === 'string') {
@@ -328,7 +375,7 @@ async function constructServer(moduleDefs) {
       let query = Object.assign(
         {},
         { cookie: req.cookies },
-        req.query,
+        rawQuery,
         req.body,
         req.files,
       )

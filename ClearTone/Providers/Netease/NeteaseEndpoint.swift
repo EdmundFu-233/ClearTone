@@ -62,6 +62,45 @@ public enum NeteaseEndpoint {
         }
     }
 
+    /// 一条 eapi 路由的参数规格。
+    ///
+    /// `payloadKeys` 是**上游 `api/module/*.js` 里 `data` 对象字面量的书写顺序** ——
+    /// eapi 的签名覆盖整个 `JSON.stringify` 结果，键序参与鉴权。
+    ///
+    /// `renames` 处理「辅助进程 query 参数名 ≠ 上游 payload 键名」的情况。
+    /// `/song/like` 就是这种：module 读 `query.id` / `query.uid`，
+    /// 却把它们放进 data 的 `trackId` / `userid`。不登记重命名的话，
+    /// 直连层会拼出 `{"id":…,"uid":…}` —— 键名错、顺序也对不上，签名必失败。
+    public struct EapiParamSpec: Sendable {
+        public let payloadKeys: [String]
+        /// 辅助进程 query 键 → 上游 payload 键。默认同名。
+        public let renames: [String: String]
+        /// module 里**写死**、不从 query 读的值。直连层必须自己补上，
+        /// 否则 `JSON.stringify` 的结果与辅助进程发出去的不一致，签名必失败。
+        public let constants: OrderedJSON.Value?
+
+        public init(
+            _ payloadKeys: [String],
+            renames: [String: String] = [:],
+            constants: OrderedJSON.Value? = nil
+        ) {
+            self.payloadKeys = payloadKeys
+            self.renames = renames
+            self.constants = constants
+        }
+
+        /// 上游 payload 键 → 辅助进程 query 键
+        func queryKey(forPayloadKey key: String) -> String {
+            renames.first { $0.value == key }?.key ?? key
+        }
+
+        /// 写死的键（不该出现在 query 里）
+        var constantKeys: Set<String> {
+            guard case .object(let pairs)? = constants else { return [] }
+            return Set(pairs.map(\.0))
+        }
+    }
+
     /// 辅助进程路由名 → 端点。取自 `api/module/*.js` 逐一核对。
     private static let table: [String: Endpoint] = [
         // MARK: 认证（实测：weapi 全部 code 200）
@@ -84,9 +123,17 @@ public enum NeteaseEndpoint {
         "/playlist/detail":     Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .eapi, orderedParamsKey: "playlistDetailV6"),
         "/playlist/track/all":  Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .eapi, orderedParamsKey: "playlistDetailV6"),
         "/album":               Endpoint(apiPath: "/api/v1/album", crypto: .weapi),
-        "/artist/detail":       Endpoint(apiPath: "/api/artist/head/info/get", crypto: .plain),
+        // `artist_detail.js` 用的是裸 `createOption(query)`（第二参缺省）→ eapi，
+        // 之前登记成 `.plain` 是错的。
+        "/artist/detail":       Endpoint(apiPath: "/api/artist/head/info/get", crypto: .eapi, orderedParamsKey: "artistDetail"),
         "/artist/top/song":     Endpoint(apiPath: "/api/artist/top/song", crypto: .weapi),
-        "/artist/album":        Endpoint(apiPath: "/api/artist/album", crypto: .weapi),
+        // **apiPath 是模板**：`artist_album.js` 打的是 `/api/artist/albums/${query.id}`，
+        // 之前登记成 `/api/artist/album`（少了 s 与路径段）。
+        "/artist/album":        Endpoint(apiPath: "/api/artist/albums/{id}", crypto: .weapi),
+        "/artist/songs":        Endpoint(apiPath: "/api/v1/artist/songs", crypto: .eapi, orderedParamsKey: "artistSongs"),
+        "/artist/desc":         Endpoint(apiPath: "/api/artist/introduction", crypto: .weapi),
+        // `artist_mv.js` 读的参数名是 `artistId`（不是 `id`）
+        "/artist/mv":           Endpoint(apiPath: "/api/artist/mvs", crypto: .weapi),
 
         // MARK: 播放地址
         "/song/url/v1":         Endpoint(apiPath: "/api/song/enhance/player/url/v1", crypto: .xeapi),
@@ -98,6 +145,11 @@ public enum NeteaseEndpoint {
         // MARK: 用户数据
         "/user/playlist":   Endpoint(apiPath: "/api/user/playlist", crypto: .weapi),
         "/likelist":        Endpoint(apiPath: "/api/song/like/get", crypto: .eapi, orderedParamsKey: "likelist"),
+        // **收藏实际走这条**（`song_like.js`，裸 createOption → eapi）。
+        // `/like`（weapi `/api/radio/like`）不再使用：weapi 写接口在辅助进程
+        // 匿名标识注册失败时会被风控稳定拒成 `code 301`，见 NeteaseProvider.likeSong。
+        // 留着登记是为了如实反映上游仍然提供这条路由。
+        "/song/like":       Endpoint(apiPath: "/api/song/like", crypto: .eapi, orderedParamsKey: "songLike"),
         "/like":            Endpoint(apiPath: "/api/radio/like", crypto: .weapi),
 
         // MARK: 推荐
@@ -196,29 +248,42 @@ public enum NeteaseEndpoint {
     ///
     /// 另注：Node 侧会先给 `data` 追加 `e_r`，再追加 `header`，
     /// 因此这两个键排在业务参数之后（由 `NeteaseDirectTransport.eapi` 补上）。
-    private static let orderedPayloads: [String: [String]] = [
+    private static let orderedPayloads: [String: EapiParamSpec] = [
         // /api/toplist 与 /api/playlist/catalogue 都是 `request(uri, {}, ...)`，无参数
-        "toplist": [],
-        "playlistCatlist": [],
+        "toplist": EapiParamSpec([]),
+        "playlistCatlist": EapiParamSpec([]),
         // search_hot.js: { type: 1111 }
-        "searchHot": ["type"],
+        "searchHot": EapiParamSpec(["type"]),
         // daily_signin.js: { type: 0 }（0=安卓端 3 经验，1=web 2 经验）
-        "dailySignin": ["type"],
+        "dailySignin": EapiParamSpec(["type"]),
         // playlist_subscribe.js: { id, checkToken? }
-        "playlistSubscribe": ["id"],
+        "playlistSubscribe": EapiParamSpec(["id"]),
         // playlist_name_update.js: { id, name }
-        "playlistNameUpdate": ["id", "name"],
+        "playlistNameUpdate": EapiParamSpec(["id", "name"]),
         // playlist_subscribers.js: { id, limit, offset }
-        "playlistSubscribers": ["id", "limit", "offset"],
+        "playlistSubscribers": EapiParamSpec(["id", "limit", "offset"]),
         // playlist_tracks.js: { op, pid, tracks: JSON字符串, imme: 'true' }
-        "playlistTracks": ["op", "pid", "trackIds", "imme"],
+        "playlistTracks": EapiParamSpec(["op", "pid", "trackIds", "imme"]),
+        // song_like.js: { trackId: query.id, userid: query.uid, like }
+        "songLike": EapiParamSpec(["trackId", "userid", "like"], renames: ["id": "trackId", "uid": "userid"]),
+        // artist_detail.js: { id: query.id }
+        "artistDetail": EapiParamSpec(["id"]),
+        // artist_songs.js 的 data 字面量是
+        //   { id, private_cloud: 'true', work_type: 1, order, offset, limit }
+        // 其中 private_cloud / work_type 是**写死**的（不读 query），
+        // 所以它们必须进 constants，而不是让调用方传 —— 传了会被 module 忽略，
+        // 直连层却会当成有效参数，两边行为就分叉了。
+        "artistSongs": EapiParamSpec(
+            ["id", "private_cloud", "work_type", "order", "offset", "limit"],
+            constants: .object([("private_cloud", .string("true")), ("work_type", .int(1))])
+        ),
         // 以下四条是「crypto 从 .plain 改成 .eapi」之后才暴露出来的缺口。
         // 键序直接抄自上游 module 的 `data` 对象字面量顺序 ——
         // eapi 的签名对键序敏感，顺序错了就是签名失败，
         // 而签名失败在界面上表现为「接口报错」，极难定位。
-        "likelist":           ["uid"],
-        "playlistDetailV6":   ["id", "n", "s"],
-        "lyricNew":           ["id", "cp", "tv", "lv", "rv", "kv", "yv", "ytv", "yrv"],
+        "likelist":           EapiParamSpec(["uid"]),
+        "playlistDetailV6":   EapiParamSpec(["id", "n", "s"]),
+        "lyricNew":           EapiParamSpec(["id", "cp", "tv", "lv", "rv", "kv", "yv", "ytv", "yrv"]),
     ]
 
     /// 为 eapi 路由构造有序请求体。
@@ -226,28 +291,39 @@ public enum NeteaseEndpoint {
     /// 返回 nil 表示该路由没有登记键序 —— 调用方应显式失败而不是随便拼一个顺序。
     public static func orderedPayload(forRoute route: String, query: [String: String]) -> OrderedJSON.Value? {
         guard let endpoint = table[route], endpoint.crypto == .eapi else { return nil }
-        guard let keys = orderedPayloads[endpoint.orderedParamsKey ?? ""] else { return nil }
+        guard let spec = orderedPayloads[endpoint.orderedParamsKey ?? ""] else { return nil }
 
         var pairs: [(String, OrderedJSON.Value)] = []
-        for key in keys {
-            guard let raw = query[key] else { continue }
+        let constants = spec.constants.map { Dictionary(uniqueKeysWithValues: $0.objectPairs) } ?? [:]
+        for payloadKey in spec.payloadKeys {
+            // module 写死的值优先，query 里不该再出现（出现会在下面被拒）
+            if let fixed = constants[payloadKey] {
+                pairs.append((payloadKey, fixed))
+                continue
+            }
+            let queryKey = spec.queryKey(forPayloadKey: payloadKey)
+            guard let raw = query[queryKey] else { continue }
             // Node 侧这些字段是数字/布尔，JSON.stringify 的输出不能带引号
-            switch key {
-            case "type":
+            switch payloadKey {
+            case "type", "work_type":
                 guard let number = Int(raw) else { return nil }
-                pairs.append((key, .int(number)))
+                pairs.append((payloadKey, .int(number)))
             default:
-                pairs.append((key, .string(raw)))
+                pairs.append((payloadKey, .string(raw)))
             }
         }
         // 未登记在册的键一律拒绝：拼错顺序的后果是签名失败，
         // 而签名失败在界面上表现为「接口报错」，极难定位。
-        for key in query.keys where !keys.contains(key) {
+        // module 写死的键（constants）反过来不能出现在 query 里 ——
+        // 传了会被 module 忽略，却让直连层多拼一个上游根本不收的字段。
+        let acceptedQueryKeys = Set(spec.payloadKeys.map(spec.queryKey(forPayloadKey:)))
+            .subtracting(spec.constantKeys)
+        for key in query.keys where !acceptedQueryKeys.contains(key) {
             return nil
         }
         return .object(pairs)
     }
 
     /// 登记过的 eapi 键序（测试用）
-    public static var eapiParamKeys: [String: [String]] { orderedPayloads }
+    public static var eapiParamKeys: [String: EapiParamSpec] { orderedPayloads }
 }

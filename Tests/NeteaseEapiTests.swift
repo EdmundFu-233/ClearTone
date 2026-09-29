@@ -172,6 +172,21 @@ final class NeteaseEapiTests: XCTestCase {
         }
     }
 
+    /// module 写死的参数必须在 spec 里登记成 `constants`。
+    ///
+    /// 漏登记的后果是直连层拼出的 `JSON.stringify` 与辅助进程发出去的不一致，
+    /// 而签名失败在界面上只表现为「接口报错」，没有任何提示指向键序。
+    func testArtistSongsHardcodedParamsAreRegisteredAsConstants() throws {
+        let spec = try XCTUnwrap(NeteaseEndpoint.eapiParamKeys["artistSongs"])
+        XCTAssertEqual(spec.constantKeys, ["private_cloud", "work_type"])
+        // 写死的键不允许出现在 query 里
+        XCTAssertNil(NeteaseEndpoint.orderedPayload(
+            forRoute: "/artist/songs",
+            query: ["id": "1", "order": "hot", "offset": "0", "limit": "50",
+                    "private_cloud": "true"]
+        ))
+    }
+
     /// 未登记的键必须让 orderedPayload 返回 nil —— 宁可显式失败，
     /// 也不能拼一个错的顺序让签名静默失败
     func testUnregisteredQueryKeyIsRejected() {

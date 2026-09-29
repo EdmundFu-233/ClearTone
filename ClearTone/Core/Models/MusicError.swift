@@ -2,6 +2,10 @@ import Foundation
 
 public enum MusicError: LocalizedError, Sendable, Equatable {
     case notLoggedIn
+    /// 会话确实失效。**现在已经没有任何请求路径抛它** ——
+    /// 判定会话失效需要 `/user/account` 旁证，结果通过
+    /// `Notification.Name.clearToneSessionExpired` 广播，而不是以错误形式抛出。
+    /// 保留这个 case 是因为它是那条广播对应的公开语义。
     case sessionExpired
     case networkUnavailable
     case rateLimited

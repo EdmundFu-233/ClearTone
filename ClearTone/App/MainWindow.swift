@@ -38,6 +38,7 @@ struct MainWindow: View {
             }
             PlayerBarView()
         }
+        .overlay(alignment: .bottom) { WriteErrorToast() }
         .tint(CTColors.accent(for: colorScheme))
         .frame(minWidth: 960, minHeight: 640)
         .background(CTColors.background(for: colorScheme))
@@ -319,6 +320,54 @@ struct AccountButton: View {
         // 不再经由这里的 onChange 中转 —— 中转那一层在视图不在树里时会丢标志。
         // `needsReLogin` 不在这里复位：它只管禁用写操作，登录成功后
         // `didLogin` → `applyAccount` 会一并清掉。
+    }
+}
+
+// MARK: - 全局写操作失败提示
+///
+/// `lastWriteError` 之前只有歌单页与「我的音乐」在读，而**心形的六个入口**
+/// （播放栏、正在播放、搜索、发现、喜欢的音乐、⌘⇧D）都不读它 ——
+/// 收藏失败时心形弹回去、界面一句话都没有，用户只会以为 App 卡住了。
+/// 这里做成挂在窗口上的 toast，任何写失败都能被看见。
+private struct WriteErrorToast: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.colorScheme) var colorScheme
+
+    var body: some View {
+        Group {
+            if let message = appState.lastWriteError {
+                HStack(spacing: CTSpacing.sm) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(CTColors.accent(for: colorScheme))
+                    Text(message)
+                        .font(CTTypography.caption)
+                        .foregroundStyle(CTColors.textPrimary(for: colorScheme))
+                        .lineLimit(2)
+                    Button {
+                        appState.clearWriteError()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                }
+                .padding(CTSpacing.md)
+                .ctGlassSurface()
+                .frame(maxWidth: 420)
+                .padding(.bottom, 96)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .task(id: message) {
+                    // 4 秒后自动消失。id 用 message：连续两次不同的报错
+                    // 各自计时，同一条重复报错不会把计时器重置掉。
+                    try? await Task.sleep(for: .seconds(4))
+                    guard !Task.isCancelled else { return }
+                    if appState.lastWriteError == message {
+                        appState.clearWriteError()
+                    }
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: appState.lastWriteError)
     }
 }
 

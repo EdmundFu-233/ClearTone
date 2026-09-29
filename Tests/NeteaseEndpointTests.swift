@@ -30,9 +30,10 @@ final class NeteaseEndpointTests: XCTestCase {
             // 专辑 / 歌手
             "/album", "/album/sub", "/album/unsub", "/album/sublist", "/album/newest",
             "/artist/detail", "/artist/top/song", "/artist/album",
+            "/artist/songs", "/artist/desc", "/artist/mv",
             "/artist/sub", "/artist/unsub", "/artist/sublist",
             // 用户数据
-            "/user/playlist", "/likelist", "/like", "/user/record",
+            "/user/playlist", "/likelist", "/like", "/song/like", "/user/record",
             "/user/level", "/user/subcount", "/daily_signin",
             // 推荐
             "/recommend/songs", "/recommend/resource", "/recommend/songs/dislike",
@@ -136,15 +137,18 @@ final class NeteaseEndpointTests: XCTestCase {
         XCTAssertEqual(endpoint.apiPath, "/api/song/enhance/player/url/v1")
     }
 
-    /// 收藏接口必须 weapi + 完整客户端 cookie
+    /// `/like`（weapi `/api/radio/like`）**不再使用**，但仍如实登记。
     ///
-    /// 实测：明文调用 /api/radio/like 返回 `code -460 检测到您的网络环境存在风险`。
-    /// 补上 os/appver/osver 等标识后进入正常风控（405 操作频繁 = 请求已被接受）。
-    /// 早期把 -460 误判为「GET 方法不对」，实际是缺客户端标识。
-    func testLikeUsesWeapiCrypto() {
-        let endpoint = NeteaseEndpoint.endpoint(forRoute: "/like")!
-        XCTAssertEqual(endpoint.crypto, .weapi)
-        XCTAssertEqual(endpoint.apiPath, "/api/radio/like")
+    /// 停用的原因：weapi 写接口在辅助进程匿名标识注册失败时会被网易云
+    /// 按风控稳定拒成 `code 301`（实测同一实例上连开三次，而同 cookie 的
+    /// `/user/account`、`/likelist` 全都 200）。收藏改走 eapi 的 `/song/like`。
+    ///
+    /// 早期这里断言 weapi 是因为「辅助进程日志里 `[weapi] /like`」，
+    /// 那个观测本身没错，错的是把它当成了可靠路径。
+    func testLegacyLikeRouteIsStillMappedButUnused() {
+        let endpoint = NeteaseEndpoint.endpoint(forRoute: "/like")
+        XCTAssertEqual(endpoint?.crypto, .weapi)
+        XCTAssertEqual(endpoint?.apiPath, "/api/radio/like")
     }
 
     /// 电台接口的实测坑：

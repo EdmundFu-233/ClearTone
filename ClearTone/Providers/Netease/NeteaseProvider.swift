@@ -96,10 +96,17 @@ public actor NeteaseProvider: MusicProvider {
         defer {
             try? KeychainStore.shared.delete(for: .neteaseCookie)
             try? KeychainStore.shared.delete(for: .neteaseUserID)
+            sessionGuard.reset()
             clearCache()
         }
         let cookie = (try? KeychainStore.shared.load(for: .neteaseCookie)) ?? nil
         _ = try await request("/logout", cookie: cookie, method: "POST")
+    }
+
+    /// 登录态换了人（扫码成功）时复位会话闸门，
+    /// 否则新会话要背上旧会话攒下的疑似次数，第一次 301 就去打探针。
+    public func resetSessionGuard() {
+        sessionGuard.reset()
     }
 
     public func fetchAccountInfo() async throws -> AccountInfo? {
@@ -290,28 +297,39 @@ public actor NeteaseProvider: MusicProvider {
         guard let albumDict = json["album"] as? [String: Any] else { throw MusicError.invalidResponse }
         let album = Self.mapAlbum(albumDict)
         let songs = (json["songs"] as? [[String: Any]])?.compactMap { Self.mapSong($0) } ?? []
+        // 专辑的 `artist` 是完整的歌手对象（id + name + picUrl），不是字符串。
+        // 只取 name 的话专辑页的歌手名就点不动 —— 那个按钮曾经是个空壳。
+        let albumArtist = albumDict["artist"] as? [String: Any]
+        let artistID = albumArtist.flatMap { dict -> String? in
+            guard let raw = dict["id"] else { return nil }
+            let value = String(describing: raw)
+            return value == "0" ? nil : value
+        }
 
         let playlist = Playlist(
             id: album.id, name: album.name, coverURL: album.coverURL,
-            trackCount: songs.count, creatorName: (albumDict["artist"] as? [String: Any])?["name"] as? String,
+            trackCount: songs.count, creatorName: albumArtist?["name"] as? String,
             source: .netease
         )
-        return PlaylistDetail(playlist: playlist, tracks: songs, totalTrackCount: songs.count)
+        return PlaylistDetail(playlist: playlist, tracks: songs,
+                              totalTrackCount: songs.count, artistID: artistID)
     }
 
     public func fetchArtistDetail(id: String) async throws -> ArtistDetail {
-        let data = try await request("/artist/detail", query: ["id": id], cacheTTL: 600)
-        let json = try parseJSON(data)
+        // 三个接口并发：串行要等 3 个 RTT，而它们互不依赖
+        async let profileData = request("/artist/detail", query: ["id": id], cacheTTL: 600)
+        async let songsData = request("/artist/top/song", query: ["id": id], cacheTTL: 600)
+        async let albumsData = request("/artist/album", query: ["id": id, "limit": "20"], cacheTTL: 600)
+
+        let json = try parseJSON(await profileData)
         guard let artistDict = json["data"] as? [String: Any],
               let artistInfo = artistDict["artist"] as? [String: Any] else { throw MusicError.invalidResponse }
         let artist = Self.mapArtist(artistInfo)
 
-        let songsData = try await request("/artist/top/song", query: ["id": id], cacheTTL: 600)
-        let songsJSON = try parseJSON(songsData)
+        let songsJSON = try parseJSON(await songsData)
         let hotSongs = (songsJSON["songs"] as? [[String: Any]])?.compactMap { Self.mapSong($0) } ?? []
 
-        let albumsData = try await request("/artist/album", query: ["id": id, "limit": "20"], cacheTTL: 600)
-        let albumsJSON = try parseJSON(albumsData)
+        let albumsJSON = try parseJSON(await albumsData)
         let albums = (albumsJSON["hotAlbums"] as? [[String: Any]])?.map { Self.mapAlbum($0) } ?? []
 
         return ArtistDetail(artist: artist, hotSongs: hotSongs, albums: albums)
@@ -525,14 +543,28 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func likeSong(id: String, like: Bool) async throws {
-        guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { throw MusicError.notLoggedIn }
-        // 必须用 POST：用 GET 调 /like 网易云会返回
-        // code 524「当前环境异常，已取消喜欢」，表现为「点收藏没反应」
-        let data = try await request("/like", query: ["id": id, "like": like ? "true" : "false"],
-                                     cookie: cookie, method: "POST")
+        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        guard !cookie.isEmpty else { throw MusicError.notLoggedIn }
+        guard let userID = try KeychainStore.shared.load(for: .neteaseUserID), !userID.isEmpty else {
+            throw MusicError.notLoggedIn
+        }
+        // 走 `/song/like`（eapi），不再走 `/like`（weapi `/api/radio/like`）。
+        //
+        // 原因：weapi 写接口在辅助进程**匿名标识注册失败**时会被网易云按风控
+        // 拒掉，症状是稳定返回 `code 301`（实测：辅助进程启动时
+        // `register_anonimous` 抛 "xeapi public key is missing"，
+        // 同一实例上 /like 连续三次 301，而 /user/account、/likelist 全都 200）。
+        // eapi 那条在同一 cookie 下实测 200，且不依赖 weapi 的客户端标识。
+        //
+        // 参数名是 module 里定的：`song_like.js` 读 `query.id`/`query.uid`，
+        // 映射到上游 data 的 `trackId`/`userid`。
+        let data = try await request("/song/like", query: [
+            "id": id, "uid": userID, "like": like ? "true" : "false",
+        ], cookie: cookie, method: "POST")
         let json = try parseJSON(data)
         guard let code = json["code"] as? Int, code == 200 else {
-            throw MusicError.apiError(code: json["code"] as? Int ?? -1, message: json["message"] as? String ?? "操作失败")
+            throw MusicError.apiError(code: json["code"] as? Int ?? -1,
+                                     message: json["message"] as? String ?? "操作失败")
         }
         // 收藏状态变化会反映到歌单曲目元数据与用户歌单计数，
         // 只清 /likelist 会让这些最长 300s 不更新
@@ -661,7 +693,9 @@ public actor NeteaseProvider: MusicProvider {
         query: [String: String] = [:],
         cookie: String? = nil,
         cacheTTL: TimeInterval? = nil,
-        method: String = "GET"
+        method: String = "GET",
+        /// 只有旁证探针自己要传 false：否则探针返回 301 会再次触发探针，递归下去。
+        noteAuthRejection: Bool = true
     ) async throws -> Data {
         let cacheKey = Self.cacheKey(path: path, query: query, hasCookie: !(cookie ?? "").isEmpty)
         // 写操作永远不读缓存
@@ -688,20 +722,32 @@ public actor NeteaseProvider: MusicProvider {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw MusicError.invalidResponse }
-            // 网易云未登录时常见 301/401/403（部分接口 HTTP 200 + body code=301）
-            if http.statusCode == 301 || http.statusCode == 401 || http.statusCode == 403 {
-                throw sessionExpiredError()
+            // 301/403 都不是「会话失效」的证据，只是一个接口在说「我这儿没登录」。
+            // 详见 SessionExpiryGuard：这里只抛普通接口错 + 记一次疑似，
+            // 真正清登录态要等 /user/account 探针也失败。
+            if http.statusCode == 301 || http.statusCode == 403 {
+                if noteAuthRejection { noteSessionRejection() }
+                throw MusicError.apiError(
+                    code: http.statusCode,
+                    message: "网易云拒绝了这次请求（可能被风控），稍后重试"
+                )
             }
+            // 401 在这套 helper 里只有一个来源：X-CT-Token 不匹配
+            // （server.js:198-210），即辅助进程重启竞态 —— 与网易云会话无关，
+            // 所以只提示本地服务鉴权失败，绝不能牵连用户的登录态。
+            if http.statusCode == 401 { throw MusicError.helperAuthFailed }
             if http.statusCode == 429 { throw MusicError.rateLimited }
             guard (200...299).contains(http.statusCode) else {
                 throw MusicError.apiError(code: http.statusCode, message: "HTTP \(http.statusCode)")
             }
+            // 同样地，HTTP 200 + body code 301 也只是「这个接口说没登录」。
             // 会话失效的错误响应都是小包；大响应（如 100 首曲目）跳过整包反序列化，
             // 避免这里 JSONSerialization 一遍、调用方 parseJSON 再一遍的双重开销
             if data.count <= 64 * 1024,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                (json["code"] as? Int) == 301 {
-                throw sessionExpiredError()
+                if noteAuthRejection { noteSessionRejection() }
+                throw MusicError.apiError(code: 301, message: "该接口要求重新登录后才能访问")
             }
             if method == "GET", let ttl = cacheTTL, ttl > 0 {
                 responseCacheBytes += data.count - (responseCache[cacheKey]?.data.count ?? 0)
@@ -728,13 +774,46 @@ public actor NeteaseProvider: MusicProvider {
         return json
     }
 
-    /// 广播会话失效（AppState 监听后清理登录态并提示重新登录）
-    private func sessionExpiredError() -> MusicError {
-        // 会话失效后 cookie 可能被原地刷新（重新扫码换新 MUSIC_U，权限可能变化），
-        // 不清缓存的话旧身份写入的条目会继续命中到 TTL 结束
-        clearCache()
-        NotificationCenter.default.post(name: .clearToneSessionExpired, object: nil)
-        return MusicError.sessionExpired
+    // MARK: - 会话失效判定
+
+    /// 疑似计数与定罪闸门。放在 actor 上天然被隔离，不需要额外加锁。
+    private var sessionGuard = SessionExpiryGuard()
+
+    /// 记一次「有接口说没登录」，必要时在后台打旁证探针。
+    private func noteSessionRejection() {
+        guard sessionGuard.noteRejection() == .probeSession else { return }
+        Task { [weak self] in await self?.confirmSessionWithProbe() }
+    }
+
+    /// 打一次 `/user/account`：只有它也失败才认定会话真的失效。
+    ///
+    /// 这是「点一次红心就丢登录」的修复核心。早期实现对 301/401/403
+    /// 一律直接广播会话失效，于是网易云一次风控拒绝就会清空本地账号数据
+    /// 并弹扫码，而扫码后 `/user/account` 又返回 200 —— 会话一直是好的。
+    private func confirmSessionWithProbe() async {
+        let alive: Bool
+        do {
+            let cookie = try KeychainStore.shared.load(for: .neteaseCookie)
+            // noteAuthRejection: false —— 探针自己返回 301 时不能再触发探针
+            let data = try await request("/user/account", cookie: cookie, noteAuthRejection: false)
+            let json = try parseJSON(data)
+            alive = (json["account"] as? [String: Any])?["id"] != nil
+        } catch {
+            alive = false
+        }
+
+        switch sessionGuard.resolveProbe(succeeded: alive) {
+        case .sessionAlive:
+            CTLog.general.info("单接口返回 301/403，但 /user/account 探针正常 —— 判定为风控拒绝，保留登录态")
+        case .sessionExpired:
+            CTLog.security.warning("/user/account 探针同样失败，判定会话确实失效")
+            // 会话失效后 cookie 可能被原地刷新（重新扫码换新 MUSIC_U，权限可能变化），
+            // 不清缓存的话旧身份写入的条目会继续命中到 TTL 结束
+            clearCache()
+            NotificationCenter.default.post(name: .clearToneSessionExpired, object: nil)
+        case .ignore, .probeSession:
+            break
+        }
     }
 
     // MARK: - 缓存维护
@@ -853,7 +932,15 @@ public actor NeteaseProvider: MusicProvider {
     nonisolated static func mapArtist(_ dict: [String: Any]) -> Artist {
         let id = String(describing: dict["id"] ?? "0")
         let name = dict["name"] as? String ?? "未知歌手"
-        return Artist(id: id, name: name)
+        // 四个来源字段都认：/simi/artist 与 /artist/album 给 picUrl / img1v1Url，
+        // 而 /artist/detail（`/api/artist/head/info/get`）给的是 cover / avatar。
+        // 少了任何一个来源，歌手页就会退回那个写死的 person.fill 圆盘。
+        let avatarURL = (dict["picUrl"] as? String)
+            ?? (dict["img1v1Url"] as? String)
+            ?? (dict["cover"] as? String)
+            ?? (dict["avatar"] as? String)
+        let alias = (dict["alias"] as? [String]) ?? (dict["transNames"] as? [String]) ?? []
+        return Artist(id: id, name: name, avatarURL: avatarURL.flatMap(URL.init), alias: alias)
     }
 
     nonisolated static func mapAlbum(_ dict: [String: Any]) -> Album {

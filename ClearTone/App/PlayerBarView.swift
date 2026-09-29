@@ -72,10 +72,7 @@ struct PlayerBarView: View {
                     .foregroundStyle(CTColors.textPrimary(for: colorScheme))
                     .lineLimit(1)
 
-                Text(player.currentSong?.artistNames ?? "")
-                    .font(CTTypography.caption)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                    .lineLimit(1)
+                ArtistNameLinks(artists: player.currentSong?.artists ?? [])
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

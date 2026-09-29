@@ -824,7 +824,9 @@ extension NeteaseProvider: MusicSocialProvider {
             : Date(timeIntervalSince1970: Double(ms))
     }
 
-    private static func int64(_ value: Any?) -> Int64? {
+    /// internal 而非 private：`NeteaseArtistProvider.swift` 里的
+    /// `mapArtistMV` 也要用同一个容错解析（同一模块的另一个 extension）。
+    static func int64(_ value: Any?) -> Int64? {
         switch value {
         case let n as Int64: return n
         case let n as Int: return Int64(n)

@@ -333,10 +333,7 @@ struct DailySongCard: View {
                     .font(CTTypography.bodyMedium)
                     .foregroundStyle(CTColors.textPrimary(for: colorScheme))
                     .lineLimit(1)
-                Text(song.artistNames)
-                    .font(CTTypography.caption)
-                    .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                    .lineLimit(1)
+                ArtistNameLinks(artists: song.artists)
             }
             .frame(width: 140, alignment: .leading)
 

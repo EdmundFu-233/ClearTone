@@ -30,7 +30,27 @@ public struct Song: Identifiable, Hashable, Codable, Sendable {
 public struct Artist: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public var name: String
-    public init(id: String, name: String) { self.id = id; self.name = name }
+    /// 头像。原来整个类型只有 id + name，于是歌手页只能画一个写死的
+    /// `person.fill` 圆盘，相似歌手卡片也永远是灰的。
+    ///
+    /// 四个来源字段（`/artist/detail` 给 `cover`/`avatar`，
+    /// `/simi/artist` 与 `/artist/album` 给 `picUrl`/`img1v1Url`）都要认。
+    public var avatarURL: URL?
+    /// 别名（`["Jay Chou","周董"]`）。取第一个非空值用于副标题。
+    public var alias: [String]
+
+    public init(id: String, name: String, avatarURL: URL? = nil, alias: [String] = []) {
+        self.id = id
+        self.name = name
+        self.avatarURL = avatarURL
+        self.alias = alias
+    }
+
+    /// 有别名时显示 `周杰伦 · Jay Chou`
+    public var displayNameWithAlias: String {
+        guard let first = alias.first(where: { !$0.isEmpty && $0 != name }) else { return name }
+        return "\(name) · \(first)"
+    }
 }
 
 public struct Album: Identifiable, Hashable, Codable, Sendable {

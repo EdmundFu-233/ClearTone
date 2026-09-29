@@ -57,9 +57,54 @@ struct SubscribeButton: View {
     }
 }
 
+/// 歌曲里的歌手名，逐个可点进歌手资料页。
+///
+/// 之前全 App 有 8 处只渲染 `Text(song.artistNames)` —— 那个字符串是
+/// `artists.map(\.name).joined(" / ")`，点不动。`Song.artists` 本来就带着 id，
+/// 缺的只是一个入口，所以这里补上。
+///
+/// 之所以做成「每个歌手一个按钮」而不是整串一个按钮：合作曲有多个歌手，
+/// 整串只能跳第一个。非网易云来源（本地音乐）没有歌手 id，此时退化成纯文本。
+struct ArtistNameLinks: View {
+    let artists: [Artist]
+    var font: Font = CTTypography.caption
+    @EnvironmentObject var appState: AppState
+    @Environment(\.colorScheme) var colorScheme
+
+    var body: some View {
+        // 本地歌曲的 artists 永远是空数组，此时不该渲染任何东西
+        if artists.isEmpty {
+            EmptyView()
+        } else {
+            HStack(spacing: 0) {
+                ForEach(Array(artists.enumerated()), id: \.element.id) { index, artist in
+                    if index > 0 {
+                        Text(" / ")
+                            .font(font)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    }
+                    Button {
+                        appState.openArtist(artist.id)
+                    } label: {
+                        Text(artist.name)
+                            .font(font)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .help("查看歌手：\(artist.name)")
+                }
+            }
+        }
+    }
+}
+
 /// 歌手卡片（搜索结果 / 相似歌手 / 资料库共用）
 struct ArtistCardView: View {
     let artist: Artist
+    /// 显式指定的头像。为 nil 时退回 `artist.avatarURL` ——
+    /// 上游有的接口给 `picUrl`、有的给 `img1v1Url`、还有的（`/artist/detail`）
+    /// 给 `cover`/`avatar`，`mapArtist` 已经统一收进 `Artist.avatarURL`。
     var coverURL: URL? = nil
     var subtitle: String? = nil
     let onTap: () -> Void
@@ -67,10 +112,12 @@ struct ArtistCardView: View {
     @Environment(\.colorScheme) var colorScheme
     @State private var isHovering = false
 
+    private var resolvedCoverURL: URL? { coverURL ?? artist.avatarURL }
+
     var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: CTSpacing.sm) {
-                CoverImage(url: coverURL, size: 120) {
+                CoverImage(url: resolvedCoverURL, size: 120) {
                     Circle()
                         .fill(CTColors.overlay(for: colorScheme))
                         .overlay(
