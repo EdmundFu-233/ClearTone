@@ -9,6 +9,15 @@ struct SettingsView: View {
     @Environment(\.colorScheme) var colorScheme
     @State private var showAPIConfig = false
 
+    /// 「自动」档位的标签里带上当前 VIP 状态解析出来的结果 ——
+    /// 只写「自动」的话用户不知道开了 VIP 之后会变成什么。
+    private var autoQualityLabel: String {
+        let resolved = SongQualityPolicy.defaultLevel(isVIP: player.isAccountVIP)
+        return player.isAccountVIP
+            ? "自动（VIP → \(resolved.rawValue)）"
+            : "自动（\(resolved.rawValue)）"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CTSpacing.xl) {
@@ -33,8 +42,11 @@ struct SettingsView: View {
                         .font(CTTypography.caption)
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 
+                    // 不用 allCases：那会把 `.unknown`（此处代表「自动」）
+                    // 渲染成一个叫「未知」的选项。
                     Picker(L10n.Settings.quality, selection: $settings.settings.preferredQuality) {
-                        ForEach(AudioQuality.QualityLevel.allCases, id: \.self) { level in
+                        Text(autoQualityLabel).tag(SongQualityPolicy.autoLevel)
+                        ForEach(SongQualityPolicy.selectableLevels, id: \.self) { level in
                             Text(level.rawValue).tag(level)
                         }
                     }
@@ -42,17 +54,17 @@ struct SettingsView: View {
                         // 统一入口：同步到播放器并对当前歌曲立即按新音质重新拉流
                         player.setRequestedQuality(newValue)
                     }
-                    Text("默认音质。只对「本地没有缓存、必须走在线流」时生效；要让某一首固定用某个音质（并跳过缓存），在播放栏或正在播放页点音源标签。")
+                    Text("默认音质。只对「本地没有缓存、必须走在线流」时生效；要让某一首固定用某个音质（并跳过缓存），在播放栏或正在播放页点音源标签。选「自动」时按账号会员状态决定：有 VIP 走无损，否则走极高。")
                         .font(CTTypography.caption)
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 
                     Divider()
 
-                    Toggle("缓存播放的音乐（96kbps OPUS）", isOn: $settings.settings.audioCacheEnabled)
+                    Toggle("缓存播放的音乐（128kbps OPUS）", isOn: $settings.settings.audioCacheEnabled)
                         .onChange(of: settings.settings.audioCacheEnabled) { _, newValue in
                             AudioCacheManager.shared.isEnabled = newValue
                         }
-                    Text("听过的网易云歌曲会转成 96kbps OPUS 缓存，再次播放优先使用缓存（默认走缓存，秒开）；受约束 VBR，实际平均码率随内容浮动。缓存码率低于标准档，想听无损/Hi-Res 时在播放栏或正在播放页点音源标签，给这一首指定音质，那次就走网易源、不吃缓存。")
+                    Text("听过的网易云歌曲会转成 128kbps OPUS 缓存，再次播放优先使用缓存（默认走缓存，秒开）；受约束 VBR，实际平均码率随内容浮动。单条缓存最多保留 7 天，过期后重新拉流。每条缓存的码率低于无损档，想听无损/Hi-Res 时在播放栏或正在播放页点音源标签，给这一首指定音质，那次就走网易源、不吃缓存。")
                         .font(CTTypography.caption)
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
 

@@ -191,6 +191,15 @@ final class PlaybackFeaturesTests: XCTestCase {
         XCTAssertFalse(decoded.menuBarAlwaysVisible)
         XCTAssertTrue(decoded.miniPlayerAlwaysOnTop)
         XCTAssertTrue(decoded.audioCacheEnabled)
+        // 缺键 = 从没设置过 = 「自动」，由账号 VIP 状态决定实际档位
+        XCTAssertEqual(decoded.preferredQuality, SongQualityPolicy.autoLevel)
+    }
+
+    /// 老用户存下的 `.exhigh` 是**显式值**，解码时必须原样保留 ——
+    /// 不能因为默认值改成了「自动」就把它悄悄变成跟随 VIP。
+    func testStoredQualityValueIsNotOverwrittenByNewDefault() throws {
+        let json = #"{"preferredQuality":"极高"}"#
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
         XCTAssertEqual(decoded.preferredQuality, .exhigh)
     }
 

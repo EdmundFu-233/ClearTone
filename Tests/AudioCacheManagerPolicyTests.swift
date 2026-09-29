@@ -42,6 +42,24 @@ final class AudioCacheManagerPolicyTests: XCTestCase {
             }
             return removed
         }
+
+        /// 与 `AudioCacheManager.purgeExpired` 同构。
+        ///
+        /// 关键：与 `trim` 不同，它**不受 maxBytes 约束** ——
+        /// 7 天前的条目无论缓存多小都得清掉。
+        mutating func purgeExpired(now: Date = Date()) -> Set<String> {
+            let expired = AudioCacheRetentionPolicy.expiredIDs(
+                cachedAtByID: index.mapValues(\.cachedAt), now: now
+            )
+            var removed: Set<String> = []
+            for id in expired {
+                guard id != currentCachedSongID else { continue }
+                guard index.removeValue(forKey: id) != nil else { continue }
+                cachedIDs.remove(id)
+                removed.insert(id)
+            }
+            return removed
+        }
     }
 
     // MARK: - 真正的 LRU
@@ -127,6 +145,7 @@ final class AudioCacheManagerPolicyTests: XCTestCase {
                        "只有非 tmp- 的 .caf 才算正式缓存")
     }
 
+    /// 孤儿文件（文件在、索引缺）必须能补回来，且能参与淘汰排序。
     func testIndexRecoversEntriesForOrphanFiles() {
         // 文件在但索引缺（上次写索引前被杀）应补回，避免白白重下。
         // 补回的条目没有访问时间，必须能回退到 cachedAt 参与淘汰排序。
@@ -137,5 +156,122 @@ final class AudioCacheManagerPolicyTests: XCTestCase {
         // 排序键取 lastAccessedAt ?? cachedAt，两者都为 nil 时回退到 cachedAt
         func sortKey(_ m: CacheMeta) -> Date { m.lastAccessedAt ?? m.cachedAt }
         XCTAssertLessThan(sortKey(neverPlayed), sortKey(orphan), "更早写入的孤儿文件应先被淘汰")
+    }
+
+    /// 孤儿补回来的条目 `cachedAt` 记为「现在」——所以 7 天规则不会
+    /// 在启动瞬间把它们当成超龄条目清掉（那会让白下一次载的缓存全丢）。
+    func testRecoveredOrphanStartsFreshForRetention() {
+        let now = Date()
+        XCTAssertFalse(
+            AudioCacheRetentionPolicy.isExpired(cachedAt: now, now: now),
+            "补回来的孤儿条目从现在起算 7 天"
+        )
+    }
+
+    // MARK: - 保留期限（7 天）
+
+    /// 编码目标：128kbps。
+    ///
+    /// `afconvert -b` 收的是 **bit/s**，不是 kbps —— 写成 128 会得到
+    /// 一个 0.128kbps 的文件，而因为转码「成功」，界面上看不出任何异常。
+    func testTargetBitrateIs128kbps() {
+        XCTAssertEqual(AudioCacheManager.defaultTargetBitrate, 128_000)
+        XCTAssertEqual(AudioCacheManager.defaultTargetBitrate % 1000, 0, "afconvert -b 要的是 bit/s")
+    }
+
+    /// 7 天是硬上限：正好 7 天即过期。
+    func testRetentionIsExactlySevenDays() {
+        let now = Date()
+        XCTAssertEqual(AudioCacheRetentionPolicy.maxAge, 7 * 24 * 60 * 60)
+        XCTAssertFalse(AudioCacheRetentionPolicy.isExpired(cachedAt: now, now: now))
+        XCTAssertFalse(AudioCacheRetentionPolicy.isExpired(
+            cachedAt: now.addingTimeInterval(-6 * 24 * 60 * 60), now: now
+        ))
+        XCTAssertTrue(AudioCacheRetentionPolicy.isExpired(
+            cachedAt: now.addingTimeInterval(-8 * 24 * 60 * 60), now: now
+        ))
+        XCTAssertTrue(
+            AudioCacheRetentionPolicy.isExpired(
+                cachedAt: now.addingTimeInterval(-AudioCacheRetentionPolicy.maxAge), now: now
+            ),
+            "正好 7 天应当算过期"
+        )
+    }
+
+    /// 期限从 `cachedAt` 算，**不是** `lastAccessedAt`。
+    ///
+    /// 用访问时间算的话，常听的歌永不过期 —— 那就不是「最大 7 天」了。
+    func testExpiryIsMeasuredFromCachedAtNotLastAccess() {
+        let now = Date()
+        let old = now.addingTimeInterval(-10 * 24 * 60 * 60)
+        let justListened = now.addingTimeInterval(-60)
+        // 10 天前缓存、1 分钟前还在听 —— 仍然过期
+        XCTAssertTrue(AudioCacheRetentionPolicy.isExpired(cachedAt: old, now: now))
+        XCTAssertFalse(AudioCacheRetentionPolicy.isExpired(cachedAt: justListened, now: now))
+    }
+
+    /// 时钟回拨 / 改系统时间不该把整个缓存清空。
+    func testFutureTimestampIsNotExpired() {
+        let now = Date()
+        XCTAssertFalse(AudioCacheRetentionPolicy.isExpired(
+            cachedAt: now.addingTimeInterval(60 * 60), now: now
+        ))
+    }
+
+    func testExpiredIDsSelectsOnlyOverdueEntries() {
+        let now = Date()
+        let byAge: [String: Date] = [
+            "fresh": now.addingTimeInterval(-3600),
+            "almost": now.addingTimeInterval(-(6.9 * 24 * 60 * 60)),
+            "stale": now.addingTimeInterval(-(7.1 * 24 * 60 * 60)),
+            "ancient": now.addingTimeInterval(-(30 * 24 * 60 * 60)),
+        ]
+        XCTAssertEqual(
+            AudioCacheRetentionPolicy.expiredIDs(cachedAtByID: byAge, now: now),
+            ["stale", "ancient"]
+        )
+    }
+
+    // MARK: - 过期清扫与容量淘汰的分工
+
+    /// 过期清扫**不受容量上限约束**：远没到 1.5GB 也必须清掉 7 天前的条目。
+    ///
+    /// 之前只有 `trimIfNeeded`（`guard totalCacheBytes > maxCacheBytes` 才动手），
+    /// 于是长期不听歌、不转码的 App 根本不会触发任何清理。
+    func testExpirySweepRunsEvenWhenUnderCapacity() {
+        let now = Date()
+        var store = Store(maxBytes: 1_000_000_000)   // 远未超限
+        store.index["stale"] = CacheMeta(sizeBytes: 1_000, cachedAt: now.addingTimeInterval(-9 * 24 * 60 * 60), lastAccessedAt: now.addingTimeInterval(-9 * 24 * 60 * 60))
+        store.index["fresh"] = CacheMeta(sizeBytes: 1_000, cachedAt: now.addingTimeInterval(-60), lastAccessedAt: nil)
+        store.cachedIDs = ["stale", "fresh"]
+
+        let purged = store.purgeExpired(now: now)
+        XCTAssertEqual(purged, ["stale"])
+        XCTAssertEqual(store.index.keys.sorted(), ["fresh"])
+        XCTAssertEqual(store.cachedIDs, ["fresh"])
+    }
+
+    /// 正在播放的过期条目不能被删（否则 AVPlayer 立刻中断），
+    /// 但它必须留在索引里，等不播了再清。
+    func testExpirySweepProtectsCurrentlyPlayingFile() {
+        let now = Date()
+        var store = Store(maxBytes: 1_000_000_000)
+        store.index["playing"] = CacheMeta(sizeBytes: 1_000, cachedAt: now.addingTimeInterval(-9 * 24 * 60 * 60), lastAccessedAt: nil)
+        store.currentCachedSongID = "playing"
+        store.cachedIDs = ["playing"]
+
+        XCTAssertEqual(store.purgeExpired(now: now), [])
+        XCTAssertNotNil(store.index["playing"])
+    }
+
+    /// 清扫与容量淘汰各自独立：7 天内但超容量的照常按 LRU 腾位置。
+    func testCapacityEvictionStillAppliesToUnexpiredEntries() {
+        let now = Date()
+        var store = Store(maxBytes: 1000)
+        for i in 0..<5 {
+            store.index["s\(i)"] = CacheMeta(sizeBytes: 400, cachedAt: now.addingTimeInterval(Double(-i)), lastAccessedAt: nil)
+        }
+        XCTAssertEqual(store.purgeExpired(now: now), [], "都在 7 天内，不该被时间规则清掉")
+        XCTAssertEqual(store.trim(), ["s4", "s3", "s2"], "超容量仍按最久未播放淘汰")
     }
 }

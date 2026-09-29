@@ -16,6 +16,17 @@ xcuserdata/
 
 # 本地生成的工程文件（由 project.yml 经 xcodegen generate 生成）
 ClearTone.xcodeproj/
+# iCloud / File Provider 会在这个同步目录里造出「xxx 2.swift」「xxx 3.xcodeproj」
+# 之类的重复副本。它们不是真实文件，而是同步产生的垃圾 ——
+# 留着会被 xcodegen / 编译器当成第二个同名类型（曾报
+# 「invalid redeclaration of 'SessionExpiryGuard'」与一堆
+# 「'ArtistProfile' is ambiguous for type lookup」）。
+ClearTone* 2.xcodeproj/
+ClearTone* 3.xcodeproj/
+* 2.swift
+* 3.swift
+* 2.js
+* 3.js
 
 # 辅助进程运行时。
 #

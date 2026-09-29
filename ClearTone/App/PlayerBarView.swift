@@ -23,7 +23,7 @@ struct PlayerBarView: View {
         HStack(spacing: CTSpacing.lg) {
             // 左侧：封面/歌名/歌手。
             // 可压缩（歌名本身有 lineLimit(1)+省略号）：窗口窄时让它先让位，
-            // 否则被挤掉的会是右侧的音源标签（文字被截成 "96k"，编码都丢了）
+            // 否则被挤掉的会是右侧的音源标签（文字被截成 "128k"，编码都丢了）
             infoSection
                 .frame(minWidth: 190, maxWidth: infoWidth, alignment: .leading)
                 .layoutPriority(0)

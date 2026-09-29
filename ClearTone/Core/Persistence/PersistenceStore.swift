@@ -334,8 +334,14 @@ public struct AppSettings: Codable, Sendable {
     /// 现在真实频谱已从选项里移除，不再对用户承诺做不到的事。
     public var spectrumMode: SpectrumMode = .ambient
     public var lyricOffset: TimeInterval = 0
-    public var preferredQuality: AudioQuality.QualityLevel = .exhigh
-    public var audioCacheEnabled: Bool = true   // 播放过的歌缓存为 96kbps OPUS
+    /// 默认音质。**默认是「自动」而不是某一档** ——
+    /// 自动的具体档位由账号是否 VIP 决定（见 `SongQualityPolicy.defaultLevel`）。
+    ///
+    /// 原来这里是 `.exhigh` 写死，于是「没设置过」和「用户主动选了极高」
+    /// 是同一个值，无法在 VIP 出现时调整默认值而不覆盖用户的选择。
+    /// `.unknown` 承担「自动」这个第三态（它本来就不出现在音质菜单里）。
+    public var preferredQuality: AudioQuality.QualityLevel = SongQualityPolicy.autoLevel
+    public var audioCacheEnabled: Bool = true   // 播放过的歌缓存为 128kbps OPUS
     // 原先有 `customAPIServer`：设置页里是个可编辑的 TextField，
     // 但**没有任何代码读取它** —— 辅助进程地址由 HelperProcessManager 每次
     // 启动随机生成（回环 + 随机端口 + 一次性令牌），无法从外部指定。
@@ -404,7 +410,9 @@ public struct AppSettings: Codable, Sendable {
         performanceMode = value(.performanceMode, PerformanceMode.auto)
         spectrumMode = value(.spectrumMode, SpectrumMode.ambient)
         lyricOffset = value(.lyricOffset, 0)
-        preferredQuality = value(.preferredQuality, AudioQuality.QualityLevel.exhigh)
+        // 缺键 = 从没设置过 = 自动。老用户存下的 `.exhigh` 是**显式值**，
+        // 保持不变 —— 不擅自把别人的选择改掉，要改自己在设置页点一下。
+        preferredQuality = value(.preferredQuality, SongQualityPolicy.autoLevel)
         audioCacheEnabled = value(.audioCacheEnabled, true)
     }
 }

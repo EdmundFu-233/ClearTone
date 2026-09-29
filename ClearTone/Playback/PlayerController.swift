@@ -26,7 +26,13 @@ public final class PlayerController: ObservableObject {
     @Published public private(set) var currentSong: Song?
     /// 最近播放（最新在前，最多 100 首，落盘持久化）
     @Published public private(set) var recentlyPlayed: [Song] = []
-    @Published public private(set) var requestedQuality: AudioQuality.QualityLevel = .exhigh
+    /// 用户设定的全局音质偏好，可能是 `.unknown`（= 跟随账号自动）。
+    /// 播放请求用的是下面那个**已解析**的 `requestedQuality`。
+    @Published public private(set) var preferredQuality: AudioQuality.QualityLevel = SongQualityPolicy.autoLevel
+    /// 实际用于请求的全局音质。偏好为「自动」时按 VIP 解析成具体档位。
+    @Published public private(set) var requestedQuality: AudioQuality.QualityLevel = SongQualityPolicy.autoLevel
+    /// 当前账号是不是 VIP。只影响「自动」档位的解析，**不改用户显式选择**。
+    @Published public private(set) var isAccountVIP = false
     @Published public private(set) var actualQuality: AudioQuality?
     /// 当前播放是否来自本地音频缓存
     @Published public private(set) var isCurrentFromCache = false
@@ -227,11 +233,18 @@ public final class PlayerController: ObservableObject {
         recentlyPlayed = PersistenceStore.shared.loadRecentSongs()
         songQualityOverrides = loadSongQualityOverrides()
         let restored = loadPersistedState()
-        // 设置页的音质是权威值：队列文件里的可能落后（例如先改设置、还没播放过）
+        // 设置页的音质是权威值：队列文件里的可能落后（例如先改设置、还没播放过）。
+        //
+        // 语义上要分清两件事：`loadPersistedState` 往 `requestedQuality` 里塞的
+        // 是**已解析**的档位（无偏好含义），而 `AppSettings.preferredQuality`
+        // 是**偏好**（可能是「自动」）。所以权威值取自设置，且要重新解析一次；
+        // 队列里那个值在下面被直接覆盖，不作为偏好的来源 ——
+        // 拿它当偏好会把「上次因为是 VIP 才解析成无损」冻成永久显式选择。
         let settings = PersistenceStore.shared.loadSetting(forKey: "appSettings", as: AppSettings.self)
-        if let settings {
-            requestedQuality = settings.preferredQuality
-        }
+        preferredQuality = settings?.preferredQuality ?? SongQualityPolicy.autoLevel
+        requestedQuality = SongQualityPolicy.effectiveGlobalLevel(
+            preference: preferredQuality, isVIP: isAccountVIP
+        )
         // 与设置说明一致：恢复上次播放位置，但不自动出声
         if restored, settings?.resumePlaybackOnLaunch == true {
             beginRestoredPlayback(autoplay: false)
@@ -345,7 +358,7 @@ public final class PlayerController: ObservableObject {
                 playable = PlayableURL(url: url, quality: AudioQuality(level: .unknown, isActual: true))
             case .netease:
                 // 单曲音质覆盖优先于全局设置；有覆盖就一定走网易源（跳过本地缓存），
-                // 否则默认吃缓存（96kbps OPUS，秒开）
+                // 否则默认吃缓存（128kbps OPUS，秒开）
                 let override = qualityOverride(for: song.id)
                 let level = SongQualityPolicy.effectiveLevel(override: override, global: requestedQuality)
                 if SongQualityPolicy.useLocalCache(hasOverride: override != nil),
@@ -371,7 +384,7 @@ public final class PlayerController: ObservableObject {
                         )
                     }
                     playable = remote
-                    // 完整歌曲才缓存；被点名要某个音质的歌不写（96k OPUS 对它是降级）
+                    // 完整歌曲才缓存；被点名要某个音质的歌不写（128k OPUS 对它是降级）
                     if SongQualityPolicy.shouldWriteCache(hasOverride: override != nil, isPreview: remote.isPreview) {
                         AudioCacheManager.shared.cacheInBackground(songID: song.id, sourceURL: remote.url)
                     }
@@ -840,11 +853,36 @@ public final class PlayerController: ObservableObject {
 
     /// 统一音质入口：设置页修改后同步到播放器，并让之后的播放请求使用新音质
     public func setRequestedQuality(_ level: AudioQuality.QualityLevel) {
-        guard requestedQuality != level else { return }
-        requestedQuality = level
+        let resolved = SongQualityPolicy.effectiveGlobalLevel(preference: level, isVIP: isAccountVIP)
+        guard preferredQuality != level || requestedQuality != resolved else { return }
+        preferredQuality = level
+        requestedQuality = resolved
         persistState(structureChanged: true)
         // 当前歌曲按新音质重新拉流，保留进度与播放状态。
         // 有单曲覆盖时不受影响：那一首要的就是它自己指定的音质。
+        if let song = currentSong, playbackState.songID == song.id, qualityOverride(for: song.id) == nil {
+            reloadCurrentSongForQualityChange()
+        }
+    }
+
+    /// 账号 VIP 状态落定后调用。
+    ///
+    /// 只在偏好为「自动」时才可能改变实际档位；用户显式选过的音质一律不动。
+    /// 但如果档位真的变了（比如登录后从「极高」变成「无损」），
+    /// 正在播的歌要按新音质重拉 —— 否则用户看到设置已生效、耳朵里还是旧码率。
+    public func setAccountIsVIP(_ value: Bool) {
+        guard value != isAccountVIP else { return }
+        isAccountVIP = value
+        applyResolvedGlobalQuality()
+    }
+
+    /// 按当前偏好 + VIP 重新解析全局档位，必要时让当前歌曲重拉流。
+    private func applyResolvedGlobalQuality() {
+        let resolved = SongQualityPolicy.effectiveGlobalLevel(
+            preference: preferredQuality, isVIP: isAccountVIP
+        )
+        guard resolved != requestedQuality else { return }
+        requestedQuality = resolved
         if let song = currentSong, playbackState.songID == song.id, qualityOverride(for: song.id) == nil {
             reloadCurrentSongForQualityChange()
         }

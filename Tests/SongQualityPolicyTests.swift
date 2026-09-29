@@ -21,7 +21,7 @@ final class SongQualityPolicyTests: XCTestCase {
         XCTAssertFalse(SongQualityPolicy.useLocalCache(hasOverride: true), "点名音质后必须走网易源")
     }
 
-    /// 有覆盖时不写缓存：96k OPUS 对点名无损的歌是降级，
+    /// 有覆盖时不写缓存：128k OPUS 对点名无损的歌是降级，
     /// 而且下次播放有覆盖也不会用到这份缓存
     func testNoCacheWriteWhenOverridden() {
         XCTAssertFalse(SongQualityPolicy.shouldWriteCache(hasOverride: true, isPreview: false))
@@ -34,6 +34,50 @@ final class SongQualityPolicyTests: XCTestCase {
         XCTAssertEqual(SongQualityPolicy.selectableLevels.count, 5)
         XCTAssertTrue(SongQualityPolicy.selectableLevels.contains(.lossless))
         XCTAssertTrue(SongQualityPolicy.selectableLevels.contains(.hires))
+    }
+
+    // MARK: VIP 决定的默认档位
+
+    /// 有 VIP 时默认无损，没有则保持极高。
+    func testDefaultLevelDependsOnVIP() {
+        XCTAssertEqual(SongQualityPolicy.defaultLevel(isVIP: true), .lossless)
+        XCTAssertEqual(SongQualityPolicy.defaultLevel(isVIP: false), .exhigh)
+    }
+
+    /// 「自动」才看 VIP；用户显式选过的档位**绝不因为 VIP 变化而改动**。
+    ///
+    /// 后半句是关键：如果 VIP 登录/退出时改掉显式选择，
+    /// 用户设好的「极高」会无声地变成「无损」。
+    func testAutoResolvesByVIPButExplicitChoiceIsUntouched() {
+        XCTAssertEqual(
+            SongQualityPolicy.effectiveGlobalLevel(preference: .unknown, isVIP: true), .lossless
+        )
+        XCTAssertEqual(
+            SongQualityPolicy.effectiveGlobalLevel(preference: .unknown, isVIP: false), .exhigh
+        )
+        for explicit in SongQualityPolicy.selectableLevels {
+            XCTAssertEqual(
+                SongQualityPolicy.effectiveGlobalLevel(preference: explicit, isVIP: true), explicit
+            )
+            XCTAssertEqual(
+                SongQualityPolicy.effectiveGlobalLevel(preference: explicit, isVIP: false), explicit
+            )
+        }
+    }
+
+    /// 「自动」用的哨兵值不能出现在可选列表里，否则设置页会多出一个
+    /// 叫「未知」的选项（`selectableLevels` 已经过滤了它）。
+    func testAutoSentinelIsTheUnknownPlaceholder() {
+        XCTAssertEqual(SongQualityPolicy.autoLevel, .unknown)
+        XCTAssertFalse(SongQualityPolicy.selectableLevels.contains(SongQualityPolicy.autoLevel))
+    }
+
+    /// 退登后不能还在按无损请求 —— 白白拿 403。
+    /// VIP 解析的结果必须每次都跟着 isVIP 变。
+    func testGlobalLevelFollowsVIPChangeBackAndForth() {
+        let preference = SongQualityPolicy.autoLevel
+        XCTAssertEqual(SongQualityPolicy.effectiveGlobalLevel(preference: preference, isVIP: true), .lossless)
+        XCTAssertEqual(SongQualityPolicy.effectiveGlobalLevel(preference: preference, isVIP: false), .exhigh)
     }
 
     // MARK: 无损码率反算（FLAC 的 br 常为 0，只给 size）

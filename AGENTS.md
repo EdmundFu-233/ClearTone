@@ -148,7 +148,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**37 个测试文件 / 374 项**，全部离线可跑且全绿）：
+当前覆盖（**38 个测试文件 / 388 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
@@ -162,9 +162,10 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | 接口契约 | NeteaseEndpointTests（含 `testEveryRequestCallSiteIsMapped` 扫描调用点）/ NeteaseEapiTests（eapi 与 Node 逐字节对照，含 module 写死参数的 `constants` 登记） |
 | 加解密 | NeteaseCryptoTests / NeteaseEapiTests |
 | 封面 | CoverImageTests / CoverImageRetryTests / CoverImageThreadSafetyTests |
-| 缓存 / 频谱 | AudioCacheManagerPolicyTests / ResponseCacheLimitsTests / SpectrumProcessorTests |
+| 缓存 / 频谱 | **AudioCacheManagerPolicyTests**（容量 LRU、代次防复活、临时文件、正在播放保护、**128kbps 目标码率**、**7 天保留期限**：`cachedAt` 而非 `lastAccessedAt` 计时、时钟回拨不误清）/ ResponseCacheLimitsTests / SpectrumProcessorTests |
 | 菜单命令 | PlaybackCommandTests（播放模式轮转、相对 seek 不越界） |
-| 其它 | LikedStateTests / DemoAudioGeneratorTests / SongQualityPolicyTests / PlayingSourceInfoTests |
+| 音质默认值 | SongQualityPolicyTests（**VIP→无损 / 非 VIP→极高**、「自动」哨兵值、**显式选择不因 VIP 变化而改动**）/ PlaybackFeaturesTests（缺键=自动、**老用户存下的显式值不被新默认覆盖**） |
+| 其它 | LikedStateTests / DemoAudioGeneratorTests / PlayingSourceInfoTests |
 
 全部用桩 Provider / 录制器，不联网、不写真实用户状态（`PlayerControllerTests` 会把持久化
 重定向到临时目录，`SearchAssistStoreTests` 注入独立 UserDefaults suite）。

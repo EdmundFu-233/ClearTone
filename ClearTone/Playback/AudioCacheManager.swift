@@ -2,13 +2,14 @@ import AVFoundation
 import Foundation
 
 /// 音频播放缓存：
-/// 把在线播放过的网易云歌曲用系统 afconvert 转成 **96kbps OPUS（CAF 容器）** 落盘，
+/// 把在线播放过的网易云歌曲用系统 afconvert 转成 **128kbps OPUS（CAF 容器）** 落盘，
 /// 之后再次播放同一首歌时优先使用缓存，省流量且离线可播。
 ///
 /// 说明：
 /// - OPUS 编码由系统 CoreAudio 提供（`afconvert -d opus`），无需额外依赖；
-/// - 采用「受约束 VBR」策略（`-s 2`），目标 96kbps，实际平均码率随内容略有浮动，UI 展示实测值；
-/// - CAF 容器 AVPlayer 支持完整（时长 / seek 正确），缓存文件仅本机使用。
+/// - 采用「受约束 VBR」策略（`-s 2`），目标 128kbps，实际平均码率随内容略有浮动，UI 展示实测值；
+/// - CAF 容器 AVPlayer 支持完整（时长 / seek 正确），缓存文件仅本机使用；
+/// - 单条记录最多活 7 天（`AudioCacheRetentionPolicy`），到期后重新拉流。
 @MainActor
 final class AudioCacheManager: ObservableObject {
     static let shared = AudioCacheManager()
@@ -39,9 +40,9 @@ final class AudioCacheManager: ObservableObject {
     @Published private(set) var cachedSongIDs: Set<String> = []
     @Published private(set) var cachingSongIDs: Set<String> = []
 
-    /// 目标码率（受约束 VBR）。`static` 是因为下载/转码跑在后台任务里，
-    /// 读不到 MainActor 隔离的实例属性。
-    nonisolated static let defaultTargetBitrate = 96000
+    /// 目标码率（受约束 VBR），单位 bit/s。`static` 是因为下载/转码跑在
+    /// 后台任务里，读不到 MainActor 隔离的实例属性。
+    nonisolated static let defaultTargetBitrate = 128_000
     /// 缓存上限，超出后按最久未播放淘汰
     private let maxCacheBytes: Int64 = 1_500_000_000
     /// 缓存文件扩展名：caf —— afconvert `-d opus` 的容器。
@@ -74,13 +75,25 @@ private let cacheDirectory: URL
 
     func cachedItem(for songID: String) -> CachedAudio? {
         guard let meta = index[songID] else { return nil }
+        // 过期条目一律当作没缓存：宁可直接重新拉流，也不要放一个
+        // 可能已被系统清理、或内容早已过期的文件。
+        guard !AudioCacheRetentionPolicy.isExpired(cachedAt: meta.cachedAt) else { return nil }
         let url = fileURL(for: songID)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         touchAccess(songID: songID)
         return CachedAudio(url: url, formatName: meta.formatName, bitrateKbps: meta.bitrateKbps)
     }
 
-    func meta(for songID: String) -> CacheMeta? { index[songID] }
+    /// 索引里的条目元信息。**过期条目返回 nil** ——
+    ///
+    /// `PlayerController.playingSourceInfo` 用它决定要不要显示「缓存中」，
+    /// 它读的是索引而不是 `cachedItem`。只给读路径加过期判断的话，
+    /// 播放栏会在条目已过期、实际走的是在线流时仍然显示「OPUS 缓存」。
+    func meta(for songID: String) -> CacheMeta? {
+        guard let meta = index[songID],
+              !AudioCacheRetentionPolicy.isExpired(cachedAt: meta.cachedAt) else { return nil }
+        return meta
+    }
 
     var totalCacheBytes: Int64 { index.values.reduce(0) { $0 + $1.sizeBytes } }
 
@@ -164,6 +177,9 @@ private let cacheDirectory: URL
                 )
                 self.cachedSongIDs.insert(job.songID)
                 self.persistIndexSoon()
+                // 超龄条目先清，再按容量淘汰 ——
+                // 不然一个 7 天前的老条目会占着容量名额被 LRU 反复「保护」
+                self.purgeExpired()
                 self.trimIfNeeded()
                 CTLog.general.info("音频缓存完成: \(job.songID) OPUS \(result.bitrateKbps)kbps (\(result.sizeBytes) bytes)")
             }
@@ -250,7 +266,10 @@ private let cacheDirectory: URL
             if index[id] == nil,
                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
                 index[id] = CacheMeta(
-                    formatName: "OPUS", bitrateKbps: 96, sizeBytes: Int64(size),
+                    // 码率只能按目标值猜：孤儿条目没有实测值可读。
+                    // 与 `defaultTargetBitrate` 保持一致（128kbps）。
+                    formatName: "OPUS", bitrateKbps: Self.defaultTargetBitrate / 1000,
+                    sizeBytes: Int64(size),
                     cachedAt: Date(), lastAccessedAt: nil
                 )
             }
@@ -259,6 +278,33 @@ private let cacheDirectory: URL
         index = index.filter { present.contains($0.key) }
         cachedSongIDs = Set(index.keys)
         if indexDirty || index.isEmpty == false { persistIndex() }
+        // 启动时顺手清掉超过保留期的条目。不在这里做的话，
+        // 7 天规则只会等到「某首歌转码成功」才触发一次 ——
+        // 一个长期不听的 App 可能永远不转码，过期文件就一直堆在盘上。
+        purgeExpired()
+    }
+
+    /// 清扫超过 `AudioCacheRetentionPolicy.maxAge`（7 天）的条目。
+    ///
+    /// 与 `trimIfNeeded` 的分工：那个按**容量**淘汰最久未播放的，
+    /// 这个按**时间**清掉超龄的。两者都跳过正在播放的文件。
+    @discardableResult
+    private func purgeExpired() -> Int {
+        let expired = AudioCacheRetentionPolicy.expiredIDs(
+            cachedAtByID: index.mapValues(\.cachedAt)
+        )
+        guard !expired.isEmpty else { return 0 }
+        for songID in expired {
+            // 正在播的先留着：文件删了 AVPlayer 会立刻中断
+            guard songID != currentCachedSongID else { continue }
+            try? FileManager.default.removeItem(at: fileURL(for: songID))
+            if index.removeValue(forKey: songID) != nil {
+                cachedSongIDs.remove(songID)
+            }
+        }
+        persistIndex()
+        CTLog.general.info("音频缓存过期清理: \(expired.count) 条超过 \(Int(AudioCacheRetentionPolicy.maxAge / 86400)) 天")
+        return expired.count
     }
 
     private func touchAccess(songID: String) {
@@ -363,7 +409,7 @@ private let cacheDirectory: URL
     /// continuation 永不 resume、「缓存中」永久显示、utility 线程泄漏。
     private nonisolated static let afconvertTimeout: Duration = .seconds(180)
 
-    /// 调用系统 afconvert：CAF 容器 + OPUS 编码 + 受约束 VBR 96kbps + 48kHz 立体声
+    /// 调用系统 afconvert：CAF 容器 + OPUS 编码 + 受约束 VBR 128kbps + 48kHz 立体声
     private nonisolated static func runAfconvert(input: URL, output: URL, targetBitrate: Int) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")

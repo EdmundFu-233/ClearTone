@@ -158,6 +158,10 @@ public class AppState: ObservableObject {
         if account == nil {
             account = PersistenceStore.shared.loadCachedAccount()
         }
+        // 缓存账号里就有 isVIP，先用它把音质解析对。
+        // 否则冷启动的第一首歌会按「非 VIP → 极高」拉流，
+        // 等 /user/account 回来再切成无损，用户听到的是先差后好的一小段。
+        PlayerController.shared.setAccountIsVIP(account?.isVIP ?? false)
         if likedSongs.isEmpty {
             let cachedSongs = PersistenceStore.shared.loadCachedLikedSongs()
             // 优先用全量 id 缓存；没有（旧版本遗留）才从列表推导
@@ -213,6 +217,10 @@ public class AppState: ObservableObject {
         account = info
         isLoggedIn = true
         accountGeneration += 1
+        // 音质偏好为「自动」时，实际档位按 VIP 解析（VIP → 无损）。
+        // 必须在这里同步：账号是**异步**确认的，比 PlayerController.init 晚，
+        // 只在 init 里解析的话，登录后永远停在「极高」。
+        PlayerController.shared.setAccountIsVIP(info.isVIP)
         // **每次确认账号都要回写 userID**，不只是在扫码成功时。
         //
         // `/likelist`、`/user/playlist`、`/album/sublist`、`/artist/sublist`、
@@ -230,6 +238,9 @@ public class AppState: ObservableObject {
     private func clearSession(clearLikedCache: Bool) {
         account = nil
         isLoggedIn = false
+        // 掉登录 = 不是 VIP 了，「自动」档位要跟着回落。
+        // 不复位的话退登后仍在按无损请求，白白拿 403。
+        PlayerController.shared.setAccountIsVIP(false)
         hasLoadedLikes = false
         likedIDs = []
         likedSongs = []

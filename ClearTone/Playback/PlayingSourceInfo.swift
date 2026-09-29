@@ -16,7 +16,7 @@ public enum CacheHint: Equatable, Sendable {
 ///
 /// 设计取舍：**主信息永远是此刻真正出声的「编码 + 码率」，缓存只作为次要信息。**
 /// 反过来做（缓存状态顶掉码率）会有个具体的坑：后台缓存是「开始播放就写」，
-/// 所以一首第一次听的歌，从点下播放到听完，界面上显示的一直是「缓存中 / OPUS 96k」，
+/// 所以一首第一次听的歌，从点下播放到听完，界面上显示的一直是「缓存中 / OPUS 128k」，
 /// 而它此刻播的其实是 320k 在线流 —— 用户看到的码率和耳朵听到的对不上。
 /// 只有真的在播缓存文件时，缓存格式才是「实际音质」。
 ///
@@ -24,7 +24,7 @@ public enum CacheHint: Equatable, Sendable {
 /// 而 320k 可以是 MP3 也可以是 AAC，无损更是 FLAC —— 编码才是可核对的事实。
 /// 音质名（标准/极高/无损）是网易云的营销档位，留在 tooltip 里。
 public struct PlayingSourceInfo: Equatable, Sendable {
-    /// 主文案，例如 "FLAC 1050k"（在线无损）/ "OPUS 96k"（缓存文件）/ "AAC 256k"
+    /// 主文案，例如 "FLAC 1050k"（在线无损）/ "OPUS 128k"（缓存文件）/ "AAC 256k"
     public let text: String
     /// 紧凑文案（窄栏位用）：仍然带编码，只在实在放不下时才退到纯码率
     public let shortText: String
