@@ -3,7 +3,7 @@ import SwiftUI
 /// 歌曲评论页。
 ///
 /// 网易云的评论是社区核心之一，本项目此前完全没有。
-/// 读走 `/comment/music`（weapi，歌曲专用）；**写**（发评论 / 删评论）
+/// 读走 `/comment/new`（支持推荐、热度和时间排序）；**写**（发评论 / 删评论）
 /// 上游是 xeapi —— 需要运行时公钥与每次现取的反作弊 token，
 /// 只有辅助进程能做，所以 iOS 直连不可用，这里显式说明而不是给个假按钮。
 struct SongCommentsView: View {
@@ -39,7 +39,7 @@ struct SongCommentsView: View {
             }
         }
         .background(CTColors.background(for: colorScheme))
-        .task(id: song?.id ?? "") {
+        .task(id: "\(song?.id ?? "")-\(appState.dataContextKey)") {
             guard let song else { return }
             await store.load(song: song)
         }
@@ -129,6 +129,7 @@ struct SongCommentsView: View {
             ForEach(store.comments) { comment in
                 CommentRow(
                     comment: comment,
+                    isLikePending: store.pendingLikeIDs.contains(comment.id),
                     onToggleLike: { Task { await store.toggleLike(comment) } }
                 )
                 .onAppear {
@@ -142,6 +143,13 @@ struct SongCommentsView: View {
                     Spacer()
                 }
                 .padding(.vertical, CTSpacing.md)
+            } else if let error = store.paginationError {
+                VStack(spacing: CTSpacing.sm) {
+                    Text(error).font(CTTypography.caption)
+                    Button("重试加载更多") { Task { await store.loadMore() } }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, CTSpacing.md)
             }
         }
         .listStyle(.plain)
@@ -152,6 +160,7 @@ struct SongCommentsView: View {
 /// 单条评论
 struct CommentRow: View {
     let comment: Comment
+    var isLikePending = false
     let onToggleLike: () -> Void
 
     @Environment(\.colorScheme) var colorScheme
@@ -215,7 +224,7 @@ struct CommentRow: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!appState.canPerformWrite)
+                    .disabled(!appState.canPerformWrite || isLikePending)
                     .help(appState.canPerformWrite ? "赞" : "登录后可点赞")
 
                     if comment.replyCount > 0 {

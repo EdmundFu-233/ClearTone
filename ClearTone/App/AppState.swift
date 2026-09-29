@@ -122,8 +122,8 @@ public class AppState: ObservableObject {
     private let provider = NeteaseProvider.shared
     private var sessionExpiryObserver: NSObjectProtocol?
 
-    /// 登录态标识：变化时触发数据重新加载
-    public var dataContextKey: String { "\(isLoggedIn)" }
+    /// 账号或会话代次变化都要刷新页面；两个已登录账号不能共用同一个标识。
+    public var dataContextKey: String { "\(isLoggedIn)-\(account?.userID ?? "guest")-\(accountGeneration)" }
 
     init() {
         // 磁盘缓存的读取不在这里做：@StateObject 的初值在首帧前求值，

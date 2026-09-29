@@ -531,51 +531,75 @@ extension NeteaseProvider: MusicSocialProvider {
         songID: String,
         sort: CommentSort,
         page: Int,
-        pageSize: Int = 20
+        pageSize: Int = 20,
+        cursor: String? = nil
     ) async throws -> CommentPage {
-        // comment_music.js 把 type 前缀硬编码成 R_SO_4_，uri 末尾拼 songID
-        let data = try await request("/comment/music", query: [
-            "id": songID,
-            "limit": String(pageSize),
-            "offset": String((page - 1) * pageSize),
-        ], cacheTTL: sort == .newest ? 0 : 60)
+        let cookie = try Self.loadLoginCookie()
+        let data = try await request("/comment/new", query: Self.commentQuery(
+            songID: songID, sort: sort, page: page, pageSize: pageSize, cursor: cursor
+        ), cookie: cookie, cacheTTL: sort == .newest ? 0 : 60)
         let json = try parseJSON(data)
-        guard let list = json["comments"] as? [[String: Any]] else { throw MusicError.invalidResponse }
-
         let myID = try? KeychainStore.shared.load(for: .neteaseUserID)
+        return try Self.mapCommentPage(json, myID: myID)
+    }
+
+    nonisolated static func commentQuery(
+        songID: String, sort: CommentSort, page: Int, pageSize: Int, cursor: String?
+    ) -> [String: String] {
+        var query = [
+            "id": songID, "type": "0", "sortType": String(sort.apiValue),
+            "pageNo": String(max(1, page)), "pageSize": String(max(1, pageSize)),
+        ]
+        if sort == .newest, page > 1, let cursor { query["cursor"] = cursor }
+        return query
+    }
+
+    /// 直接测试生产解析，避免测试里复制映射逻辑却把错误字段名也复制过去。
+    nonisolated static func mapCommentPage(_ json: [String: Any], myID: String?) throws -> CommentPage {
+        guard let body = json["data"] as? [String: Any],
+              let list = body["comments"] as? [[String: Any]] else { throw MusicError.invalidResponse }
         let comments = list.compactMap { item -> Comment? in
-            guard let id = item["id"] else { return nil }
+            guard let id = item["commentId"] ?? item["id"] else { return nil }
             let user = item["user"] as? [String: Any] ?? [:]
+            let userID = String(describing: user["userId"] ?? item["userId"] ?? "")
             let replied = (item["beReplied"] as? [[String: Any]])?.first
             return Comment(
                 id: String(describing: id),
                 content: item["content"] as? String ?? "",
-                userID: String(describing: user["userId"] ?? item["userId"] ?? ""),
+                userID: userID,
                 nickname: user["nickname"] as? String ?? "匿名用户",
                 avatarURL: (user["avatarUrl"] as? String).flatMap(URL.init),
-                // `time` 是**毫秒**
                 time: Self.date(fromMilliseconds: item["time"]),
                 likedCount: item["likedCount"] as? Int ?? 0,
                 isLiked: item["liked"] as? Bool ?? false,
                 replyCount: item["replyCount"] as? Int ?? 0,
                 replyToNickname: (replied?["user"] as? [String: Any])?["nickname"] as? String,
                 replyToContent: replied?["content"] as? String,
-                isMine: myID.map { String(describing: user["userId"] ?? "") == $0 } ?? false
+                isMine: myID.map { userID == $0 } ?? false
             )
         }
-        let total = json["total"] as? Int ?? comments.count
-        let more = json["more"] as? Bool ?? (page * pageSize < total)
-        return CommentPage(comments: comments, total: total, hasMore: more)
+        return CommentPage(
+            comments: comments,
+            total: body["totalCount"] as? Int ?? comments.count,
+            hasMore: body["hasMore"] as? Bool ?? false,
+            nextCursor: list.last?["time"].map { String(describing: $0) }
+        )
+    }
+
+    nonisolated static func commentLikeQuery(songID: String, commentID: String, like: Bool) -> [String: String] {
+        ["id": songID, "cid": commentID, "type": "0", "t": like ? "1" : "0"]
     }
 
     public func likeComment(songID: String, commentID: String, like: Bool) async throws {
         let cookie = try await requireLoginCookie()
+        // 同一个 comment_like.js 用 t=1/0 分派，helper 没有 /comment/unlike 路由。
         let json = try parseJSON(
-            try await request(like ? "/comment/like" : "/comment/unlike",
-                              query: ["id": songID, "cid": commentID, "t": like ? "1" : "0"],
-                              cookie: cookie, method: "POST")
+            try await request("/comment/like", query: Self.commentLikeQuery(
+                songID: songID, commentID: commentID, like: like
+            ), cookie: cookie, method: "POST")
         )
         try requireWriteSucceeded(json, action: like ? "点赞评论" : "取消点赞")
+        invalidateCache(pathPrefixes: ["/comment/new", "/comment/music"])
     }
 
     // MARK: - 消息

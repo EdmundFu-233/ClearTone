@@ -23,7 +23,7 @@ import Foundation
 /// - **只抛错，不返回布尔**。成功即返回，失败带 `MusicError`；
 /// - 由调用方做乐观更新与回滚（见 `AppState.toggleLike`）；
 /// - 内部**必须 POST** —— 网易云对写接口的 GET 会返回 524/405。
-public protocol MusicSocialProvider: Sendable {
+public protocol MusicSocialProvider: CommentProvider {
 
     // MARK: - 歌单写操作
 
@@ -108,14 +108,7 @@ public protocol MusicSocialProvider: Sendable {
 
     // MARK: - 评论
 
-    func fetchComments(
-        songID: String,
-        sort: CommentSort,
-        page: Int,
-        pageSize: Int
-    ) async throws -> CommentPage
-    /// 点赞 / 取消点赞评论
-    func likeComment(songID: String, commentID: String, like: Bool) async throws
+    // 读取、分页与点赞接口继承自 CommentProvider。
 
     // MARK: - 消息
 

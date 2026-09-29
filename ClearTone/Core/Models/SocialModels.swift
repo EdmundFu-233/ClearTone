@@ -61,9 +61,12 @@ public struct CommentPage: Sendable {
     public var comments: [Comment]
     public var total: Int
     public var hasMore: Bool
+    /// 最新排序的下一页游标，保留服务端毫秒值，避免 Date 转换丢精度。
+    public var nextCursor: String?
 
-    public init(comments: [Comment] = [], total: Int = 0, hasMore: Bool = false) {
+    public init(comments: [Comment] = [], total: Int = 0, hasMore: Bool = false, nextCursor: String? = nil) {
         self.comments = comments; self.total = total; self.hasMore = hasMore
+        self.nextCursor = nextCursor
     }
 }
 

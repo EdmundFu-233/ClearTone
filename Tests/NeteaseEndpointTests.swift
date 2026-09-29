@@ -45,7 +45,7 @@ final class NeteaseEndpointTests: XCTestCase {
             "/dj/catelist", "/dj/hot", "/dj/recommend", "/dj/program",
             "/dj/detail", "/dj/sub", "/dj/unsub", "/dj/sublist",
             // 评论
-            "/comment/music", "/comment/hot", "/comment/like", "/comment/unlike",
+            "/comment/new", "/comment/music", "/comment/hot", "/comment/like",
             // 消息
             "/msg/notices", "/msg/private", "/msg/private/history", "/msg/comments",
         ]

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// 通过本地辅助进程访问网易云 API
 public actor NeteaseProvider: MusicProvider {
@@ -21,6 +22,8 @@ public actor NeteaseProvider: MusicProvider {
     /// 只读接口的短时缓存，避免页面来回切换重复请求；写操作后按前缀失效
     private var responseCache: [String: CacheEntry] = [:]
     private var responseCacheBytes = 0
+    /// 清缓存后，旧的在途响应不能重新填回。失效操作也必须推进代次。
+    private(set) var responseCacheGeneration = 0
 
     /// 缓存硬上限。原先的 256 只是「触发 prune 的阈值」而非上限 ——
     /// pruneExpiredCache 只删过期项，写入速率高于过期速率时字典单调增长
@@ -735,11 +738,12 @@ public actor NeteaseProvider: MusicProvider {
         /// 只有旁证探针自己要传 false：否则探针返回 301 会再次触发探针，递归下去。
         noteAuthRejection: Bool = true
     ) async throws -> Data {
-        let cacheKey = Self.cacheKey(path: path, query: query, hasCookie: !(cookie ?? "").isEmpty)
+        let cacheKey = Self.cacheKey(path: path, query: query, cookie: cookie)
+        let cacheGeneration = responseCacheGeneration
         // 写操作永远不读缓存
         if method == "GET", let ttl = cacheTTL, ttl > 0,
-           let entry = responseCache[cacheKey], entry.expiresAt > Date() {
-            return entry.data
+           let cached = cachedResponse(forKey: cacheKey) {
+            return cached
         }
 
         try await helper.startIfNeeded()
@@ -788,9 +792,7 @@ public actor NeteaseProvider: MusicProvider {
                 throw MusicError.apiError(code: 301, message: "该接口要求重新登录后才能访问")
             }
             if method == "GET", let ttl = cacheTTL, ttl > 0 {
-                responseCacheBytes += data.count - (responseCache[cacheKey]?.data.count ?? 0)
-                responseCache[cacheKey] = CacheEntry(data: data, expiresAt: Date().addingTimeInterval(ttl))
-                enforceResponseCacheLimits()
+                cacheResponse(data, forKey: cacheKey, ttl: ttl, generation: cacheGeneration)
             }
             return data
         } catch let error as URLError where error.code == .cancelled {
@@ -856,11 +858,31 @@ public actor NeteaseProvider: MusicProvider {
 
     // MARK: - 缓存维护
 
-    private static func cacheKey(path: String, query: [String: String], hasCookie: Bool) -> String {
+    nonisolated static func cacheKey(path: String, query: [String: String], cookie: String?) -> String {
         let queryPart = query.sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
+            // 长度前缀避免关键词里的 & 或 = 与 query 分隔符碰撞。
+            .map { "\($0.key.utf8.count):\($0.key)\($0.value.utf8.count):\($0.value)" }
             .joined(separator: "&")
-        return "\(path)?\(queryPart)|\(hasCookie ? "auth" : "anon")"
+        let scope: String
+        if let cookie, !cookie.isEmpty {
+            // 不把凭据原文放进缓存键；不同账号/会话必须有不同的缓存空间。
+            scope = SHA256.hash(data: Data(cookie.utf8)).map { String(format: "%02x", $0) }.joined()
+        } else {
+            scope = "anon"
+        }
+        return "\(path)?\(queryPart)|\(scope)"
+    }
+
+    func cachedResponse(forKey key: String) -> Data? {
+        guard let entry = responseCache[key], entry.expiresAt > Date() else { return nil }
+        return entry.data
+    }
+
+    func cacheResponse(_ data: Data, forKey key: String, ttl: TimeInterval, generation: Int) {
+        guard generation == responseCacheGeneration, ttl > 0 else { return }
+        responseCacheBytes += data.count - (responseCache[key]?.data.count ?? 0)
+        responseCache[key] = CacheEntry(data: data, expiresAt: Date().addingTimeInterval(ttl))
+        enforceResponseCacheLimits()
     }
 
     private func pruneExpiredCache() {
@@ -893,6 +915,7 @@ public actor NeteaseProvider: MusicProvider {
     /// 缓存键形如 "/path?query|auth"，直接 hasPrefix 会误伤：
     /// "/like" 会连带清掉 "/likelist"，"/user/playlist" 与 "/user/playlist/..." 互相误伤。
     public func invalidateCache(pathPrefixes: [String]) {
+        responseCacheGeneration += 1
         for prefix in pathPrefixes {
             let hit = responseCache.keys.filter {
                 let path = Self.path(ofCacheKey: $0)
@@ -920,6 +943,7 @@ public actor NeteaseProvider: MusicProvider {
 
     /// 清空全部缓存（退出登录、会话失效等）
     public func clearCache() {
+        responseCacheGeneration += 1
         responseCache.removeAll()
         responseCacheBytes = 0
         reachCache.removeAll()

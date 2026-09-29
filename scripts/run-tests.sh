@@ -1,5 +1,5 @@
 #!/bin/bash
-# 离线单元测试。不构建 App target，绕开 Metal 工具链问题。
+# 离线单元测试。先构建 App 的 Swift 模块，再构建测试 target。
 # 用法：./scripts/run-tests.sh [--no-build] [XCTest 类名 ...]（不传类名则跑全部）
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -13,6 +13,8 @@ if [ "${1:-}" = "--no-build" ]; then
 fi
 
 if [ "$BUILD" = "1" ]; then
+  xcodebuild -project ClearTone.xcodeproj -target ClearTone \
+    -configuration Debug build CODE_SIGNING_ALLOWED=NO >/dev/null
   xcodebuild -project ClearTone.xcodeproj -target ClearToneTests \
     -configuration Debug build CODE_SIGNING_ALLOWED=NO >/dev/null
 fi

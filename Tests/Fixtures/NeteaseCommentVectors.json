@@ -1,0 +1,99 @@
+{
+  "reads": [
+    {
+      "query": {
+        "id": "42",
+        "type": "0",
+        "sortType": "99",
+        "pageNo": "1",
+        "pageSize": "20"
+      },
+      "uri": "/api/v2/resource/comments",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"pageNo\":\"1\",\"showInner\":true,\"pageSize\":\"20\",\"cursor\":0,\"sortType\":99}",
+      "ciphertext": "12F5DE9D45BC43BBFF87CD83BA0668CB45B0B536B3EA520FDBC7DDA41E3DC56FEC27C2566DACAFBD82D091EEF23C2ADCE773B31E960D64967B16D41F83588D61A4DE600DCC30FC51C5450D1C67B0621766E4F810453920505DFBC0B9BB46DC6F3D8162DF4ED476A07447A2B715C514A8FD40B6B7495ABFA985BD4BABBB80F089366984FAC4AAC9429A4707A69ADCFE5BC97096D5C84D71522F1CD4311CECD922EA051A1679B6B2211C17F1683C2EFF49F6E1AD068786BAC4AA09EE7FB17BCD58"
+    },
+    {
+      "query": {
+        "id": "42",
+        "type": "0",
+        "sortType": "99",
+        "pageNo": "2",
+        "pageSize": "20"
+      },
+      "uri": "/api/v2/resource/comments",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"pageNo\":\"2\",\"showInner\":true,\"pageSize\":\"20\",\"cursor\":20,\"sortType\":99}",
+      "ciphertext": "12F5DE9D45BC43BBFF87CD83BA0668CB45B0B536B3EA520FDBC7DDA41E3DC56FEC27C2566DACAFBD82D091EEF23C2ADCE773B31E960D64967B16D41F83588D614096BDF9DE87086E5A70551972E4F7E066E4F810453920505DFBC0B9BB46DC6F3D8162DF4ED476A07447A2B715C514A81D034EAA49D796A80256DB74B1CF3DA510421F86E0920E399551DB7F3C3F88F8D22C55676A590C2692D9D4286ECAC4496F06F60EE2ABD30D1E80D7603E3B32E19BFF71AA64352E827ECD5BDCE6261CEF"
+    },
+    {
+      "query": {
+        "id": "42",
+        "type": "0",
+        "sortType": "2",
+        "pageNo": "1",
+        "pageSize": "20"
+      },
+      "uri": "/api/v2/resource/comments",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"pageNo\":\"1\",\"showInner\":true,\"pageSize\":\"20\",\"cursor\":\"normalHot#0\",\"sortType\":2}",
+      "ciphertext": "12F5DE9D45BC43BBFF87CD83BA0668CB45B0B536B3EA520FDBC7DDA41E3DC56FEC27C2566DACAFBD82D091EEF23C2ADCE773B31E960D64967B16D41F83588D61A4DE600DCC30FC51C5450D1C67B0621766E4F810453920505DFBC0B9BB46DC6F3D8162DF4ED476A07447A2B715C514A8894CEFEA3E1F8E79D29DC7B56B0EB6731A9757D1171E7B410271EC6DC35941730174A851D2AFE0341F14DF1445C478F72B03E361AD807D510838280954377CB0D4C6208FA5E71705EEC9C2E92D59426C"
+    },
+    {
+      "query": {
+        "id": "42",
+        "type": "0",
+        "sortType": "2",
+        "pageNo": "2",
+        "pageSize": "20"
+      },
+      "uri": "/api/v2/resource/comments",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"pageNo\":\"2\",\"showInner\":true,\"pageSize\":\"20\",\"cursor\":\"normalHot#20\",\"sortType\":2}",
+      "ciphertext": "12F5DE9D45BC43BBFF87CD83BA0668CB45B0B536B3EA520FDBC7DDA41E3DC56FEC27C2566DACAFBD82D091EEF23C2ADCE773B31E960D64967B16D41F83588D614096BDF9DE87086E5A70551972E4F7E066E4F810453920505DFBC0B9BB46DC6F3D8162DF4ED476A07447A2B715C514A8894CEFEA3E1F8E79D29DC7B56B0EB673456ACAAA47D4D24C2573E47D7BDA86651224A9389FF4B99A5CA3EBA100138616020C854891F6F1F63F7B4F825C94D1F4FDC337B8134C3BD2169CE777F69A6893"
+    },
+    {
+      "query": {
+        "id": "42",
+        "type": "0",
+        "sortType": "3",
+        "pageNo": "1",
+        "pageSize": "20"
+      },
+      "uri": "/api/v2/resource/comments",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"pageNo\":\"1\",\"showInner\":true,\"pageSize\":\"20\",\"cursor\":\"0\",\"sortType\":3}",
+      "ciphertext": "12F5DE9D45BC43BBFF87CD83BA0668CB45B0B536B3EA520FDBC7DDA41E3DC56FEC27C2566DACAFBD82D091EEF23C2ADCE773B31E960D64967B16D41F83588D61A4DE600DCC30FC51C5450D1C67B0621766E4F810453920505DFBC0B9BB46DC6F3D8162DF4ED476A07447A2B715C514A8208A91823BC81DFF2906BFD96D7148BA8CD2218C56B169D50AE863C3A7660547050915F4D6E1B715E3643AA8F1551B2B3C54848B9307AB237CBDB7F9DDD37E517893D287B140B703CE2E845CE6034F3E"
+    },
+    {
+      "query": {
+        "id": "42",
+        "type": "0",
+        "sortType": "3",
+        "pageNo": "2",
+        "pageSize": "20",
+        "cursor": "1758700000123"
+      },
+      "uri": "/api/v2/resource/comments",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"pageNo\":\"2\",\"showInner\":true,\"pageSize\":\"20\",\"cursor\":\"1758700000123\",\"sortType\":3}",
+      "ciphertext": "12F5DE9D45BC43BBFF87CD83BA0668CB45B0B536B3EA520FDBC7DDA41E3DC56FEC27C2566DACAFBD82D091EEF23C2ADCE773B31E960D64967B16D41F83588D614096BDF9DE87086E5A70551972E4F7E066E4F810453920505DFBC0B9BB46DC6F3D8162DF4ED476A07447A2B715C514A8105C53096734EA73A903783A0EDDD02700E08ED04E98FEFF1566AF4FFB41A25985DA9BF870903CFE05789950D755B3D730A27100AC63A62783BDE28AE0ABB5B567CCAD7CB8286529D3AE1404DAD192B2"
+    }
+  ],
+  "writes": [
+    {
+      "query": {
+        "id": "42",
+        "cid": "99",
+        "type": "0",
+        "t": "1"
+      },
+      "uri": "/api/v1/comment/like",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"commentId\":\"99\"}"
+    },
+    {
+      "query": {
+        "id": "42",
+        "cid": "99",
+        "type": "0",
+        "t": "0"
+      },
+      "uri": "/api/v1/comment/unlike",
+      "payload": "{\"threadId\":\"R_SO_4_42\",\"commentId\":\"99\"}"
+    }
+  ]
+}

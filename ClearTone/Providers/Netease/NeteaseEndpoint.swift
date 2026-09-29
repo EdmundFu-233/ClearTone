@@ -208,14 +208,12 @@ public enum NeteaseEndpoint {
 
         // MARK: 评论
         //
-        // 读接口用 `/comment/music`（weapi，歌曲专用）。
-        // `/comment/new` 支持排序但走 eapi，签名对键序敏感，
-        // 因此 iOS 直连统一走 weapi 版本；写接口 `/comment/add|delete`
-        // 是 xeapi（需要运行时公钥 + 反作弊 token），iOS 不可用。
+        // macOS helper 用 `/comment/new` 提供排序；旧的歌曲专用读取路由保留登记。
+        // 点赞与取消点赞均走 `/comment/like`，由 query.t 分派原始 uri。
+        "/comment/new":    Endpoint(apiPath: "/api/v2/resource/comments", crypto: .eapi, orderedParamsKey: "commentNew"),
         "/comment/music":  Endpoint(apiPath: "/api/v1/resource/comments/R_SO_4_", crypto: .weapi),
         "/comment/hot":    Endpoint(apiPath: "/api/v1/resource/hotcomments/R_SO_4_", crypto: .weapi),
         "/comment/like":   Endpoint(apiPath: "/api/v1/comment/like", crypto: .weapi),
-        "/comment/unlike": Endpoint(apiPath: "/api/v1/comment/unlike", crypto: .weapi),
 
         // MARK: 消息
         "/msg/notices":         Endpoint(apiPath: "/api/msg/notices", crypto: .weapi),
@@ -268,6 +266,7 @@ public enum NeteaseEndpoint {
         "songLike": EapiParamSpec(["trackId", "userid", "like"], renames: ["id": "trackId", "uid": "userid"]),
         // artist_detail.js: { id: query.id }
         "artistDetail": EapiParamSpec(["id"]),
+        "commentNew": EapiParamSpec(["threadId", "pageNo", "showInner", "pageSize", "cursor", "sortType"]),
         // artist_songs.js 的 data 字面量是
         //   { id, private_cloud: 'true', work_type: 1, order, offset, limit }
         // 其中 private_cloud / work_type 是**写死**的（不读 query），
@@ -292,6 +291,38 @@ public enum NeteaseEndpoint {
     public static func orderedPayload(forRoute route: String, query: [String: String]) -> OrderedJSON.Value? {
         guard let endpoint = table[route], endpoint.crypto == .eapi else { return nil }
         guard let spec = orderedPayloads[endpoint.orderedParamsKey ?? ""] else { return nil }
+
+        // comment_new.js 在写 payload 前派生 threadId 与排序游标。
+        // 本应用只请求歌曲（type=0）；其余资源显式拒绝，避免错拼前缀。
+        if route == "/comment/new" {
+            let accepted = Set(["id", "type", "pageNo", "pageSize", "sortType", "cursor"])
+            guard Set(query.keys).isSubset(of: accepted), query["type"] == "0",
+                  let id = query["id"],
+                  let page = Int(query["pageNo"] ?? "1"), page > 0,
+                  let size = Int(query["pageSize"] ?? "20"), size > 0,
+                  let sort = Int(query["sortType"] ?? "99") else { return nil }
+            let sortType = sort == 1 ? 99 : sort
+            let cursor: OrderedJSON.Value
+            switch sortType {
+            case 99:
+                let offset = (page - 1).multipliedReportingOverflow(by: size)
+                guard !offset.overflow else { return nil }
+                cursor = .int(offset.partialValue)
+            case 2:
+                let offset = (page - 1).multipliedReportingOverflow(by: size)
+                guard !offset.overflow else { return nil }
+                cursor = .string("normalHot#\(offset.partialValue)")
+            case 3: cursor = .string(query["cursor"] ?? "0")
+            default: return nil
+            }
+            return .object([
+                ("threadId", .string("R_SO_4_" + id)),
+                ("pageNo", query["pageNo"].map { .string($0) } ?? .int(1)),
+                ("showInner", .bool(true)),
+                ("pageSize", query["pageSize"].map { .string($0) } ?? .int(20)),
+                ("cursor", cursor), ("sortType", .int(sortType)),
+            ])
+        }
 
         var pairs: [(String, OrderedJSON.Value)] = []
         let constants = spec.constants.map { Dictionary(uniqueKeysWithValues: $0.objectPairs) } ?? [:]
