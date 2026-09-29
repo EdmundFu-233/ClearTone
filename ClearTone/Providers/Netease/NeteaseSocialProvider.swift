@@ -33,7 +33,7 @@ extension NeteaseProvider: MusicSocialProvider {
     }
 
     private func requireLoginCookie() async throws -> String {
-        guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie), !cookie.isEmpty else {
+        guard let cookie = try Self.loadLoginCookie(), !cookie.isEmpty else {
             throw MusicError.notLoggedIn
         }
         return cookie

@@ -227,8 +227,12 @@ struct PlayerBarView: View {
                         .foregroundStyle(appState.isLiked(song.id) ? CTColors.accent(for: colorScheme) : CTColors.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
-                .disabled(!appState.isLoggedIn)
-                .help(appState.isLiked(song.id) ? "取消收藏" : "收藏到喜欢的音乐")
+                // 限流冷却中禁用：见 SongRowView 的同类注释
+                .disabled(!appState.isLoggedIn || appState.isLikeWriteCoolingDown)
+                .opacity(appState.isLikeWriteCoolingDown ? 0.4 : 1)
+                .help(appState.isLikeWriteCoolingDown
+                      ? "网易云正在限流，请 \(appState.likeCooldownRemaining) 秒后再试（连点会更糟）"
+                      : (appState.isLiked(song.id) ? "取消收藏" : "收藏到喜欢的音乐"))
                 .accessibilityLabel(appState.isLiked(song.id) ? "取消收藏" : "收藏")
                 .fixedSize()
             }

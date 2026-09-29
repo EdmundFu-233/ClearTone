@@ -46,6 +46,44 @@ public actor NeteaseProvider: MusicProvider {
     @MainActor
     private var helper: HelperProcessManager { HelperProcessManager.shared }
 
+    /// 收藏失败时给用户看的话。
+    ///
+    /// 服务端对 405 / 524 的原文（「操作过于频繁」「当前环境异常」）
+    /// 都没说「别再点」—— 而这两个码是**限流**，用户看不懂就会继续点，
+    /// 每一次重试都把限流窗口延长一点（实测 405/524 是账号级的，
+    /// 连 `/playlist/subscribe` 都一起挂）。所以这里补一句可执行的建议。
+    nonisolated static func likeFailureMessage(_ json: [String: Any]) -> String {
+        let code = json["code"] as? Int ?? -1
+        let serverText = (json["message"] ?? json["msg"]) as? String
+        switch code {
+        case 405, 524:
+            let reason = serverText ?? "被网易云限流"
+            return "\(reason)。这是账号级限流，连点只会让等待更久，请 \(Int(AppState.likeWriteCooldownSeconds)) 秒后再试一次"
+        default:
+            return serverText ?? "操作失败"
+        }
+    }
+
+    // MARK: - 凭据读取
+
+    /// 读网易云凭据，并顺带**归一化**。
+    ///
+    /// 归一化放在读路径而不是只在写入路径，是为了顺带修好**已经存脏的**
+    /// 凭据：旧版本原样存了 `login_qr_check.js` 返回的 Set-Cookie 拼接串，
+    /// 用户不必重新扫码就能受益。`normalize` 是幂等的，正常凭据不受影响。
+    ///
+    /// 全部 cookie 读取都必须走这里 —— 漏一处就等于往上游发一个
+    /// 带 134 段（含 `Expires=...GMT` 这种未编码值）的畸形 Cookie 头。
+    nonisolated static func loadLoginCookie() throws -> String? {
+        // ⚠️ 这里必须直接读 KeychainStore，不能写成 `try Self.loadLoginCookie()`。
+        // 批量替换读取点时曾把**这一行自己**也替换掉，于是变成无限递归，
+        // 启动即栈溢出（`EXC_BAD_ACCESS` / SIGSEGV，崩溃栈全在
+        // loadLoginCookie 里）。所以下面这一行不是冗余，它是唯一的出口。
+        guard let raw = try KeychainStore.shared.load(for: .neteaseCookie) else { return nil }
+        let normalized = NeteaseCookieNormalizer.normalize(raw)
+        return normalized.isEmpty ? nil : normalized
+    }
+
     // MARK: - 认证
 
     public func fetchQRCodeKey() async throws -> String {
@@ -99,7 +137,7 @@ public actor NeteaseProvider: MusicProvider {
             sessionGuard.reset()
             clearCache()
         }
-        let cookie = (try? KeychainStore.shared.load(for: .neteaseCookie)) ?? nil
+        let cookie = try? Self.loadLoginCookie()
         _ = try await request("/logout", cookie: cookie, method: "POST")
     }
 
@@ -110,7 +148,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchAccountInfo() async throws -> AccountInfo? {
-        guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { return nil }
+        guard let cookie = try Self.loadLoginCookie() else { return nil }
         let data = try await request("/user/account", cookie: cookie)
         let json = try parseJSON(data)
         guard let account = json["account"] as? [String: Any],
@@ -175,7 +213,7 @@ public actor NeteaseProvider: MusicProvider {
     // MARK: - 歌单/专辑
 
     public func fetchPlaylistDetail(id: String) async throws -> PlaylistDetail {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         let data = try await request("/playlist/detail", query: ["id": id], cookie: cookie, cacheTTL: 300)
         let json = try parseJSON(data)
         guard let playlistDict = json["playlist"] as? [String: Any] else { throw MusicError.invalidResponse }
@@ -191,7 +229,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchPlaylistTracks(id: String, page: Int, limit: Int) async throws -> [Song] {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         let data = try await request("/playlist/track/all", query: [
             "id": id,
             "limit": String(limit),
@@ -338,7 +376,7 @@ public actor NeteaseProvider: MusicProvider {
     // MARK: - 播放地址
 
     public func fetchPlayableURL(songID: String, quality: AudioQuality.QualityLevel) async throws -> PlayableURL {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         let level: String
         switch quality {
         case .standard: level = "standard"
@@ -414,7 +452,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     private func fetchMatchURL(songID: String, source: String?) async throws -> URL? {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         var query: [String: String] = ["id": songID]
         if let source, !source.isEmpty { query["source"] = source }
         let data = try await request("/song/url/match", query: query, cookie: cookie, cacheTTL: 240)
@@ -469,7 +507,7 @@ public actor NeteaseProvider: MusicProvider {
     // MARK: - 歌词
 
     public func fetchLyrics(songID: String) async throws -> LyricResult {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         let data = try await request("/lyric/new", query: ["id": songID], cookie: cookie, cacheTTL: 1800)
         let json = try parseJSON(data)
 
@@ -493,7 +531,7 @@ public actor NeteaseProvider: MusicProvider {
     // MARK: - 用户数据
 
     public func fetchUserPlaylists() async throws -> [Playlist] {
-        guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { throw MusicError.notLoggedIn }
+        guard let cookie = try Self.loadLoginCookie() else { throw MusicError.notLoggedIn }
         guard let userID = try KeychainStore.shared.load(for: .neteaseUserID) else { throw MusicError.notLoggedIn }
         let data = try await request("/user/playlist", query: ["uid": userID], cookie: cookie, cacheTTL: 120)
         let json = try parseJSON(data)
@@ -508,7 +546,7 @@ public actor NeteaseProvider: MusicProvider {
     /// 表现为「点了收藏没反应 / 加不进去」。
     /// 这里只取 id（2808 个约 60KB），很轻，不需要 song/detail。
     public func fetchLikedSongIDs() async throws -> [String] {
-        guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { throw MusicError.notLoggedIn }
+        guard let cookie = try Self.loadLoginCookie() else { throw MusicError.notLoggedIn }
         guard let userID = try KeychainStore.shared.load(for: .neteaseUserID) else { throw MusicError.notLoggedIn }
         let data = try await request("/likelist", query: ["uid": userID], cookie: cookie, cacheTTL: 60)
         let json = try parseJSON(data)
@@ -524,7 +562,7 @@ public actor NeteaseProvider: MusicProvider {
     public func fetchLikedSongs() async throws -> [Song] {
         let idStrings = try await fetchLikedSongIDs()
         guard !idStrings.isEmpty else { return [] }
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie)
+        let cookie = try Self.loadLoginCookie()
 
         var result: [Song] = []
         result.reserveCapacity(idStrings.count)
@@ -543,7 +581,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func likeSong(id: String, like: Bool) async throws {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         guard !cookie.isEmpty else { throw MusicError.notLoggedIn }
         guard let userID = try KeychainStore.shared.load(for: .neteaseUserID), !userID.isEmpty else {
             throw MusicError.notLoggedIn
@@ -564,7 +602,7 @@ public actor NeteaseProvider: MusicProvider {
         let json = try parseJSON(data)
         guard let code = json["code"] as? Int, code == 200 else {
             throw MusicError.apiError(code: json["code"] as? Int ?? -1,
-                                     message: json["message"] as? String ?? "操作失败")
+                                     message: Self.likeFailureMessage(json))
         }
         // 收藏状态变化会反映到歌单曲目元数据与用户歌单计数，
         // 只清 /likelist 会让这些最长 300s 不更新
@@ -572,7 +610,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchRecommendPlaylists() async throws -> [Playlist] {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie) ?? ""
+        let cookie = try Self.loadLoginCookie() ?? ""
         let data = try await request("/personalized", query: ["limit": "20"], cookie: cookie, cacheTTL: 600)
         let json = try parseJSON(data)
         guard let result = json["result"] as? [[String: Any]] else { throw MusicError.invalidResponse }
@@ -580,7 +618,7 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchDailyRecommendSongs() async throws -> [Song] {
-        guard let cookie = try KeychainStore.shared.load(for: .neteaseCookie) else { throw MusicError.notLoggedIn }
+        guard let cookie = try Self.loadLoginCookie() else { throw MusicError.notLoggedIn }
         let data = try await request("/recommend/songs", cookie: cookie, cacheTTL: 300)
         let json = try parseJSON(data)
         guard let dataDict = json["data"] as? [String: Any],
@@ -793,7 +831,7 @@ public actor NeteaseProvider: MusicProvider {
     private func confirmSessionWithProbe() async {
         let alive: Bool
         do {
-            let cookie = try KeychainStore.shared.load(for: .neteaseCookie)
+            let cookie = try Self.loadLoginCookie()
             // noteAuthRejection: false —— 探针自己返回 301 时不能再触发探针
             let data = try await request("/user/account", cookie: cookie, noteAuthRejection: false)
             let json = try parseJSON(data)

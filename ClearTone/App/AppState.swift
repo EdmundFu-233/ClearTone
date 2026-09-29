@@ -169,7 +169,7 @@ public class AppState: ObservableObject {
             applyLikedSongs(cachedSongs, ids: cachedIDs.isEmpty ? nil : cachedIDs)
         }
 
-        let cookie = (try? KeychainStore.shared.load(for: .neteaseCookie)) ?? nil
+        let cookie = try? NeteaseProvider.loadLoginCookie()
         guard let cookie, !cookie.isEmpty else {
             // 无 cookie：清理可能残留的缓存登录态
             clearSession(clearLikedCache: false)
@@ -238,6 +238,10 @@ public class AppState: ObservableObject {
     private func clearSession(clearLikedCache: Bool) {
         account = nil
         isLoggedIn = false
+        // 冷却是**按账号**的：退登后新账号不该继承上一个账号的限流倒计时
+        likeWriteCooldownUntil = nil
+        likesWriteError = nil
+        likeRequestsInFlight.removeAll()
         // 掉登录 = 不是 VIP 了，「自动」档位要跟着回落。
         // 不复位的话退登后仍在按无损请求，白白拿 403。
         PlayerController.shared.setAccountIsVIP(false)
@@ -429,9 +433,29 @@ public class AppState: ObservableObject {
     /// 而 likedSongs 只是一份详情列表，重建会把 likedIDs 压缩成列表的规模 ——
     /// 用户有 2808 首收藏时 likedIDs 只剩几百项，于是排在列表之外的歌
     /// 点心形「看起来没反应」，因为下一次 isLiked 仍然返回 false。
+    ///
+    /// ## 为什么要有在途锁与冷却
+    ///
+    /// 这两条不是锦上添花，而是**防止把风控越点越死**的护栏。
+    ///
+    /// 实测：账号一旦触发网易云的写接口限流，所有写接口会一起挂 ——
+    /// `/like` 回 `524 当前环境异常`，连 `/playlist/subscribe` 都回
+    /// `405 操作过于频繁`（同一个账号、同一时刻、读接口全 200）。
+    /// 而原实现对心形点击**没有任何在途保护**：一次点击一个 Task，
+    /// 连点 10 次就是 10 个并发写请求，每次失败都让限流窗口**继续延长**。
+    ///
+    /// 所以：同一首歌有请求在途时直接忽略连点；遇到 405/524 这类
+    /// 「服务端让我们别再试」的拒绝时进入冷却，期间连点击都不发出去。
     @discardableResult
     func toggleLike(_ song: Song) async -> Bool {
         guard song.source == .netease, isLoggedIn else { return false }
+        // 冷却中：连请求都不发。用户看到的仍是心形，但 tooltip 说明为什么点不动。
+        guard likeWriteCooldownUntil.map({ Date() < $0 }) == false else { return likedIDs.contains(song.id) }
+        // 在途：忽略连点，否则一次误操作会并发发好几个写请求
+        guard !likeRequestsInFlight.contains(song.id) else { return likedIDs.contains(song.id) }
+        likeRequestsInFlight.insert(song.id)
+        defer { likeRequestsInFlight.remove(song.id) }
+
         let wasLiked = likedIDs.contains(song.id)
         let previousIDs = likedIDs
         let previousSongs = likedSongs
@@ -446,6 +470,7 @@ public class AppState: ObservableObject {
             try await provider.likeSong(id: song.id, like: !wasLiked)
             PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs))
             PersistenceStore.shared.saveCachedLikedSongs(likedSongs)
+            likesWriteError = nil
             return !wasLiked
         } catch {
             CTLog.general.error("收藏操作失败: \(CTLog.sanitize(error.localizedDescription))")
@@ -456,7 +481,65 @@ public class AppState: ObservableObject {
             // 失败必须让用户看见。原来只写日志，界面表现是「心形弹回去、
             // 什么都不说」，用户只会以为 App 卡了。
             lastWriteError = error.ctUserMessage
+            if Self.isWriteThrottled(error) {
+                // 服务端明说「别再试」（405/524）。进入冷却，
+                // 否则用户的下一次点击又是一次被拒的写请求，只会让窗口更长。
+                enterLikeWriteCooldown(for: error)
+            }
             return wasLiked
+        }
+    }
+
+    // MARK: - 收藏写操作的限流护栏
+
+    /// 正在发请求的歌曲。用来挡住连点。
+    private var likeRequestsInFlight: Set<String> = []
+    /// 冷却截止时间。服务端说「操作过于频繁」之后的这段时间内不再发写请求。
+    private var likeWriteCooldownUntil: Date?
+    /// 收藏失败的原因（供心形 tooltip 解释「为什么点不动」）
+    @Published private(set) var likesWriteError: String?
+
+    /// 冷却时长（秒）。取 30 是权衡：太短用户会觉得「还是不行」而继续点
+    /// （更糟），太长则一次偶发失败要干等。30 秒足以让多数限流窗口过去，
+    /// 也短到不会让人以为 App 坏了。
+    ///
+    /// 非 private：`NeteaseProvider.likeFailureMessage` 要在提示文案里引用它，
+    /// 免得「提示里写 30 秒」与「实际冷却 30 秒」分家。
+    ///
+    /// `nonisolated`：这是个纯常量，而 `AppState` 整体是 `@MainActor` 的，
+    /// provider 那边是 `nonisolated static` 函数 —— 不加这个修饰符
+    /// 编译器会拒绝跨隔离引用（哪怕它只是只读 Int）。
+    nonisolated static let likeWriteCooldownSeconds: Int = 30
+    private static let likeWriteCooldown: TimeInterval = TimeInterval(likeWriteCooldownSeconds)
+
+    /// 冷却剩余秒数（UI 用；0 表示不在冷却中）
+    var likeCooldownRemaining: Int {
+        guard let until = likeWriteCooldownUntil else { return 0 }
+        let remaining = until.timeIntervalSinceNow
+        return remaining > 0 ? Int(remaining.rounded(.up)) : 0
+    }
+
+    var isLikeWriteCoolingDown: Bool { likeCooldownRemaining > 0 }
+
+    private func enterLikeWriteCooldown(for error: Error) {
+        likeWriteCooldownUntil = Date().addingTimeInterval(Self.likeWriteCooldown)
+        likesWriteError = (error as? MusicError)?.ctUserMessage ?? error.ctUserMessage
+    }
+
+    /// 判断这是不是「服务端让我们别再试」这类拒绝。
+    ///
+    /// 405 = 操作过于频繁，524 = 当前环境异常（风控）。两者都是
+    /// **限流**而非「请求写错了」—— 重试只会延长窗口，所以要冷却。
+    /// 其余错误（如 404 歌曲不存在）重试是有意义的，不该冷却。
+    static func isWriteThrottled(_ error: Error) -> Bool {
+        guard let musicError = error as? MusicError else { return false }
+        switch musicError {
+        case .apiError(let code, _):
+            return code == 405 || code == 524
+        case .rateLimited:
+            return true
+        default:
+            return false
         }
     }
 

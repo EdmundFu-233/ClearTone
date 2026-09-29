@@ -32,7 +32,7 @@ extension NeteaseProvider: ArtistProfileProviding {
     ///  identifyTag / briefDesc / rank / albumSize / musicSize / mvSize`
     /// —— **没有 `picUrl`**，头像要从 `cover` 或 `avatar` 取。
     public func fetchArtistProfile(id: String) async throws -> ArtistProfile {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie)
+        let cookie = try Self.loadLoginCookie()
         let data = try await request("/artist/detail", query: ["id": id], cookie: cookie, cacheTTL: 600)
         let json = try parseJSON(data)
         guard let payload = json["data"] as? [String: Any],
@@ -85,7 +85,7 @@ extension NeteaseProvider: ArtistProfileProviding {
         limit: Int = 50,
         order: String = "hot"
     ) async throws -> ArtistSongPage {
-        let cookie = try KeychainStore.shared.load(for: .neteaseCookie)
+        let cookie = try Self.loadLoginCookie()
         let data = try await request("/artist/songs", query: [
             "id": id,
             "order": order,

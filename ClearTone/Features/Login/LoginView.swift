@@ -149,8 +149,13 @@ struct LoginView: View {
 
                 switch status {
                 case .success(let cookie):
-                    // 保存 cookie
-                    try? KeychainStore.shared.save(cookie, for: .neteaseCookie)
+                    // 必须归一化再存。`login_qr_check.js` 返回的是
+                    // `result.cookie.join(';')` —— 一整组 Set-Cookie 响应头，
+                    // 每个元素本身就带 `Expires` / `Max-Age` / `Path`，
+                    // 原样存进去会让每个请求的 Cookie 头有 134 段
+                    // （6 个真 cookie + 大量属性 + 空值），见 NeteaseCookieNormalizer。
+                    try? KeychainStore.shared.save(NeteaseCookieNormalizer.normalize(cookie),
+                                                   for: .neteaseCookie)
                     await loadAccount()
                     return
                 case .expired:

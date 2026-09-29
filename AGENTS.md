@@ -148,7 +148,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**38 个测试文件 / 388 项**，全部离线可跑且全绿）：
+当前覆盖（**41 个测试文件 / 411 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
@@ -163,7 +163,8 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | 加解密 | NeteaseCryptoTests / NeteaseEapiTests |
 | 封面 | CoverImageTests / CoverImageRetryTests / CoverImageThreadSafetyTests |
 | 缓存 / 频谱 | **AudioCacheManagerPolicyTests**（容量 LRU、代次防复活、临时文件、正在播放保护、**128kbps 目标码率**、**7 天保留期限**：`cachedAt` 而非 `lastAccessedAt` 计时、时钟回拨不误清）/ ResponseCacheLimitsTests / SpectrumProcessorTests |
-| 菜单命令 | PlaybackCommandTests（播放模式轮转、相对 seek 不越界） |
+| 菜单命令 | PlaybackCommandTests（播放模式轮转、相对 seek 不越界）/ **SidebarShortcutsTests**（⌘1…⌘0 映射；**第 10 项不得 `Character("10")`**、越界返回 nil） |
+| 凭据与限流 | **NeteaseCookieNormalizerTests**（Set-Cookie 拼接串归一化：**134 段 → 5 段**、丢属性/空值/重名、值含 `=`、**幂等**、**`loadLoginCookie` 不得自我递归**）/ **LikeWriteThrottleTests**（405/524 算限流需冷却、其余错误不冷却、提示要劝阻连点） |
 | 音质默认值 | SongQualityPolicyTests（**VIP→无损 / 非 VIP→极高**、「自动」哨兵值、**显式选择不因 VIP 变化而改动**）/ PlaybackFeaturesTests（缺键=自动、**老用户存下的显式值不被新默认覆盖**） |
 | 其它 | LikedStateTests / DemoAudioGeneratorTests / PlayingSourceInfoTests |
 

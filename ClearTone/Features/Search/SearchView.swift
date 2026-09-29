@@ -331,8 +331,10 @@ struct SongRowView: View {
                         .foregroundStyle(isLiked ? CTColors.accent(for: colorScheme) : CTColors.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
-                .disabled(!appState.canPerformWrite)
-                .opacity(appState.isLoggedIn ? 1 : 0.4)
+                // 冷却中也要禁用：否则用户看到「心形弹回去了」就再点一次，
+                // 而每一次重试都会把网易云的限流窗口延长（见 AppState 的护栏注释）
+                .disabled(!appState.canPerformWrite || appState.isLikeWriteCoolingDown)
+                .opacity(appState.isLoggedIn ? (appState.isLikeWriteCoolingDown ? 0.4 : 1) : 0.4)
                 .help(heartHelpText)
                 .accessibilityLabel(isLiked ? "取消收藏" : "收藏")
             }
@@ -401,6 +403,11 @@ struct SongRowView: View {
 
     private var heartHelpText: String {
         guard appState.isLoggedIn else { return "登录后可收藏" }
+        if appState.isLikeWriteCoolingDown {
+            // 必须写清「这是限流、别再点」——否则用户只会以为 App 卡住，
+            // 然后继续点，把限流窗口越拖越长
+            return "网易云正在限流，请 \(appState.likeCooldownRemaining) 秒后再试（连点会更糟）"
+        }
         return isLiked ? "取消收藏" : "收藏到喜欢的音乐"
     }
 
