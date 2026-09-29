@@ -12,13 +12,11 @@ struct AppCommands: Commands {
         // 导航菜单。⌘1…⌘9 依次对应侧栏从「发现音乐」往下的顺序。
         CommandMenu("导航") {
             ForEach(Array(AppState.Page.sidebarPages.enumerated()), id: \.element) { index, page in
-                Button(page.rawValue) {
-                    appState?.switchToTopLevel(page)
+                sidebarShortcut(index) {
+                    Button(page.rawValue) {
+                        appState?.switchToTopLevel(page)
+                    }
                 }
-                .keyboardShortcut(
-                    KeyEquivalent(Character("\(index + 1)")),
-                    modifiers: .command
-                )
             }
 
             Divider()
@@ -95,6 +93,27 @@ struct AppCommands: Commands {
         // 帮助菜单
         CommandGroup(replacing: .help) {
             Button("关于澄音") { NSApp.orderFrontStandardAboutPanel(nil) }
+        }
+    }
+
+    /// 给侧栏按钮挂 ⌘数字快捷键。
+    ///
+    /// 映射规则在 `SidebarShortcuts`（可测），这里**必须处理 nil**：
+    /// 原来直接写 `KeyEquivalent(Character("\(index + 1)"))`，而
+    /// `sidebarPages` 有 10 项 —— 第 10 项算出 `"10"`，而
+    /// `Character.init(String)` 遇到多于一个 grapheme cluster 是
+    /// `fatalError` 不是返回 nil，于是每次启动都崩在构造菜单命令时。
+    ///
+    /// 数字键不够用时**不挂快捷键**，按钮照常工作。
+    @ViewBuilder
+    private func sidebarShortcut<Content: View>(
+        _ index: Int,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if let key = SidebarShortcuts.key(forIndex: index) {
+            content().keyboardShortcut(KeyEquivalent(key), modifiers: .command)
+        } else {
+            content()
         }
     }
 }
