@@ -19,10 +19,13 @@ public actor LocalProvider: MusicProvider {
 
     public func importFiles(_ urls: [URL]) async throws -> [Song] {
         var songs: [Song] = []
+        // `contains` 只看已入库的 `importedSongs`，不看本次调用里已收下的 ——
+        // 同一批里出现两条相同路径（或目录遍历同时给出符号链接与目标）就会重复导入。
+        var seen = Set(importedSongs.compactMap { $0.localFileURL?.standardizedFileURL.path })
         for url in urls {
             let ext = url.pathExtension.lowercased()
             guard supportedExtensions.contains(ext) else { continue } // 跳过不支持的文件，不打断整批导入
-            guard !contains(url) else { continue } // 去重
+            guard seen.insert(url.standardizedFileURL.path).inserted else { continue } // 批内 + 批间去重
             if let song = await parseMetadata(url: url) {
                 songs.append(song)
             }
@@ -34,6 +37,7 @@ public actor LocalProvider: MusicProvider {
 
     public func scanDirectory(_ url: URL) async throws -> [Song] {
         var songs: [Song] = []
+        var seen = Set(importedSongs.compactMap { $0.localFileURL?.standardizedFileURL.path })
         let enumerator = FileManager.default.enumerator(
             at: url,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
@@ -44,7 +48,7 @@ public actor LocalProvider: MusicProvider {
             try Task.checkCancellation()
             let ext = fileURL.pathExtension.lowercased()
             guard supportedExtensions.contains(ext) else { continue }
-            guard !contains(fileURL) else { continue }
+            guard seen.insert(fileURL.standardizedFileURL.path).inserted else { continue }
             if let song = await parseMetadata(url: fileURL) {
                 songs.append(song)
             }
@@ -69,11 +73,6 @@ public actor LocalProvider: MusicProvider {
         }
         importedSongs = songs
         return songs
-    }
-
-    private func contains(_ url: URL) -> Bool {
-        let path = url.standardizedFileURL.path
-        return importedSongs.contains { $0.localFileURL?.standardizedFileURL.path == path }
     }
 
     private func persistLibrary() {

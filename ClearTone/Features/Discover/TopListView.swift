@@ -252,7 +252,7 @@ struct TopListView: View {
             } else {
                 InfiniteScrollGrid(
                     items: store.hotPlaylists,
-                    hasMore: store.hotPlaylists.count % 30 == 0,
+                    hasMore: store.hotPlaylistsHasMore,
                     isLoading: store.isLoadingPlaylists,
                     onLoadMore: { Task { await store.loadHotPlaylists(reset: false) } },
                     minimumItemWidth: 160

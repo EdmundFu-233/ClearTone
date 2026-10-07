@@ -236,13 +236,22 @@ public final class PersistenceStore: Sendable {
 
         private static func writeQueueSnapshot(_ queue: PersistedQueue) throws {
             let data = try PersistenceStore.makeJSONEncoder().encode(queue)
-            guard data.count <= maxBytes else { return }
+            // 超上限不能**静默**丢弃：`writePending` 会据此认为写成功并清掉 pending，
+            // 既没有日志也不会重试，用户完全不知道队列没存上。
+            guard data.count <= maxBytes else {
+                CTLog.general.warning("队列快照 \(data.count) 字节超过上限 \(maxBytes)，跳过落盘")
+                return
+            }
             try data.write(to: PersistenceStore.shared.queueFileURL, options: [.atomic])
         }
 
         /// 最近播放与设置同源，仍写 UserDefaults，保持与 `loadRecentSongs` 的读取路径一致
         private static func writeRecentSnapshot(_ recent: [Song]) throws {
-            guard let data = try? PersistenceStore.makeJSONEncoder().encode(recent), data.count <= maxBytes else { return }
+            guard let data = try? PersistenceStore.makeJSONEncoder().encode(recent) else { return }
+            guard data.count <= maxBytes else {
+                CTLog.general.warning("最近播放快照 \(data.count) 字节超过上限 \(maxBytes)，跳过落盘")
+                return
+            }
             UserDefaults.standard.set(
                 data, forKey: PersistenceStore.shared.settingKey(for: "recentSongs")
             )

@@ -319,7 +319,10 @@ private let cacheDirectory: URL
         // 文件被系统清理 / 手动删除时同步剔除索引
         index = index.filter { present.contains($0.key) }
         cachedSongIDs = Set(index.keys)
-        if indexDirty || index.isEmpty == false { persistIndex() }
+        // 无条件落盘：筛选后索引可能**变成空的**（系统把缓存文件清光），
+        // 而旧条件 `index.isEmpty == false` 恰好在这种时候不写，于是盘上
+        // 留下一份指向已不存在文件的过期 index.json。
+        persistIndex()
         // 启动时顺手清掉超过保留期的条目。不在这里做的话，
         // 7 天规则只会等到「某首歌转码成功」才触发一次 ——
         // 一个长期不听的 App 可能永远不转码，过期文件就一直堆在盘上。

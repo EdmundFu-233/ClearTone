@@ -19,6 +19,10 @@ final class TopListStore: ObservableObject {
     @Published private(set) var isLoadingNewSongs = false
 
     @Published private(set) var hotPlaylists: [Playlist] = []
+    /// 歌单广场是否还有下一页。由**服务端返回的页长度**推导，
+    /// 不能用「已加载条数 % 30 == 0」猜：总数正好是 30 的整数倍时
+    /// 那条启发式永远为真，列表会一直显示「加载更多」，每次点都拉回空页。
+    @Published private(set) var hotPlaylistsHasMore = true
     @Published private(set) var playlistCategories: [PlaylistCategoryGroup] = []
     @Published var selectedCategory: String?
     @Published var playlistOrder: TopPlaylistOrder = .hot
@@ -145,6 +149,7 @@ final class TopListStore: ObservableObject {
             playlistsToken = token
             isLoadingHotPlaylists = false
             hotPlaylists = []
+            hotPlaylistsHasMore = true
             isLoadingPlaylists = true
             do {
                 let page = try await provider.fetchHotPlaylists(
@@ -155,6 +160,7 @@ final class TopListStore: ObservableObject {
                 )
                 guard playlistsToken == token, !Task.isCancelled else { return }
                 hotPlaylists = Self.dedupe(page)
+                hotPlaylistsHasMore = page.count >= 30
             } catch {
                 guard playlistsToken == token, !Task.isCancelled else { return }
                 CTLog.general.error("加载歌单广场失败: \(CTLog.sanitize(error.localizedDescription))")
@@ -179,6 +185,7 @@ final class TopListStore: ObservableObject {
             )
             guard playlistsToken == token, !Task.isCancelled else { return }
             hotPlaylists = Self.dedupe(hotPlaylists + page)
+            hotPlaylistsHasMore = page.count >= 30
         } catch {
             guard playlistsToken == token, !Task.isCancelled else { return }
             CTLog.general.error("加载歌单广场加载更多失败: \(CTLog.sanitize(error.localizedDescription))")
