@@ -50,16 +50,48 @@ public final class PersistenceStore: Sendable {
         }
     }
 
+    // MARK: - JSON 编解码（非有限浮点）
+
+    /// `JSONEncoder.nonConformingFloatEncodingStrategy` 的默认值是 **`.throw`**。
+    ///
+    /// 也就是说：快照里只要有一个 NaN / ±Infinity（来源见
+    /// `LocalProvider.parseMetadata` 的 `CMTimeGetSeconds`、播放进度观察者），
+    /// **整份对象**编码就失败 —— 而所有调用点都是 `try?`，于是
+    /// `queue.json`、最近播放、以及任意一项设置**从此再也写不进去**，
+    /// 既不重试也不打日志。改成字符串后单个字段被降级，其余照常落盘。
+    ///
+    /// 必须与 `makeJSONDecoder()` 成对使用：读侧不配对的话，
+    /// 写出来的 `"NaN"` 会被解码策略挡掉，等于把整份文件作废。
+    nonisolated static func makeJSONEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.nonConformingFloatEncodingStrategy = .convertToString(
+            positiveInfinity: "Infinity",
+            negativeInfinity: "-Infinity",
+            nan: "NaN"
+        )
+        return encoder
+    }
+
+    nonisolated static func makeJSONDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.nonConformingFloatDecodingStrategy = .convertFromString(
+            positiveInfinity: "Infinity",
+            negativeInfinity: "-Infinity",
+            nan: "NaN"
+        )
+        return decoder
+    }
+
     func saveQueue(_ queue: PersistedQueue) {
         let url = storageURL.appendingPathComponent("queue.json")
         // 原子写：避免崩溃/断电时留下半截 JSON 导致队列丢失
-        try? JSONEncoder().encode(queue).write(to: url, options: [.atomic])
+        try? Self.makeJSONEncoder().encode(queue).write(to: url, options: [.atomic])
     }
 
     func loadQueue() -> PersistedQueue? {
         let url = storageURL.appendingPathComponent("queue.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
-        guard var queue = try? JSONDecoder().decode(PersistedQueue.self, from: data) else { return nil }
+        guard var queue = try? Self.makeJSONDecoder().decode(PersistedQueue.self, from: data) else { return nil }
         queue.items = queue.items.filter { Self.isNotLegacyDemoSong($0.song) }
         // items 为空也要照常返回：调用方靠它恢复音量/播放模式/音质。
         return queue
@@ -91,6 +123,10 @@ public final class PersistenceStore: Sendable {
         private var pendingQueue: PersistedQueue?
         private var pendingRecent: [Song]?
         private var flushTask: Task<Void, Never>?
+        /// 连续写失败次数。磁盘满时靠它把自动重试停住，避免 800ms 一次的死循环。
+        private var consecutiveWriteFailures = 0
+        /// 连续自动重试的上限
+        private static let maxAutoRetries = 5
         /// 抖动窗口：这段时间内的重复写入会被合并成一次落盘
         private static let debounce: Duration = .milliseconds(800)
         /// 单次待写快照的体积上限，超过则跳过（避免异常大的队列拖垮写入）
@@ -158,27 +194,55 @@ public final class PersistenceStore: Sendable {
             // 的快照被永久丢弃（不是延后重试）。后果是：切歌之后的所有队列变更
             // （清空、加歌、拖动排序、播放模式、音量、音质、播放进度）
             // 一律不落盘，⌘Q 退出时也一样。
+            //
+            // 同样的道理，**写出失败**也必须把取走的快照补回来：
+            // 上面两行已经把它从 pending 摘走了，一抛就等于永久丢掉这一轮。
+            // 两条链路各自独立，一条失败不能连坐另一条。
+            var firstError: Error?
             if let queue {
-                try await Task.detached(priority: .utility) {
-                    try Self.writeQueueSnapshot(queue)
-                }.value
+                do {
+                    try await Task.detached(priority: .utility) {
+                        try Self.writeQueueSnapshot(queue)
+                    }.value
+                } catch {
+                    // 期间若已有更新的一轮进来，保留新的那份
+                    if pendingQueue == nil { pendingQueue = queue }
+                    firstError = error
+                }
             }
             if let recent {
-                try await Task.detached(priority: .utility) {
-                    try Self.writeRecentSnapshot(recent)
-                }.value
+                do {
+                    try await Task.detached(priority: .utility) {
+                        try Self.writeRecentSnapshot(recent)
+                    }.value
+                } catch {
+                    if pendingRecent == nil { pendingRecent = recent }
+                    firstError = firstError ?? error
+                }
             }
+            if firstError != nil {
+                consecutiveWriteFailures += 1
+                // 磁盘满时不能无限重试（每次都是真 I/O）。停手之后，
+                // 用户下次改队列 / 退出时的 `flushNow` 会重新开始尝试。
+                if consecutiveWriteFailures <= Self.maxAutoRetries,
+                   pendingQueue != nil || pendingRecent != nil {
+                    scheduleFlush()
+                }
+            } else {
+                consecutiveWriteFailures = 0
+            }
+            if let firstError { throw firstError }
         }
 
         private static func writeQueueSnapshot(_ queue: PersistedQueue) throws {
-            let data = try JSONEncoder().encode(queue)
+            let data = try PersistenceStore.makeJSONEncoder().encode(queue)
             guard data.count <= maxBytes else { return }
             try data.write(to: PersistenceStore.shared.queueFileURL, options: [.atomic])
         }
 
         /// 最近播放与设置同源，仍写 UserDefaults，保持与 `loadRecentSongs` 的读取路径一致
         private static func writeRecentSnapshot(_ recent: [Song]) throws {
-            guard let data = try? JSONEncoder().encode(recent), data.count <= maxBytes else { return }
+            guard let data = try? PersistenceStore.makeJSONEncoder().encode(recent), data.count <= maxBytes else { return }
             UserDefaults.standard.set(
                 data, forKey: PersistenceStore.shared.settingKey(for: "recentSongs")
             )
@@ -197,14 +261,14 @@ public final class PersistenceStore: Sendable {
     // MARK: - 设置（UserDefaults）
 
     public func saveSetting<T: Codable>(_ value: T, forKey key: String) {
-        if let data = try? JSONEncoder().encode(value) {
+        if let data = try? Self.makeJSONEncoder().encode(value) {
             UserDefaults.standard.set(data, forKey: "\(settingsKey).\(key)")
         }
     }
 
     public func loadSetting<T: Codable>(forKey key: String, as type: T.Type) -> T? {
         guard let data = UserDefaults.standard.data(forKey: "\(settingsKey).\(key)") else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        return try? Self.makeJSONDecoder().decode(type, from: data)
     }
 
     private func removeSetting(forKey key: String) {

@@ -162,6 +162,73 @@ final class SearchAssistStoreTests: XCTestCase {
         let reloaded = SearchAssistStore(defaults: defaults)
         XCTAssertEqual(reloaded.history, ["持久化测试"])
     }
+
+    // MARK: - 热搜与历史的失败路径
+
+    /// `.task { loadHotTerms() }` 被取消（切侧栏 / 窗口失焦）后，
+    /// `isLoadingHot` 必须复位，否则面板永久转圈、空态占位与重试按钮都不显示，
+    /// 且下次进来被 `!isLoadingHot` 守卫直接挡掉 —— 本进程内热搜永远空白、无报错。
+    func testCancelledHotTermsLoadDoesNotStickSpinner() async {
+        let source = StubSource()
+        source.hotTerms = [HotSearchTerm(keyword: "周杰伦", score: 100)]
+        let store = makeStore(source: source)
+
+        // 在任务开跑前就取消，模拟 `.task` 立刻被拿掉
+        let task = Task { await store.loadHotTerms() }
+        task.cancel()
+        await task.value
+
+        XCTAssertFalse(store.isLoadingHot, "取消路径必须复位 loading（原先三处 early-return 全跳过了收尾赋值）")
+
+        // 复位之后必须还能重新拉取
+        await store.loadHotTerms()
+        XCTAssertEqual(source.hotCalls, 2, "取消后要能重来，不能被 !isLoadingHot 挡死")
+        XCTAssertEqual(store.hotTerms.count, 1)
+    }
+
+    /// 热搜失败要有错误态 + 能重试
+    func testHotTermsFailureIsSurfacedAndRetryable() async {
+        let source = StubSource()
+        source.error = MusicError.networkUnavailable
+        let store = makeStore(source: source)
+
+        await store.loadHotTerms()
+        XCTAssertNotNil(store.hotError)
+        XCTAssertFalse(store.isLoadingHot, "失败后必须复位，否则重试按钮出不来")
+
+        source.error = nil
+        source.hotTerms = [HotSearchTerm(keyword: "重试", score: 1)]
+        await store.loadHotTerms()
+        XCTAssertNil(store.hotError, "重试成功后错误要清掉")
+        XCTAssertEqual(store.hotTerms.count, 1)
+    }
+
+    /// 删除历史必须与 `recordSearch` 用同一套大小写比较 ——
+    /// 否则记录时按大小写归一、删除时按 `==`，点掉一条会留着它的另一个变体。
+    func testRemoveHistoryIsCaseInsensitive() {
+        let store = makeStore()
+        store.recordSearch("周杰伦")
+        store.removeHistory("周杰伦")
+        XCTAssertTrue(store.history.isEmpty)
+
+        store.recordSearch("Adele")
+        store.removeHistory("adele")
+        XCTAssertTrue(store.history.isEmpty, "大小写不同的同一关键词删不掉就是历史残留")
+    }
+
+    /// 上限改小（或历史是老版本写的）时，从磁盘读进来的超限条目也要裁掉。
+    func testHistoryIsCappedOnLoad() {
+        let suite = "SearchAssistStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        defaults.set((0..<40).map { "旧词\($0)" }, forKey: "cleartone.search.history")
+
+        let store = SearchAssistStore(defaults: defaults)
+        XCTAssertEqual(
+            store.history.count, 20,
+            "只在写入侧裁剪的话，磁盘上的超限旧条目会永久超限、界面上删不干净"
+        )
+    }
 }
 
 /// 播放模式轮转 + 相对 seek 的策略（菜单快捷键依赖这两个方法）

@@ -151,4 +151,67 @@ final class PersistenceWriterTests: XCTestCase {
             "测试音频目录必须在临时目录内，否则测试会删改开发者真实 App 的音频文件"
         )
     }
+
+    // MARK: - 非有限浮点（NaN）不得让整份持久化失效
+
+    /// `JSONEncoder.nonConformingFloatEncodingStrategy` 的默认值是 `.throw`。
+    ///
+    /// 也就是说：只要快照里有一个 NaN（进度、时长都可能是），**整份**编码失败，
+    /// 而所有调用点都是 `try?` —— 那一轮被无声丢掉，不重试、不打日志。
+    /// 用户看到的是「设置和队列从此再也存不上」。
+    func testNaNSnapshotIsStillWritten() async throws {
+        let writer = PersistenceStore.PersistenceWriter.shared
+        // 先落一份哨兵。`flushNow` 只清 pending，不清磁盘上的 queue.json，
+        // 不写哨兵的话，NaN 那一轮被吞掉后读到的是**上个用例的残留** ——
+        // 断言会因为别的原因失败，指向性差很多。
+        await writer.schedule(queue: makeQueue(itemIDs: ["sentinel"], currentTime: 7))
+        await writer.flushNow()
+        let sentinel = try XCTUnwrap(PersistenceStore.shared.loadQueue())
+        XCTAssertEqual(sentinel.items.map(\.song.id), ["sentinel"], "哨兵应先落盘")
+
+        let queue = makeQueue(itemIDs: ["1", "2"], currentTime: .nan)
+        await writer.schedule(queue: queue)
+        await writer.flushNow()
+
+        let loaded = try XCTUnwrap(
+            PersistenceStore.shared.loadQueue(),
+            "含 NaN 的快照必须照样落盘，不能整份被 try? 吞掉"
+        )
+        XCTAssertEqual(loaded.items.map(\.song.id), ["1", "2"], "只有非有限字段被降级，其余照常保存")
+        XCTAssertTrue(loaded.currentTime.isNaN)
+        XCTAssertEqual(loaded.volume, 0.8, accuracy: 0.001)
+    }
+
+    /// 含 NaN 的那一轮不能把写入器卡住：紧接着的正常快照必须能写进去。
+    func testNaNSnapshotDoesNotWedgeLaterWrites() async throws {
+        let writer = PersistenceStore.PersistenceWriter.shared
+        await writer.schedule(queue: makeQueue(itemIDs: ["bad"], currentTime: .nan))
+        await writer.flushNow()
+        await writer.schedule(queue: makeQueue(itemIDs: ["good"], currentTime: 42))
+        await writer.flushNow()
+
+        let loaded = try XCTUnwrap(PersistenceStore.shared.loadQueue())
+        XCTAssertEqual(loaded.items.map(\.song.id), ["good"])
+        XCTAssertEqual(loaded.currentTime, 42, accuracy: 0.001)
+    }
+
+    /// 设置是**整份**编码的：一个 NaN 字段会连累主题、音质、缓存开关一起丢。
+    func testSettingWithNonFiniteFloatKeepsOtherFields() throws {
+        let key = "nanProbe"
+        let fullKey = "cleartone.persisted.settings.\(key)"
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: fullKey) }
+
+        var settings = AppSettings()
+        settings.lyricOffset = .nan
+        settings.themeMode = .dark
+        PersistenceStore.shared.saveSetting(settings, forKey: key)
+
+        let loaded = try XCTUnwrap(
+            PersistenceStore.shared.loadSetting(forKey: key, as: AppSettings.self),
+            "单个 NaN 字段不该让整份设置写不进去"
+        )
+        XCTAssertEqual(loaded.themeMode, .dark, "同一条记录里的其它字段必须幸存")
+        XCTAssertTrue(loaded.lyricOffset.isNaN)
+    }
+
 }

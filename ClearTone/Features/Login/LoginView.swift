@@ -186,9 +186,10 @@ struct LoginView: View {
     private func loadAccount() async {
         do {
             if let account = try await provider.fetchAccountInfo() {
+                // 资料库加载已经在 `didLogin` 里串着做了（先清缓存再拉），
+                // 这里再 `await loadLikedSongs` 会变成同一批数据的第二次并发请求。
                 appState.didLogin(account: account)
                 try? KeychainStore.shared.save(account.userID, for: .neteaseUserID)
-                await appState.loadLikedSongs(force: true)
                 dismiss()
             }
         } catch {

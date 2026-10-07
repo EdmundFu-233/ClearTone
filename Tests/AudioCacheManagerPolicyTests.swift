@@ -145,6 +145,33 @@ final class AudioCacheManagerPolicyTests: XCTestCase {
                        "只有非 tmp- 的 .caf 才算正式缓存")
     }
 
+    /// 扫描 / 淘汰的文件过滤必须跟着 `cacheFileExtension` 走，不能写死 `.caf`。
+    ///
+    /// 写死的后果只在 iOS 上暴露：实际写出的是 `.m4a`，于是
+    /// `refreshIndex` 每次启动筛出 0 个文件 → 索引被当成「文件已被系统清理」
+    /// 整个删光（缓存全部作废），`trimIfNeeded` 也找不到可淘汰项 → 容量上限失效。
+    func testCacheFileFilterFollowsPlatformExtension() {
+        let ext = AudioCacheManager.cacheFileExtension
+        #if os(iOS)
+        XCTAssertEqual(ext, "m4a", "iOS 走 AVAssetExportPresetAppleM4A，写的是 M4A 容器")
+        #else
+        XCTAssertEqual(ext, "caf", "macOS 走 afconvert -f caff，写的是 CAF 容器")
+        #endif
+
+        // 正式文件（写作 `<songID>.<cacheFileExtension>`）必须被识别
+        XCTAssertTrue(
+            AudioCacheManager.isCacheFile(URL(fileURLWithPath: "/cache/12345.\(ext)")),
+            "转码器写出的文件必须能被索引，否则每次启动缓存全部作废"
+        )
+        // 转码残留的临时文件必须被排除
+        XCTAssertFalse(AudioCacheManager.isCacheFile(URL(fileURLWithPath: "/cache/tmp-ABC.\(ext)")))
+        XCTAssertFalse(AudioCacheManager.isCacheFile(URL(fileURLWithPath: "/cache/index.json")))
+
+        // 换一个平台的扩展名：只有当前平台那个算数 —— 这正是「不写死」的断言
+        XCTAssertEqual(AudioCacheManager.isCacheFile(URL(fileURLWithPath: "/cache/12345.caf")), ext == "caf")
+        XCTAssertEqual(AudioCacheManager.isCacheFile(URL(fileURLWithPath: "/cache/12345.m4a")), ext == "m4a")
+    }
+
     /// 孤儿文件（文件在、索引缺）必须能补回来，且能参与淘汰排序。
     func testIndexRecoversEntriesForOrphanFiles() {
         // 文件在但索引缺（上次写索引前被杀）应补回，避免白白重下。

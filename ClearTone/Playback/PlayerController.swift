@@ -2,11 +2,19 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 /// 封面图类型别名。保留这个名字而不是直接写 NSImage：
 /// MediaPlayer 的 artwork 回调与 CoverLoader 都用它，语义比具体类型清楚。
+#if os(macOS)
 typealias PlatformImage = NSImage
+#else
+typealias PlatformImage = UIImage
+#endif
 
 /// 全局唯一播放控制器，管理 AVPlayer、状态、队列、系统媒体集成
 @MainActor
@@ -16,11 +24,11 @@ public final class PlayerController: ObservableObject {
     // MARK: - Published State
     @Published public private(set) var playbackState: PlaybackState = .idle
     @Published public private(set) var duration: TimeInterval = 0
-    @Published public var volume: Float = 0.8 {
-        didSet { player?.volume = volume }
+    @Published public var volume: Float = PlaybackVolumePolicy.defaultVolume {
+        didSet { applyVolumeToPlayer() }
     }
     @Published public var isMuted: Bool = false {
-        didSet { player?.isMuted = isMuted }
+        didSet { applyVolumeToPlayer() }
     }
     @Published public var queue = PlayQueue()
     @Published public private(set) var currentSong: Song?
@@ -230,6 +238,9 @@ public final class PlayerController: ObservableObject {
 
     private init() {
         setupRemoteCommands()
+        #if os(iOS)
+        setupAudioSessionNotifications()
+        #endif
         recentlyPlayed = PersistenceStore.shared.loadRecentSongs()
         songQualityOverrides = loadSongQualityOverrides()
         let restored = loadPersistedState()
@@ -307,6 +318,18 @@ public final class PlayerController: ObservableObject {
 
     /// 启动一次播放。自动失败重试路径直接调用本方法（不重置失败计数）。
     private func beginPlay(_ song: Song, restoreTime: TimeInterval?, autoplay: Bool) {
+        #if os(iOS)
+        // 只有真要出声时才抢占音频会话。
+        // `autoplay == false` 的那一路（重启恢复成暂停、暂停中切音质）只是
+        // 把 item 挂上去等用户点播放 —— 这时 `setActive(true)` 会把别的 App
+        // 的声音掐掉，而我们自己一个音都没出。等到 `resume()` 再激活也不迟。
+        if autoplay {
+            do { try activateAudioSession() } catch {
+                playbackState = .failed(songID: song.id, reason: error.ctUserMessage)
+                return
+            }
+        }
+        #endif
         currentGeneration += 1
         let generation = currentGeneration
         cancelAutoAdvance()
@@ -409,6 +432,12 @@ public final class PlayerController: ObservableObject {
         }
     }
 
+    private func applyVolumeToPlayer() {
+        let output = PlaybackVolumePolicy.output(volume: volume, isMuted: isMuted)
+        player?.volume = output.volume
+        player?.isMuted = output.isMuted
+    }
+
     private func startPlayback(url: URL, song: Song, generation: UInt) throws {
         // 只解绑当前 item，播放器实例复用（切歌延迟与 CPU 峰值都更低）
         detachCurrentItem()
@@ -421,8 +450,7 @@ public final class PlayerController: ObservableObject {
         if player == nil {
             player = AVPlayer()
         }
-        player?.volume = volume
-        player?.isMuted = isMuted
+        applyVolumeToPlayer()
 
         let item = AVPlayerItem(url: url)
         // 倍速时保持音调。不设的话 1.5x 会变成「花栗鼠」，
@@ -515,8 +543,13 @@ public final class PlayerController: ObservableObject {
                 // 校验代次：旧歌曲的时钟不得写入新歌曲或已停止的播放器
                 guard let self = self, generation == self.currentGeneration,
                       !self.isUserSeeking, self.currentSong != nil else { return }
-                self.currentTime = time.seconds
-                self.timePublisher.send(time.seconds)
+                let seconds = time.seconds
+                // 时长异常的流会给 NaN/Inf。NaN 灌进 currentTime 之后，
+                // 每一份持久化快照都会编码失败（整份被 try? 吞掉），
+                // 表现是「设置和队列从此再也存不上」。
+                guard seconds.isFinite else { return }
+                self.currentTime = seconds
+                self.timePublisher.send(seconds)
                 // 不在这里调 updateNowPlayingElapsedTime()：写 nowPlayingInfo 字典会触发
                 // COW + 序列化 + 到 mediaremote 的 XPC，2Hz 持续唤醒。系统会根据
                 // PlaybackRate 自行外推，只在 seek 完成后同步一次即可。
@@ -627,6 +660,31 @@ public final class PlayerController: ObservableObject {
     }
 
     public func resume() {
+        #if os(iOS)
+        do {
+            try activateAudioSession()
+        } catch {
+            // 会话激活失败是**暂时性**的：中断还没结束、别的 App 正占着会话、
+            // 或者耳机刚拔掉。早先这里把 playbackState 打成 .failed ——
+            // 一旦 latch，界面就停在错误态，队列、进度、重试按钮全都跟着废，
+            // 而真正该做的只是过一会儿再试一次。
+            // 现在保持原状态：用户再点播放就会重新激活。
+            CTLog.playback.error("恢复播放时音频会话激活失败: \(CTLog.sanitize(error.localizedDescription))")
+            return
+        }
+        #endif
+        // 失败态被**直连**调用时必须重建播放源。
+        //
+        // `togglePlayPause` 有自己的 .failed 分支，但系统媒体中心的
+        // `playCommand`（耳机线控 / 锁屏 / 控制中心）与 iOS 中断结束后的
+        // 恢复都直接调 `resume()`，绕过了那个 switch。此时 player 上挂的还是
+        // status == .failed 的 item —— play() 永远是 0 速率、一声不响，
+        // 而函数末尾会无条件把状态改写成 .playing，于是界面显示「播放中」、
+        // 实际静音，用户按几次都没反应，只能重新点歌行才脱困。
+        if case .failed = playbackState {
+            retryAfterFailure()
+            return
+        }
         // 播放源还在准备中（URL 在途，或 item 已挂上但还没 readyToPlay）：
         // 只把意图翻成播放，**不重新拉流** —— 走 beginPlay 会递增代次、取消正在途的
         // 请求并从头再来一遍（用户会听到重新加载，进度也可能被重置）。
@@ -692,16 +750,22 @@ public final class PlayerController: ObservableObject {
             // 按当前意图决定往哪边翻，ready 之后由 startAudio 采纳最新意图。
             if pendingAutoplay { pause() } else { resume() }
         case .paused, .idle, .ended: resume()
-        case .failed:
-            // 失败态下点播放：重新尝试当前歌曲（重置失败计数与重试次数）
-            consecutiveFailures = 0
-            sameSongRetries = 0
-            if let song = currentSong {
-                beginPlay(song, restoreTime: nil, autoplay: true)
-            } else {
-                playCurrent()
-            }
-        default: break
+        case .failed: retryAfterFailure()
+        }
+    }
+
+    /// 失败态下重新尝试当前歌曲：清掉失败计数并重建播放源。
+    ///
+    /// `togglePlayPause` 与 `resume()` 共用这一段 —— 后者被系统媒体中心的
+    /// `playCommand`、耳机线控与 iOS 中断恢复直接调用，不经过上面的 switch。
+    /// 两处各写一份的话，下一次改重试策略就会漏掉其中一条路径。
+    private func retryAfterFailure() {
+        consecutiveFailures = 0
+        sameSongRetries = 0
+        if let song = currentSong {
+            beginPlay(song, restoreTime: nil, autoplay: true)
+        } else {
+            playCurrent()
         }
     }
 
@@ -731,6 +795,10 @@ public final class PlayerController: ObservableObject {
     /// 于是拖动过程中会累积 N 个已执行请求 —— 音频断续、耗电飙升，
     /// 最终 currentTime 取决于哪个 completion 最后返回。
     public func previewSeek(to time: TimeInterval) {
+        // NaN/±Inf 不得进入状态：进度条的区间上界取自 `max(duration, 1)`，
+        // 而 Swift 的 `max(NaN, 1)` 返回 NaN —— 拖出来的就是 NaN。
+        // 它一旦写进 currentTime，持久化快照会整份编码失败。
+        guard time.isFinite else { return }
         isUserSeeking = true
         currentTime = time
         timePublisher.send(time)
@@ -738,6 +806,7 @@ public final class PlayerController: ObservableObject {
 
     /// 拖动结束：提交一次精确 seek
     public func commitSeek(to time: TimeInterval) {
+        guard time.isFinite else { return }
         isUserSeeking = true
         currentTime = time
         timePublisher.send(time)
@@ -1008,13 +1077,14 @@ public final class PlayerController: ObservableObject {
     // MARK: - 持久化
 
     private func makeSnapshot() -> PersistedQueue {
-        PersistedQueue(
+        let output = PlaybackVolumePolicy.output(volume: volume, isMuted: isMuted)
+        return PersistedQueue(
             items: queue.items,
             currentIndex: queue.currentIndex,
             mode: queue.mode,
             currentTime: currentTime,
-            volume: volume,
-            isMuted: isMuted,
+            volume: output.volume,
+            isMuted: output.isMuted,
             requestedQuality: requestedQuality,
             playbackRate: playbackRate
         )
@@ -1051,8 +1121,9 @@ public final class PlayerController: ObservableObject {
             ? -1
             : max(0, min(data.currentIndex, data.items.count - 1))
         queue.mode = data.mode
-        volume = data.volume
-        isMuted = data.isMuted
+        let output = PlaybackVolumePolicy.output(volume: data.volume, isMuted: data.isMuted)
+        volume = output.volume
+        isMuted = output.isMuted
         requestedQuality = data.requestedQuality
         // 倍速此前只写不读：`makeSnapshot` 每次都存、`PersistedQueue` 还专门给了
         // `= 1.0` 默认值兼容旧文件，可 `loadPersistedState` 从来没读过它，
@@ -1140,9 +1211,42 @@ public final class PlayerController: ObservableObject {
         retrySongID = ""
         sameSongRetries = 0
         playbackState = .idle
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         updateNowPlayingPlaybackState()
         persistState(structureChanged: true)
     }
+
+    #if os(iOS)
+    private var interruptionShouldResume = false
+    private func activateAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default)
+        try session.setActive(true)
+    }
+
+    private func setupAudioSessionNotifications() {
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+            let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            Task { @MainActor in
+                guard let self else { return }
+                if type == AVAudioSession.InterruptionType.began.rawValue {
+                    self.interruptionShouldResume = self.playbackState.isPlayIntentActive
+                    self.pause()
+                } else if type == AVAudioSession.InterruptionType.ended.rawValue {
+                    if self.interruptionShouldResume && AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) { self.resume() }
+                    self.interruptionShouldResume = false
+                }
+            }
+        }
+        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
+            let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                Task { @MainActor in self?.pause() }
+            }
+        }
+    }
+    #endif
 
     // MARK: - 系统媒体控制
 
@@ -1193,7 +1297,7 @@ public final class PlayerController: ObservableObject {
             MPMediaItemPropertyAlbumTitle: song.album?.name ?? "",
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: playbackState.isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: playbackState.isPlaying ? Double(playbackRate) : 0.0,
         ]
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
@@ -1222,9 +1326,11 @@ public final class PlayerController: ObservableObject {
     }
 
     private func updateNowPlayingPlaybackState() {
-        let rate: Double = playbackState.isPlaying ? 1.0 : 0.0
+        let rate: Double = playbackState.isPlaying ? Double(playbackRate) : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] = rate
+        #if os(macOS)
         MPNowPlayingInfoCenter.default().playbackState = playbackState.isPlaying ? .playing : .paused
+        #endif
     }
 }
 

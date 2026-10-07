@@ -25,6 +25,19 @@ public protocol MusicProvider: Sendable {
     func likeSong(id: String, like: Bool) async throws
     func fetchRecommendPlaylists() async throws -> [Playlist]
     func fetchDailyRecommendSongs() async throws -> [Song]
+
+    // MARK: - 账号生命周期
+
+    /// 全量收藏 id。心形状态靠它判断，必须完整 —— 详情列表可能只装得下一小部分。
+    ///
+    /// 默认从详情列表推导，够用但慢；有批量接口的实现（网易云 `/likelist`）应覆盖。
+    func fetchLikedSongIDs() async throws -> [String]
+}
+
+public extension MusicProvider {
+    func fetchLikedSongIDs() async throws -> [String] {
+        try await fetchLikedSongs().map(\.id)
+    }
 }
 
 public enum QRLoginStatus: Sendable {

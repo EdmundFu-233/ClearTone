@@ -86,7 +86,8 @@ struct SettingsView: View {
                         set: { newValue in
                             KeychainStore.storageMode = newValue
                             // 只清内存缓存，已保存的凭据保持不动；
-                            // 下次读取会按新位置加载，并自动把钥匙串里的旧凭据迁移过来
+                            // 下次读取会按新位置加载，并把**另一侧**的旧凭据双向迁移过来
+                            // （钥匙串 ↔ 本地文件，先写入目标成功后才删源副本）
                             KeychainStore.shared.invalidateCache()
                         }
                     )) {

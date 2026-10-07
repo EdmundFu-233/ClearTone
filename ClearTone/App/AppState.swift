@@ -119,13 +119,23 @@ public class AppState: ObservableObject {
     /// 收藏状态，其余 2308 首永远显示未收藏。
     private var likedIDs: Set<String> = []
     private var hasLoadedLikes = false
-    private let provider = NeteaseProvider.shared
+    private let provider: MusicProvider
+    /// 会话闸门与账号缓存的复位。这两个是**网易云专属**的内存副作用，
+    /// 不放进 `MusicProvider`：一是本地/桩实现根本没这两样东西，
+    /// 二是同名要求会和 `NeteaseProvider` 自己的 actor-isolated 方法抢名字 ——
+    /// actor 内部原本同步的 `clearCache()` 会被解析成 async 版本而编译失败。
+    /// 它们都离线安全（只动内存字典与计数器），单测里跑真的也无妨。
+    private let sessionOwner: NeteaseProvider
     private var sessionExpiryObserver: NSObjectProtocol?
 
     /// 账号或会话代次变化都要刷新页面；两个已登录账号不能共用同一个标识。
     public var dataContextKey: String { "\(isLoggedIn)-\(account?.userID ?? "guest")-\(accountGeneration)" }
 
-    init() {
+    /// - Parameter provider: 注入点。生产用 `NeteaseProvider.shared`；单测用桩 ——
+    ///   「登录之后到底有没有去拉喜欢的音乐和用户歌单」这条曾经只在 iOS 实机上才看得出来。
+    public init(provider: MusicProvider = NeteaseProvider.shared) {
+        self.provider = provider
+        self.sessionOwner = NeteaseProvider.shared
         // 磁盘缓存的读取不在这里做：@StateObject 的初值在首帧前求值，
         // 上千首 likedSongs 的 JSON 解码会造成启动停顿。改由 restoreLoginState()
         // 在 onAppear 后异步填充（那里本来就有一处相同的读取，顺手合并）。
@@ -194,22 +204,38 @@ public class AppState: ObservableObject {
         }
 
         if isLoggedIn {
+            // 与 `didLogin` 对齐：冷启动也要把用户歌单拉上。
+            // 「添加到歌单」子菜单（`IOSRootView` 的行菜单）读的是 `userPlaylists`，
+            // 而加载点原先挂在资料库 tab 的 `.task` 上 —— 冷启动后不点资料库就直接用它，
+            // 菜单恒为空、且没有任何 loading 提示。
             await loadLikedSongs(force: true)
+            await loadUserPlaylists()
         }
     }
 
     /// 登录成功（供登录流程调用）
     func didLogin(account info: AccountInfo) {
         applyAccount(info)
-        // 避免上一个账号的缓存数据串号，并复位会话闸门
-        Task { await provider.clearCache() }
-        Task { await provider.resetSessionGuard() }
+        // 串起来跑，不能各开各的 Task：
+        // ① 必须先 `clearCache()` 再拉数据，否则上一个账号的响应缓存会被这次加载命中；
+        // ② 资料库（喜欢的音乐 + 用户歌单）原先只有**冷启动**的 `restoreLoginState`
+        //    和 macOS 侧 `LoginView` 里的那句 `await loadLikedSongs` 会拉 ——
+        //    应用内登录（扫码 / Cookie）在 iOS 上什么都不加载。于是「喜欢的音乐」
+        //    显示 0 首、全站红心全是未收藏，「添加到歌单」子菜单在点开资料库 tab
+        //    之前恒为空（读取点在 `IOSRootView` 的菜单里，加载点却挂在资料库 tab 上）。
+        //    放进这里一处覆盖两个平台，视图一行都不用加。
+        Task {
+            await sessionOwner.clearCache()
+            await sessionOwner.resetSessionGuard()
+            await loadLikedSongs(force: true)
+            await loadUserPlaylists()
+        }
     }
 
     /// 退出登录：清除服务端会话与本地缓存
     func performLogout() async {
         try? await provider.logout()
-        await provider.clearCache()
+        await sessionOwner.clearCache()
         clearSession(clearLikedCache: true)
     }
 
@@ -217,6 +243,14 @@ public class AppState: ObservableObject {
         account = info
         isLoggedIn = true
         accountGeneration += 1
+        // 会话失效后重新登录成功，必须把 `needsReLogin` 放下来。
+        //
+        // `handleSessionExpired` 会置位它来禁用写操作，但**没有任何地方复位**：
+        // 用户重新登录（`didLogin` → `applyAccount`）后 `isLoggedIn` 已经是 true，
+        // 而 `canPerformWrite` 仍是 `true && !true == false`。于是 iOS 上点心形
+        // 走的是「未登录」分支 —— 每次都把登录弹窗再弹一遍，看起来像点了没反应；
+        // 「添加到歌单」子菜单也整块消失。重启 App 才会好，所以真机上极难定位。
+        needsReLogin = false
         // 音质偏好为「自动」时，实际档位按 VIP 解析（VIP → 无损）。
         // 必须在这里同步：账号是**异步**确认的，比 PlayerController.init 晚，
         // 只在 init 里解析的话，登录后永远停在「极高」。
@@ -252,6 +286,12 @@ public class AppState: ObservableObject {
         // 关键：让所有在途的用户数据请求作废
         accountGeneration += 1
         userPlaylistsToken = UUID()
+        // 内存里的歌单也要清。它原先只清磁盘缓存（`clearLikedCache` 那支），
+        // 于是「A 退出 → B 登录 → B 拉歌单失败」时，资料库会把 **A 的歌单**
+        // 挂在 B 的账号下显示，点进去加载的也是 A 的歌单。
+        // 在途请求靠上面的 token 作废，所以这里直接清空不会被迟到的响应写回来。
+        userPlaylists = []
+        isLoadingUserPlaylists = false
         // 注意这里**不动 pageHistory**：掉线与「用户在哪一页」无关，
         // 重置导航栈会把用户从详情页里踹出来，重新登录后还要再点回去。
         PersistenceStore.shared.clearCachedAccount()
@@ -450,7 +490,7 @@ public class AppState: ObservableObject {
     func toggleLike(_ song: Song) async -> Bool {
         guard song.source == .netease, isLoggedIn else { return false }
         // 冷却中：连请求都不发。用户看到的仍是心形，但 tooltip 说明为什么点不动。
-        guard likeWriteCooldownUntil.map({ Date() < $0 }) == false else { return likedIDs.contains(song.id) }
+        guard !isLikeWriteCoolingDown else { return likedIDs.contains(song.id) }
         // 在途：忽略连点，否则一次误操作会并发发好几个写请求
         guard !likeRequestsInFlight.contains(song.id) else { return likedIDs.contains(song.id) }
         likeRequestsInFlight.insert(song.id)

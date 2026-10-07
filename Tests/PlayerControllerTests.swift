@@ -318,4 +318,47 @@ final class PlayerControllerTests: XCTestCase {
         }
         XCTAssertGreaterThan(player.currentTime, 0.5, "切音质后恢复播放应接着原进度")
     }
+
+    /// 失败态下 `resume()` 必须重建播放源，而不是把状态改写成 `.playing`。
+    ///
+    /// ## 为什么单独测 `resume()`
+    ///
+    /// `togglePlayPause` 有 `.failed` 分支，但**它不是唯一的入口**：
+    /// 系统媒体中心的 `playCommand`（耳机线控 / 锁屏 / 控制中心）和
+    /// iOS 中断结束后的恢复都直接调 `resume()`。原先 `resume()` 没有任何状态分派，
+    /// 落到最后 `player?.play()` —— 挂在 status == .failed 的 item 上永远是 0 速率，
+    /// 却把状态写成 `.playing`：界面显示播放中、实际一声不响，
+    /// 按几次都没反应，只能重新点歌行才脱困。
+    func testResumeAfterFailureRebuildsPlaybackSource() async throws {
+        _ = Self.storageIsolated
+        let gate = ManualGate()
+        // 指向不存在的本地文件：item 会走 AVPlayerItem.status == .failed，
+        // 从而真的把 player 建起来、把状态推到 .failed —— 这正是 resume()
+        // 会踩到的那条路径（拉流就失败的话 player 还是 nil，
+        // 会先命中 beginRestoredPlayback，测不到本 bug）。
+        let provider = GatedProvider(
+            gate: gate,
+            url: URL(fileURLWithPath: "/nonexistent/cleartone-missing.wav")
+        )
+        player.setProvider(provider)
+        player.clearQueue()
+
+        let song = makeSong(id: "F")
+        player.play(songs: [song])
+        gate.open()
+
+        guard await pollUntil({ if case .failed = self.player.playbackState { return true }; return false }) else {
+            throw XCTSkip("AVPlayer 未把不存在的文件判为失败，无法构造 .failed 态")
+        }
+        let callsBefore = await provider.callCount
+
+        player.resume()
+
+        XCTAssertEqual(
+            player.playbackState, .loading(songID: "F"),
+            "失败态下 resume() 必须重建播放源（回到 loading）；写成 .playing 就是「显示播放中却不响」"
+        )
+        let refetched = await pollUntil { await provider.callCount > callsBefore }
+        XCTAssertTrue(refetched, "resume() 应重新发起一轮拉流，而不是就地改状态")
+    }
 }

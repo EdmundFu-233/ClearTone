@@ -12,6 +12,7 @@ final class CommentsStore: ObservableObject {
     @Published private(set) var isLoadingMore = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var paginationError: String?
+    @Published private(set) var likeError: String?
     @Published private(set) var pendingLikeIDs: Set<String> = []
     @Published var sort: CommentSort = .recommended
 
@@ -45,6 +46,9 @@ final class CommentsStore: ObservableObject {
         isLoadingMore = false
         errorMessage = nil
         paginationError = nil
+        // 上一首歌的点赞失败提示不能跟到这一首来：likeError 只在 toggleLike 里
+        // 被置位，不清的话它会一直挂在页面上，直到用户再点一次赞。
+        likeError = nil
         pendingLikeIDs = []
         likeTokens = [:]
         isLoading = true
@@ -109,6 +113,7 @@ final class CommentsStore: ObservableObject {
                 pendingLikeIDs.remove(comment.id)
             }
         }
+        likeError = nil
         let target = !comments[index].isLiked
         let previous = comments[index]
         comments[index].isLiked = target
@@ -124,6 +129,7 @@ final class CommentsStore: ObservableObject {
             guard loadToken == token, likeTokens[comment.id] == writeToken,
                   let current = comments.firstIndex(where: { $0.id == previous.id }) else { return }
             comments[current] = previous
+            likeError = error.ctUserMessage
             CTLog.general.error("评论点赞失败: \(CTLog.sanitize(error.localizedDescription))")
         }
     }

@@ -2,13 +2,15 @@ import AVFoundation
 import Foundation
 
 /// 音频播放缓存：
-/// 把在线播放过的网易云歌曲用系统 afconvert 转成 **128kbps OPUS（CAF 容器）** 落盘，
-/// 之后再次播放同一首歌时优先使用缓存，省流量且离线可播。
+/// 把在线播放过的网易云歌曲用系统转码器转成 **128kbps OPUS（macOS：CAF 容器）/
+/// AAC（iOS：M4A 容器）** 落盘，之后再次播放同一首歌时优先使用缓存，
+/// 省流量且离线可播。
 ///
 /// 说明：
-/// - OPUS 编码由系统 CoreAudio 提供（`afconvert -d opus`），无需额外依赖；
-/// - 采用「受约束 VBR」策略（`-s 2`），目标 128kbps，实际平均码率随内容略有浮动，UI 展示实测值；
-/// - CAF 容器 AVPlayer 支持完整（时长 / seek 正确），缓存文件仅本机使用；
+/// - 编码由系统 CoreAudio 提供（macOS `afconvert -d opus`、iOS
+///   `AVAssetExportPresetAppleM4A`），无需额外依赖；
+/// - 采用「受约束 VBR」策略（macOS `-s 2`），目标 128kbps，实际平均码率随内容略有浮动，UI 展示实测值；
+/// - 扩展名由 `cacheFileExtension` 统一决定，容器 AVPlayer 支持完整（时长 / seek 正确），缓存文件仅本机使用；
 /// - 单条记录最多活 7 天（`AudioCacheRetentionPolicy`），到期后重新拉流。
 @MainActor
 final class AudioCacheManager: ObservableObject {
@@ -43,12 +45,38 @@ final class AudioCacheManager: ObservableObject {
     /// 目标码率（受约束 VBR），单位 bit/s。`static` 是因为下载/转码跑在
     /// 后台任务里，读不到 MainActor 隔离的实例属性。
     nonisolated static let defaultTargetBitrate = 128_000
+    nonisolated private static var cacheFormatName: String {
+        #if os(iOS)
+        "AAC"
+        #else
+        "OPUS"
+        #endif
+    }
     /// 缓存上限，超出后按最久未播放淘汰
     private let maxCacheBytes: Int64 = 1_500_000_000
-    /// 缓存文件扩展名：caf —— afconvert `-d opus` 的容器。
+    /// 缓存文件扩展名 —— **唯一**的格式来源，与转码器实际写出的容器一一对应：
+    /// macOS 走 `afconvert -f caff -d opus`（CAF），iOS 走
+    /// `AVAssetExportPresetAppleM4A`（M4A）。AVPlayer 靠扩展名判定容器，
+    /// 写错会直接播不出来。
+    nonisolated static var cacheFileExtension: String {
+        #if os(iOS)
+        "m4a"
+        #else
+        "caf"
+        #endif
+    }
+
+    /// 是否是「正式缓存文件」：扩展名等于**当前平台**的 `cacheFileExtension`，
+    /// 且不是转码残留的 `tmp-` 临时文件。
     ///
-    /// 扩展名必须与实际编码匹配，AVPlayer 靠扩展名判定容器，写错会直接播不出来。
-    nonisolated static var cacheFileExtension: String { "caf" }
+    /// 扫描/淘汰两处都必须走这里。原先两处各写死 `.caf`，
+    /// 而 iOS 实际写的是 `.m4a` —— 结果是 iOS 上 `refreshIndex`
+    /// 每次启动都筛出 0 个文件、把整个索引当「已被系统清理」删光，
+    /// `trimIfNeeded` 也找不到任何可淘汰项，容量上限形同虚设。
+    nonisolated static func isCacheFile(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == cacheFileExtension.lowercased()
+            && !url.lastPathComponent.hasPrefix(tempPrefix)
+    }
 
 private let cacheDirectory: URL
     private var index: [String: CacheMeta] = [:]
@@ -169,7 +197,7 @@ private let cacheDirectory: URL
                     return
                 }
                 self.index[job.songID] = CacheMeta(
-                    formatName: "OPUS",
+                    formatName: Self.cacheFormatName,
                     bitrateKbps: result.bitrateKbps,
                     sizeBytes: result.sizeBytes,
                     cachedAt: Date(),
@@ -181,7 +209,7 @@ private let cacheDirectory: URL
                 // 不然一个 7 天前的老条目会占着容量名额被 LRU 反复「保护」
                 self.purgeExpired()
                 self.trimIfNeeded()
-                CTLog.general.info("音频缓存完成: \(job.songID) OPUS \(result.bitrateKbps)kbps (\(result.sizeBytes) bytes)")
+                CTLog.general.info("音频缓存完成: \(job.songID) \(Self.cacheFormatName) \(result.bitrateKbps)kbps (\(result.sizeBytes) bytes)")
             }
         }
     }
@@ -248,16 +276,13 @@ private let cacheDirectory: URL
             at: cacheDirectory, includingPropertiesForKeys: keys
         )) ?? []
 
-        // 清扫上次进程被杀留下的临时文件：它们扩展名也是 .caf，
+        // 清扫上次进程被杀留下的临时文件：它们扩展名与正式缓存相同，
         // 原实现会把 tmp-<UUID> 当成正式索引项计入容量
         for file in listing where file.lastPathComponent.hasPrefix(Self.tempPrefix) {
             try? FileManager.default.removeItem(at: file)
         }
 
-        let realFiles = listing.filter {
-            $0.pathExtension.lowercased() == "caf"
-                && !$0.lastPathComponent.hasPrefix(Self.tempPrefix)
-        }
+        let realFiles = listing.filter { Self.isCacheFile($0) }
         var present = Set<String>()
         for file in realFiles {
             let id = file.deletingPathExtension().lastPathComponent
@@ -268,7 +293,7 @@ private let cacheDirectory: URL
                 index[id] = CacheMeta(
                     // 码率只能按目标值猜：孤儿条目没有实测值可读。
                     // 与 `defaultTargetBitrate` 保持一致（128kbps）。
-                    formatName: "OPUS", bitrateKbps: Self.defaultTargetBitrate / 1000,
+                    formatName: Self.cacheFormatName, bitrateKbps: Self.defaultTargetBitrate / 1000,
                     sizeBytes: Int64(size),
                     cachedAt: Date(), lastAccessedAt: nil
                 )
@@ -325,8 +350,7 @@ private let cacheDirectory: URL
         // 先把元数据取出来再排序。原先在比较器里逐次 stat()，
         // 500 个文件时比较器被调用约 4500 次 = 4500 次系统调用，且发生在主线程。
         let entries: [(id: String, url: URL, meta: CacheMeta)] = files.compactMap { file in
-            guard file.pathExtension.lowercased() == "caf",
-                  !file.lastPathComponent.hasPrefix(Self.tempPrefix) else { return nil }
+            guard Self.isCacheFile(file) else { return nil }
             let id = file.deletingPathExtension().lastPathComponent
             guard let meta = index[id] else { return nil }
             return (id, file, meta)
@@ -378,7 +402,17 @@ private let cacheDirectory: URL
             .appendingPathComponent("\(Self.tempPrefix)\(UUID().uuidString).\(Self.cacheFileExtension)")
         defer { try? FileManager.default.removeItem(at: tempOutput) }
 
+        #if os(iOS)
+        guard let export = AVAssetExportSession(asset: AVURLAsset(url: tempFile), presetName: AVAssetExportPresetAppleM4A) else {
+            throw MusicError.unknown("无法建立音频缓存")
+        }
+        export.outputURL = tempOutput
+        export.outputFileType = .m4a
+        await export.export()
+        guard export.status == .completed else { throw export.error ?? MusicError.unknown("音频缓存失败") }
+        #else
         try await runAfconvert(input: tempFile, output: tempOutput, targetBitrate: targetBitrate)
+        #endif
 
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: tempOutput)

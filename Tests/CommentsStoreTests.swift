@@ -148,6 +148,47 @@ final class CommentsStoreTests: XCTestCase {
         XCTAssertEqual(store.comments[0].likedCount, 10)
         XCTAssertTrue(store.pendingLikeIDs.isEmpty)
     }
+
+    /// 点赞失败的提示只属于这一首歌。`likeError` 只在 `toggleLike` 里置位，
+    /// `load` 忘了清的话，A 歌的失败横幅会一直挂在 B 歌的评论页上。
+    func testLikeErrorDoesNotSurviveSongSwitch() async {
+        let provider = ControlledCommentProvider()
+        let store = CommentsStore(provider: provider)
+        await provider.enqueue(CommentPage(comments: [comment("a")]))
+        await store.load(song: .fixture(id: "A"))
+        let write = Task { await store.toggleLike(store.comments[0]) }
+        await waitFor { await provider.likeCount == 1 }
+        await provider.finishLike(failing: true)
+        await write.value
+        XCTAssertNotNil(store.likeError)
+
+        await provider.enqueue(CommentPage(comments: [comment("b")]))
+        await store.load(song: .fixture(id: "B"))
+        XCTAssertNil(store.likeError, "切歌后不该还挂着上一首歌的点赞失败提示")
+        XCTAssertNil(store.errorMessage)
+        XCTAssertNil(store.paginationError)
+    }
+
+    /// 下一次点赞开始时必须把上一次的失败提示抹掉，否则「失败」会一直留着
+    /// 直到又失败一次。
+    func testNewLikeClearsPreviousFailureBanner() async {
+        let provider = ControlledCommentProvider()
+        let store = CommentsStore(provider: provider)
+        await provider.enqueue(CommentPage(comments: [comment("a"), comment("b")]))
+        await store.load(song: .fixture(id: "A"))
+        let first = Task { await store.toggleLike(store.comments[0]) }
+        await waitFor { await provider.likeCount == 1 }
+        await provider.finishLike(failing: true)
+        await first.value
+        XCTAssertNotNil(store.likeError)
+
+        let second = Task { await store.toggleLike(store.comments[1]) }
+        await waitFor { await provider.likeCount == 2 }
+        XCTAssertNil(store.likeError, "新的点赞已经开始，旧的失败提示应当已经清掉")
+        await provider.finishLike(failing: false)
+        await second.value
+        XCTAssertNil(store.likeError)
+    }
 }
 
 private actor ControlledCommentProvider: CommentProvider {

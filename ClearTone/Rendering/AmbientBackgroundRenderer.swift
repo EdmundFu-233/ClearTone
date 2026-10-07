@@ -61,9 +61,13 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
     private var colorStorage = Palette()
     private var spectrumStorage = [Float](repeating: 0, count: 64)
 
-    /// 在途 GPU 帧数，用于背压
-    private var inFlightFrames = 0
-    private let maxInFlightFrames = 2
+    /// 在途 GPU 帧的背压闸门。
+    ///
+    /// 原先是裸 `var inFlightFrames`：draw 线程 `+= 1`、Metal completion 线程
+    /// `-=`，跨线程非原子读-改-写。丢一次 `-=` 计数就单调爬升、
+    /// 背压判断每帧早退、画面冻在最后一帧且不可恢复；丢一次 `+=` 则
+    /// 背压失效、command queue 无界堆积。判定与配对规则见 `InFlightGate`。
+    private let inFlightGate = InFlightGate(maxInFlight: 2)
 
     /// 按目标帧率算出跳帧间隔
     private var frameInterval: Int {
@@ -132,7 +136,7 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         // 暂停由 SwiftUI 侧的 isAnimating（绑 scenePhase）→ MTKView.isPaused 承担，
         // 这里原先还有一个从没人调用的 pause()/resume() + isPaused 判断，纯死代码
         guard animationEnabled,
-              let device = device,
+              device != nil,
               let commandQueue = commandQueue,
               let pipelineState = pipelineState,
               let drawable = view.currentDrawable,
@@ -142,7 +146,10 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
 
         // GPU 背压：若已提交的命令还没回来，说明 GPU 落后于提交速度。
         // 不加这个判断，command queue 会无限堆积、显存单调增长直到被内存压力杀掉。
-        if inFlightFrames > maxInFlightFrames { return }
+        // 这里只做**只读**判断；真正的占位在下方紧贴 commit 处 ——
+        // 反过来写的话，下面的降帧 / makeCommandBuffer 早退各漏一个名额，
+        // 几帧之后就被自己锁死。
+        if inFlightGate.isFull { return }
 
         frameCount += 1
         let time = Float(CFAbsoluteTimeGetCurrent() - startTime)
@@ -181,9 +188,16 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
 
-        inFlightFrames += 1
-        commandBuffer.addCompletedHandler { [weak self] _ in
-            self?.inFlightFrames -= 1
+        // 占位必须紧贴 commit：它的上面没有任何早退点。
+        // 若挪到函数开头（背压判断那里），降帧与 makeCommandBuffer 失败两条早退
+        // 会各漏一个名额 —— 计数只增不减，几帧之后每帧都被背压挡掉。
+        guard inFlightGate.tryAcquire() else { return }
+        // 只捕获闸门，不捕获 self：完成回调跑在 Metal 的 completion 线程上，
+        // 而 AmbientBackgroundRenderer 不是 Sendable —— 捕获 self 会触发
+        // Sendable 警告，而这里要做的事也只有一句归还。
+        let gate = inFlightGate
+        commandBuffer.addCompletedHandler { _ in
+            gate.release()
         }
 
         commandBuffer.present(drawable)

@@ -89,7 +89,12 @@ public actor LocalProvider: MusicProvider {
     private func parseMetadata(url: URL) async -> Song? {
         let asset = AVURLAsset(url: url)
         guard let duration = try? await asset.load(.duration) else { return nil }
-        let durationSeconds = CMTimeGetSeconds(duration)
+        // 时长读不出来时 `CMTimeGetSeconds` 给的是 NaN / ±Infinity。
+        // NaN 一旦进了 `Song.duration`，队列快照的 JSON 编码会**整份**失败
+        // （详见 `PersistenceStore.makeJSONEncoder`），此后每次落盘都被吞掉。
+        // iOS 侧 `MobileLocalLibrary` 一直是这么兜的，这里对齐它。
+        let rawDuration = CMTimeGetSeconds(duration)
+        let durationSeconds = rawDuration.isFinite ? rawDuration : 0
 
         var title = url.deletingPathExtension().lastPathComponent
         var artistName = "未知艺术家"

@@ -48,7 +48,10 @@ final class SearchAssistStore: ObservableObject {
     init(defaults: UserDefaults = .standard, source: SearchAssistSource = NeteaseProvider.shared) {
         self.defaults = defaults
         self.source = source
-        history = defaults.stringArray(forKey: Self.historyKey) ?? []
+        // 只在写入侧裁剪是不够的：上限改小（或历史是老版本写的）之后，
+        // 从磁盘读进来的旧条目会永久超限，界面上再也删不干净。
+        let stored = defaults.stringArray(forKey: Self.historyKey) ?? []
+        history = stored.count > Self.historyLimit ? Array(stored.prefix(Self.historyLimit)) : stored
     }
 
     // MARK: - 联想
@@ -99,6 +102,11 @@ final class SearchAssistStore: ObservableObject {
         guard hotTerms.isEmpty, !isLoadingHot else { return }
         isLoadingHot = true
         hotError = nil
+        // 必须用 defer 复位：下面三个 `guard !Task.isCancelled else { return }` 全都会
+        // **跳过**原来的收尾赋值，于是 `.task { loadHotTerms() }` 被取消（切侧栏/失焦）
+        // 后 `isLoadingHot` 永久卡在 true —— 面板一直转圈、空态占位与重试按钮都不显示，
+        // 且下次进来被 `!isLoadingHot` 守卫直接挡掉，本进程内热搜永远空白、无报错。
+        defer { isLoadingHot = false }
         do {
             let loaded = try await source.fetchHotSearchTerms()
             guard !Task.isCancelled else { return }
@@ -107,8 +115,6 @@ final class SearchAssistStore: ObservableObject {
             guard !Task.isCancelled else { return }
             hotError = error.ctUserMessage
         }
-        guard !Task.isCancelled else { return }
-        isLoadingHot = false
     }
 
     // MARK: - 搜索历史
@@ -126,7 +132,9 @@ final class SearchAssistStore: ObservableObject {
     }
 
     func removeHistory(_ keyword: String) {
-        history.removeAll { $0 == keyword }
+        // 与 `recordSearch` 用同一套比较：那条用 `caseInsensitiveCompare` 去重，
+        // 这条用 `==` 的话，点掉一条「周杰伦」会留着「周杰伦」的另一个大小写变体。
+        history.removeAll { $0.caseInsensitiveCompare(keyword) == .orderedSame }
         defaults.set(history, forKey: Self.historyKey)
     }
 

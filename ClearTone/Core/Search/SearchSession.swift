@@ -21,6 +21,12 @@ final class SearchSession: ObservableObject {
     @Published private(set) var result: SearchResult?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
+    /// 翻页在途。与 `isLoading` 分开：后者只覆盖**整页搜索**，
+    /// 翻页期间它恒为 false，于是「加载更多」按钮在弱网下既不禁用也没有进度。
+    @Published private(set) var isLoadingMore = false
+    /// 翻页失败的独立错误。与 `errorMessage` 分开：翻页失败**不该**把已有结果清掉
+    /// 换成错误页（那是整页搜索失败的语义），只在列表底部给一条可重试的提示。
+    @Published private(set) var paginationError: String?
 
     /// 当前结果集对应的已提交参数（结果集的身份）
     private(set) var activeQuery: String?
@@ -86,6 +92,8 @@ final class SearchSession: ObservableObject {
         currentPage = 1
         isLoading = true
         errorMessage = nil
+        isLoadingMore = false
+        paginationError = nil
 
         searchTask = Task {
             do {
@@ -97,6 +105,12 @@ final class SearchSession: ObservableObject {
                 guard !Task.isCancelled, generation == self.generation else { return }
                 errorMessage = error.ctUserMessage
                 isLoading = false
+                // 必须丢掉上一次查询的结果集。留着它有两个后果：
+                // ① `displayType` 跟着**新**类型走，界面会用 B 的列表形态去渲染 A 的数据；
+                // ② `activeQuery`/`activeType` 已经是 B，而 `result` 还是 A 且 `hasMore`
+                //    可能为 true —— 此时 `loadMore()` 会把 **B 的第 2 页追加进 A 的列表**。
+                // 失败态本来就由 `errorMessage` 三态互斥地盖住了结果区，清掉不损失任何信息。
+                result = nil
             }
         }
     }
@@ -106,17 +120,24 @@ final class SearchSession: ObservableObject {
     /// 参数全部取自已提交的那次查询（`activeQuery`/`activeType`），
     /// 不看 `draftQuery`：用户改了输入框没按回车时，翻页仍必须是同一个查询的第 2 页。
     func loadMore() {
-        guard let result, result.hasMore, !isLoading, loadMoreTask == nil,
+        guard let result, result.hasMore, !isLoading, !isLoadingMore, loadMoreTask == nil,
               let query = activeQuery, let type = activeType else { return }
         let generation = self.generation
         let page = currentPage + 1
         currentPage = page
+        isLoadingMore = true
+        paginationError = nil
 
         loadMoreTask = Task {
             // 只有「本次分页仍属于当前代次」时才清空句柄：reset/新搜索已经作废了它，
             // 无条件置 nil 会把后来那次 loadMore 的在途句柄一起清掉，
             // 于是下一次翻页会在上一次还没回来时再次发起，页码错乱。
-            defer { if generation == self.generation { loadMoreTask = nil } }
+            defer {
+                if generation == self.generation {
+                    loadMoreTask = nil
+                    isLoadingMore = false
+                }
+            }
             do {
                 let more = try await provider.search(query: query, type: type, page: page, limit: pageSize)
                 // 期间发起了新搜索 / 清空了结果集：本次分页作废，旧结果不得混入
@@ -137,6 +158,9 @@ final class SearchSession: ObservableObject {
             } catch {
                 guard !Task.isCancelled, generation == self.generation else { return }
                 currentPage = page - 1
+                // 翻页失败原先**只回滚页码**，不设任何错误 —— 点「加载更多」像没反应，
+                // 用户只能改词重搜才能恢复。给一条独立的分页错误 + 保留旧结果。
+                paginationError = error.ctUserMessage
             }
         }
     }
@@ -155,7 +179,9 @@ final class SearchSession: ObservableObject {
         result = nil
         currentPage = 1
         isLoading = false
+        isLoadingMore = false
         errorMessage = nil
+        paginationError = nil
         draftQuery = ""
     }
 
@@ -163,11 +189,19 @@ final class SearchSession: ObservableObject {
     /// `isLoading` 必须复位 —— 任务已被取消，不会再有回调把它置回 false，
     /// 留着 true 会让回到页面时永远卡在转圈，且 `loadMore` 的 `!isLoading` 也会被卡死。
     func cancelInFlight() {
+        // 页码必须先回滚。`loadMore()` 在**发起请求前**就同步把 `currentPage` 加了 1，
+        // 而失败分支的 `guard !Task.isCancelled ... else { return }` 会让取消路径
+        // 跳过 `currentPage = page - 1`。于是：滚到第 2 页 → 在途时切走侧栏
+        // （`onDisappear` 调这里）→ 回来再滚 → 直接请求**第 3 页**，
+        // 31–60 条永久缺失，界面上看不出任何异常。
+        let hadInFlightPagination = loadMoreTask != nil
         generation += 1
         searchTask?.cancel()
         searchTask = nil
         loadMoreTask?.cancel()
         loadMoreTask = nil
+        if hadInFlightPagination { currentPage = max(1, currentPage - 1) }
         isLoading = false
+        isLoadingMore = false
     }
 }

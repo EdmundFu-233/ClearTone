@@ -17,11 +17,23 @@ final class SearchSessionPaginationTests: XCTestCase {
         /// 每次 search 记一笔 (type, page)
         private(set) var calls: [(SearchType, Int)] = []
         let totalPages: Int
+        /// 这些页码的请求会挂起（直到被取消），用来制造「翻页在途」
+        var hangPages: Set<Int> = []
+        /// 这些页码的请求直接抛错
+        var failingPages: Set<Int> = []
+        /// 这些关键词的请求直接抛错（用于「新搜索失败」）
+        var failingQueries: Set<String> = []
 
         init(totalPages: Int) { self.totalPages = totalPages }
 
         func search(query: String, type: SearchType, page: Int, limit: Int) async throws -> SearchResult {
             calls.append((type, page))
+            if failingQueries.contains(query) { throw MusicError.networkUnavailable }
+            if failingPages.contains(page) { throw MusicError.networkUnavailable }
+            if hangPages.contains(page) {
+                // 取消时抛 CancellationError → 走 catch 分支 → 被 Task.isCancelled 守卫挡下
+                try await Task.sleep(for: .seconds(60))
+            }
             let hasMore = page < totalPages
             func id(_ page: Int) -> String { "\(type.rawValue)-\(page)" }
             switch type {
@@ -284,5 +296,111 @@ final class SearchSessionPaginationTests: XCTestCase {
         session.submit(type: .song)
         await waitForSearch(session)
         XCTAssertEqual(session.displayType, .song)
+    }
+
+    // MARK: - 分页的失败与取消
+
+    /// 翻页在途时离开搜索页，**页码必须回滚**。
+    ///
+    /// `loadMore()` 在发请求**之前**就同步把 `currentPage` 加了 1，而失败分支的
+    /// `guard !Task.isCancelled ... else { return }` 会让取消路径跳过回滚。
+    /// 于是：滚到第 2 页 → 在途时切走侧栏（`onDisappear` 调 `cancelInFlight`）
+    /// → 回来再滚 → 直接请求**第 3 页**，31–60 条永久缺失且界面上毫无异常。
+    func testCancelInFlightRollsBackInFlightPage() async {
+        let provider = StubProvider(totalPages: 5)
+        provider.hangPages = [2]
+        let session = makeSession(provider)
+
+        session.draftQuery = "test"
+        session.submit(type: .song)
+        await waitForSearch(session)
+        XCTAssertEqual(session.currentPage, 1)
+
+        session.loadMore()
+        XCTAssertTrue(session.isLoadingMore, "翻页在途必须有独立的 loading 标志")
+        XCTAssertEqual(session.currentPage, 2, "页码在发起请求前同步推进")
+        // 让分页任务真的跑起来
+        try? await Task.sleep(for: .milliseconds(30))
+
+        session.cancelInFlight()
+
+        XCTAssertFalse(session.isLoadingMore, "取消后转圈必须复位，否则回到页面永远卡在加载中")
+        XCTAssertEqual(
+            session.currentPage, 1,
+            "在途翻页被取消必须回滚页码 —— 否则下次直接跳到第 3 页"
+        )
+
+        // 回到页面，再翻页必须请求第 2 页（而不是第 3 页）
+        provider.hangPages = []
+        session.loadMore()
+        await waitForCalls(provider, expected: 3)
+        XCTAssertEqual(provider.calls.last?.1, 2, "取消后再次翻页必须请求第 2 页")
+    }
+
+    /// 翻页失败：保留已有结果、回滚页码、给一条**独立**的分页错误，并可直接重试。
+    func testPaginationFailureKeepsResultAndSurfacesError() async {
+        let provider = StubProvider(totalPages: 5)
+        provider.failingPages = [2]
+        let session = makeSession(provider)
+
+        session.draftQuery = "test"
+        session.submit(type: .song)
+        await waitForSearch(session)
+        let before = session.result
+        XCTAssertNotNil(before)
+
+        session.loadMore()
+        for _ in 0..<400 {
+            if session.paginationError != nil { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        XCTAssertNotNil(session.paginationError, "翻页失败原先只回滚页码、不设任何错误 —— 点「加载更多」像没反应")
+        XCTAssertNil(session.errorMessage, "分页错误不该污染整页搜索的错误态")
+        XCTAssertNotNil(session.result, "分页失败必须保留已有结果，不能整个换成错误页")
+        XCTAssertEqual(session.result?.songs.count, before?.songs.count)
+        XCTAssertEqual(session.currentPage, 1, "失败要回滚页码")
+        XCTAssertFalse(session.isLoadingMore)
+
+        // 直接重试同一页
+        provider.failingPages = []
+        session.loadMore()
+        await waitForCalls(provider, expected: 3)
+        XCTAssertNil(session.paginationError, "重试成功后错误必须清掉")
+        XCTAssertEqual(session.result?.songs.count, (before?.songs.count ?? 0) + 1)
+    }
+
+    /// 新搜索失败时不得留下上一次的结果。
+    ///
+    /// `activeQuery`/`activeType` 已经是新查询，而 `result` 还是旧查询的 ——
+    /// 此时 `displayType` 跟着新类型走（用 B 的列表形态渲染 A 的数据），
+    /// 且 A 的 `hasMore` 若为 true，`loadMore()` 会把 **B 的第 2 页追加进 A 的列表**。
+    func testFailedNewSearchDoesNotLeaveStaleResult() async {
+        let provider = StubProvider(totalPages: 3)
+        let session = makeSession(provider)
+
+        session.draftQuery = "A"
+        session.submit(type: .song)
+        await waitForSearch(session)
+        XCTAssertNotNil(session.result, "前置：A 必须有结果")
+        let callsAfterA = provider.calls.count
+
+        provider.failingQueries = ["B"]
+        session.draftQuery = "B"
+        session.submit(type: .song)
+        await waitForSearch(session)
+
+        XCTAssertNotNil(session.errorMessage, "失败要有提示")
+        XCTAssertNil(session.result, "失败的查询不得留下上一次的结果集")
+        XCTAssertFalse(session.isLoading)
+
+        // 失败那次搜索本身也发了一次请求（A 一次 + B 一次）
+        let callsAfterFailure = provider.calls.count
+        XCTAssertEqual(callsAfterFailure, callsAfterA + 1)
+
+        // 结果都没了，分页自然也不该发起
+        session.loadMore()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(provider.calls.count, callsAfterFailure, "失败后不该还能翻页")
     }
 }
