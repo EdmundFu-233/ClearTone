@@ -219,7 +219,12 @@ struct IOSQueueView: View {
                     }.buttonStyle(.plain)
                 }.onDelete { indices in
                     let ids = indices.map { player.queue.items[$0].id }
-                    for id in ids { player.removeFromQueue(itemID: id) }
+                    // 先删非当前项，最后才删当前项。否则删当前项会立刻开始播放
+                    // 一个也在本批次里的「下一首」，随后它又被删掉 ——
+                    // 听感上是一串快速的乱切。
+                    let currentID = player.queue.currentItem?.id
+                    for id in ids where id != currentID { player.removeFromQueue(itemID: id) }
+                    if let currentID, ids.contains(currentID) { player.removeFromQueue(itemID: currentID) }
                 }.onMove { source, destination in player.moveQueueItems(fromOffsets: source, toOffset: destination) }
             }
             .navigationTitle("播放队列 · \(player.queue.items.count)").navigationBarTitleDisplayMode(.inline)

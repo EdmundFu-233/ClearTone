@@ -506,6 +506,32 @@ final class NeteaseSocialParsingTests: XCTestCase {
         XCTAssertEqual(decoded?["msg"] as? String, "我的最新专辑发")
     }
 
+    /// 最后一条是**我发的**时，对端资料仍应是对方，而不是我自己。
+    ///
+    /// `fromUser`/`toUser` 是最后一条消息的收发双方；最后一条是我发的时
+    /// `fromUser` 就是我，按「peerID 是否等于我」二选一会取到我自己。
+    func testPrivateConversationPeerIsOtherPartyWhenLastMessageIsMine() {
+        let item: [String: Any] = [
+            "user": ["id": 9003, "fromUserId": 9003, "toUserId": 42],
+            "fromUser": ["id": 42, "nickname": "我"],
+            "toUser": ["id": 9003, "nickname": "小红"],
+        ]
+        let peer = NeteaseProvider.peerProfile(in: item, myID: "42")
+        XCTAssertEqual(peer["id"] as? Int, 9003)
+        XCTAssertEqual(peer["nickname"] as? String, "小红")
+    }
+
+    /// 最后一条是对方发的：同样取到对方。
+    func testPrivateConversationPeerWhenLastMessageIsTheirs() {
+        let item: [String: Any] = [
+            "user": ["id": 9003],
+            "fromUser": ["id": 9003, "nickname": "小红"],
+            "toUser": ["id": 42, "nickname": "我"],
+        ]
+        let peer = NeteaseProvider.peerProfile(in: item, myID: "42")
+        XCTAssertEqual(peer["nickname"] as? String, "小红")
+    }
+
     // MARK: - 写操作的参数约定
     //
     // 这些不是「实现细节」，而是上游模块的硬约定：写错一个字符的表现是

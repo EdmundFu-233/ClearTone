@@ -656,12 +656,10 @@ extension NeteaseProvider: MusicSocialProvider {
         return list.compactMap { item -> PrivateConversation? in
             let user = item["user"] as? [String: Any] ?? [:]
             guard let peerID = user["id"] ?? user["fromUserId"] else { return nil }
-            let peerIDString = String(describing: peerID)
-            // 对端 = 不是我的那个
-            let peerProfile = (peerIDString == myID)
-                ? (item["toUser"] as? [String: Any] ?? [:])
-                : (item["fromUser"] as? [String: Any]
-                    ?? item["toUser"] as? [String: Any] ?? [:])
+            let peerProfile = Self.peerProfile(in: item, myID: myID)
+            // 对端 id 以挑出来的资料为准，取不到再退回 `user`
+            let peerIDString = (peerProfile["id"]).map { String(describing: $0) }
+                ?? String(describing: peerID)
             return PrivateConversation(
                 id: String(describing: item["lastMsgId"] ?? user["id"] ?? peerID),
                 userID: peerIDString,
@@ -672,6 +670,37 @@ extension NeteaseProvider: MusicSocialProvider {
                 unreadCount: Self.intValue(item["newMsgCount"] ?? user["newMsgCount"]) ?? 0
             )
         }
+    }
+
+    /// 从一条会话条目里挑出「对端」的资料。
+    ///
+    /// `user` 通常就是对端；但 `fromUser`/`toUser` 描述的是**最后一条消息**的
+    /// 收发双方 —— 最后一条是我发的时 `fromUser` 就是我。原实现按「peerID 是否
+    /// 等于我」二选一，而 peerID 本来就取自 `user`（对端），于是永远走 fromUser
+    /// 分支：最后一条是我发的会话，昵称/头像会显示成自己。
+    ///
+    /// 现在优先选「id 存在且不是我」的那个，都不匹配再退回 `user`。
+    nonisolated static func peerProfile(in item: [String: Any], myID: String?) -> [String: Any] {
+        func idString(_ dict: [String: Any]) -> String? {
+            dict["id"].map { String(describing: $0) }
+        }
+        let user = item["user"] as? [String: Any] ?? [:]
+        let from = item["fromUser"] as? [String: Any] ?? [:]
+        let to = item["toUser"] as? [String: Any] ?? [:]
+        let pair = [from, to].filter { !$0.isEmpty }
+
+        // 有 id 时按 id 判：取不是我的那个。
+        // 最后一条是我发的 → from 就是我、to 是对方；反之亦然。
+        if let peer = pair.first(where: { idString($0) != nil && idString($0) != myID }) {
+            return peer
+        }
+        // 实测 `fromUser`/`toUser` 常缺 id：退回按 `user` 里的对端 id 判方向。
+        // `user` 通常就是对端，但它的资料（昵称/头像）可能不在里面，所以只用来定向。
+        let peerIDString = (user["id"] ?? user["fromUserId"]).map { String(describing: $0) }
+        if let peerIDString, peerIDString == myID {
+            return pair.last ?? user   // user 是我 → 对端是 toUser
+        }
+        return pair.first ?? user      // user 是对端 → fromUser
     }
 
     /// `lastMsg` 被上游 JSON 字符串化过一层（`{"msg":"...","msgType":1,...}`），

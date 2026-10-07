@@ -20,6 +20,10 @@ struct IOSRootView: View {
 
     private func tab<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         NavigationStack { content() }
+            // 账号切换（登录 / 退出 / 换号）时重建整个导航栈：否则 pushed 的
+            // 详情页还持着上一个账号的快照（如「喜欢的音乐」列表的 `let songs`），
+            // 换号后仍显示/播放 A 账号的歌曲。
+            .id(appState.dataContextKey)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if player.currentSong != nil {
                     IOSMiniPlayer { showPlayer = true }.padding(.horizontal, 12).padding(.bottom, 6)
