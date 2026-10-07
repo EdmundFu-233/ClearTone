@@ -85,6 +85,8 @@ public final class KeychainStore: @unchecked Sendable {
 
     public func save(_ value: String, for key: Key) throws {
         try writeActive(value, for: key)
+        // 重新保存 = 这个 key 不再是「已删除」，清掉墓碑
+        clearDeletedMark(key)
         setCachedValue(value, for: key)
     }
 
@@ -107,8 +109,13 @@ public final class KeychainStore: @unchecked Sendable {
     /// `.plaintextFile` 的存在理由是**启动与读取**不弹密码框，而不是永不触碰钥匙串。
     public func delete(for key: Key) throws {
         try writeActive(nil, for: key)
+        // 另一侧删除是 best-effort：钥匙串在锁定/签名变化时可能拒绝。但它留下的
+        // 那份残留值会在下次 `load` 时被当成「可迁移的旧副本」重新导回当前后端，
+        // 于是「退出登录」在重启后又变回已登录。墓碑让迁移跳过它，直到用户再次 save。
         try? writeInactive(nil, for: key)
-        invalidate(key)
+        markDeleted(key)
+        // 当前会话内也立即给出确定的 nil，不再去另一侧读残留
+        setCachedValue(nil, for: key)
     }
 
     public func clearAll() throws {
@@ -140,6 +147,8 @@ public final class KeychainStore: @unchecked Sendable {
         // 当前后端必须抛错（文件损坏 / 钥匙串拒绝都不能伪装成「未登录」）；
         // 另一侧是 best-effort —— 它坏了不该挡住正常的读取。
         if let primary = try readActive(key) { return primary }
+        // 显式删除过、且当前后端没有值：不要从另一侧把已删除的凭据迁回来
+        if isDeleted(key) { return nil }
         let legacy: String? = (try? readInactive(key)) ?? nil
         guard let legacy else { return nil }
         do {
@@ -200,6 +209,31 @@ public final class KeychainStore: @unchecked Sendable {
         defer { cacheLock.unlock() }
         cachedValues[key] = nil
         loadedKeys.remove(key)
+    }
+
+    // MARK: - 删除墓碑
+
+    /// 「显式删除过」的 key 列表存这里。存 UserDefaults 而不是凭据后端本身 ——
+    /// 它只是一个布尔标记，不敏感，也不该跟凭据一起被迁移。
+    ///
+    /// 非 private：单测要在用例之间清掉它，否则会被上一条用例的删除残留影响。
+    static let deletedMarksDefaultsKey = "cleartoneDeletedCredentialKeys"
+
+    private func markDeleted(_ key: Key) {
+        var deleted = Set(UserDefaults.standard.stringArray(forKey: Self.deletedMarksDefaultsKey) ?? [])
+        deleted.insert(key.rawValue)
+        UserDefaults.standard.set(Array(deleted), forKey: Self.deletedMarksDefaultsKey)
+    }
+
+    private func clearDeletedMark(_ key: Key) {
+        var deleted = Set(UserDefaults.standard.stringArray(forKey: Self.deletedMarksDefaultsKey) ?? [])
+        guard deleted.remove(key.rawValue) != nil else { return }
+        UserDefaults.standard.set(Array(deleted), forKey: Self.deletedMarksDefaultsKey)
+    }
+
+    private func isDeleted(_ key: Key) -> Bool {
+        Set(UserDefaults.standard.stringArray(forKey: Self.deletedMarksDefaultsKey) ?? [])
+            .contains(key.rawValue)
     }
 }
 

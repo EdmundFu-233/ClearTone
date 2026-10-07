@@ -54,10 +54,13 @@ final class KeychainStoreTests: XCTestCase {
         savedMode = KeychainStore.storageMode
         // 每条用例都从明文模式起跑，不依赖「测试进程 UserDefaults 恰好是空的」
         KeychainStore.storageMode = .plaintextFile
+        // 删除墓碑是跨用例的 UserDefaults 状态，逐条清掉，避免互相影响
+        UserDefaults.standard.removeObject(forKey: KeychainStore.deletedMarksDefaultsKey)
     }
 
     override func tearDown() async throws {
         KeychainStore.storageMode = savedMode
+        UserDefaults.standard.removeObject(forKey: KeychainStore.deletedMarksDefaultsKey)
     }
 
     private func makeStore(
@@ -113,6 +116,36 @@ final class KeychainStoreTests: XCTestCase {
             try keychain.load(for: .neteaseCookie), "still-here",
             "主动后端删除失败时不该继续去删另一侧"
         )
+    }
+
+    /// 另一侧删除失败时，残留值不得在下次 load 时被迁回来（否则等于没登出）。
+    ///
+    /// 场景：本地文件模式，钥匙串里有一份旧副本，钥匙串删除被拒（锁定/签名变化）。
+    /// `delete` 吞掉另一侧的错误，若无墓碑，第二次 `load` 会把那份旧 Cookie
+    /// 重新迁进文件里 ——「退出登录」在重启后又变回已登录。
+    func testDeleteDoesNotResurrectFromInactiveBackend() throws {
+        KeychainStore.storageMode = .plaintextFile
+        let plaintext = MemoryBackend()
+        let keychain = MemoryBackend()
+        let store = KeychainStore(plaintextBackend: plaintext, keychainBackend: keychain)
+
+        try keychain.save("legacy-cookie", for: .neteaseCookie)
+        keychain.failDeletes = true
+        try plaintext.save("current", for: .neteaseCookie)
+
+        try store.delete(for: .neteaseCookie)
+
+        // 另起一个 store（模拟重启后缓存为空、重新读盘），残留值不得复活
+        let restarted = KeychainStore(plaintextBackend: plaintext, keychainBackend: keychain)
+        XCTAssertNil(
+            try restarted.load(for: .neteaseCookie),
+            "显式删除后，另一侧删不掉的残留不得被迁回（等于没登出）"
+        )
+
+        // 重新登录：save 必须清掉墓碑，新值读得出来
+        try store.save("new-cookie", for: .neteaseCookie)
+        let restartedAgain = KeychainStore(plaintextBackend: plaintext, keychainBackend: keychain)
+        XCTAssertEqual(try restartedAgain.load(for: .neteaseCookie), "new-cookie")
     }
 
     // MARK: - 双向迁移
