@@ -130,7 +130,22 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        // `autoResizeDrawable = false` 后 MTKView 不再自动跟随 bounds，
+        // 而实时缩放窗口并不保证触发 `updateNSView`。这里按当前 renderScale
+        // 重算，否则 Metal 图层会被拉伸成错误的宽高比 / 糊掉。
+        applyDrawableSize(for: view)
+    }
+
+    /// 按当前 `renderScale` 设置 drawable 尺寸（降分辨率渲染的真实来源）。
+    /// 设置 `drawableSize` 会再次回调 `drawableSizeWillChange`，靠等值判断防递归。
+    func applyDrawableSize(for view: MTKView) {
+        let scale = CGFloat(max(0.25, min(renderScale, 1.0)))
+        let target = CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale)
+        if target.width >= 1, target.height >= 1, view.drawableSize != target {
+            view.drawableSize = target
+        }
+    }
 
     public func draw(in view: MTKView) {
         // 暂停由 SwiftUI 侧的 isAnimating（绑 scenePhase）→ MTKView.isPaused 承担，
@@ -264,14 +279,9 @@ public struct MetalBackgroundView: NSViewRepresentable {
             nsView.preferredFramesPerSecond = fps
         }
 
-        // 真正的降分辨率：原先 renderScale 只在 shader 里缩放 UV 坐标，
-        // 渲染像素量与全分辨率完全相同，节能模式零收益。
-        let scale = CGFloat(max(0.25, min(renderScale, 1.0)))
-        let target = CGSize(width: nsView.bounds.width * scale, height: nsView.bounds.height * scale)
-        if target.width >= 1, target.height >= 1, nsView.drawableSize != target {
-            nsView.autoResizeDrawable = false
-            nsView.drawableSize = target
-        }
+        // 真正的降分辨率：按 renderScale 缩小 drawableSize（shader 里不再重复缩放 UV）。
+        nsView.autoResizeDrawable = false
+        renderer.applyDrawableSize(for: nsView)
 
         // 窗口不可见时停帧
         nsView.isPaused = !isAnimating

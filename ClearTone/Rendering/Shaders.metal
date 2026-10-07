@@ -38,8 +38,10 @@ fragment float4 fragment_ambient(VertexOut in [[stage_in]],
     float2 uv = in.uv;
     float time = uniforms.time;
 
-    // 降低渲染比例（在 shader 中降采样）
-    float2 scaledUV = uv * uniforms.renderScale;
+    // 注意：`renderScale` **不再**在这里缩放 UV。降分辨率已经由
+    // `AmbientBackgroundRenderer` 调小 `drawableSize` 完成；两处都缩的话
+    // 图案会被额外放大（0.5 时放大 2×），与全分辨率下的观感对不上。
+    float2 patternUV = uv;
 
     // 基础背景色
     float3 baseColor = colors[0];
@@ -54,14 +56,14 @@ fragment float4 fragment_ambient(VertexOut in [[stage_in]],
             0.5 + 0.3 * sin(phase),
             0.5 + 0.3 * cos(phase * 0.8)
         );
-        float dist = distance(scaledUV, center);
+        float dist = distance(patternUV, center);
         float weight = smoothstep(0.8, 0.0, dist) * 0.5;
         finalColor = mix(finalColor, colors[i], weight);
         totalWeight += weight;
     }
 
     // 添加轻微噪声纹理
-    float n = noise(scaledUV * 4.0, time) * 0.03;
+    float n = noise(patternUV * 4.0, time) * 0.03;
     finalColor += n;
 
     // 频谱叠加（底部区域）
