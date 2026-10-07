@@ -942,6 +942,13 @@ public actor NeteaseProvider: MusicProvider {
     /// "/like" 会连带清掉 "/likelist"，"/user/playlist" 与 "/user/playlist/..." 互相误伤。
     public func invalidateCache(pathPrefixes: [String]) {
         responseCacheGeneration += 1
+        // 歌单曲目缓存（`playlistTrackCache`）与响应缓存是两套。加/删歌、收藏/取消
+        // 收藏歌单之后只清响应缓存不够：`PlaylistDetailView` 优先读 `cachedPlaylistTracks`，
+        // 不清它用户就会看到「加了但歌单没变」。键是歌单 id、前缀里拿不到 id，
+        // 所以命中歌单相关前缀时整块清掉。
+        if pathPrefixes.contains(where: { $0 == "/playlist/track/all" || $0 == "/playlist/detail" }) {
+            playlistTrackCache.removeAll()
+        }
         for prefix in pathPrefixes {
             let hit = responseCache.keys.filter {
                 let path = Self.path(ofCacheKey: $0)
@@ -973,6 +980,9 @@ public actor NeteaseProvider: MusicProvider {
         responseCache.removeAll()
         responseCacheBytes = 0
         reachCache.removeAll()
+        // 账号切换/退出必须连歌单曲目缓存一起清：否则 B 账号会看到 A 账号
+        // 留下的、同一歌单 id 的曲目快照。
+        playlistTrackCache.removeAll()
     }
 
     // MARK: - 模型映射

@@ -242,8 +242,12 @@ final class SearchSessionTests: XCTestCase {
         XCTAssertEqual(session.activeQuery, "B")
     }
 
-    /// 离页作废在途请求：结果保留，但转圈必须结束（否则回到页面永远卡在 ProgressView）
-    func testCancelInFlightStopsSpinnerAndKeepsResult() async throws {
+    /// 离页作废在途的**整页搜索**：转圈结束，并把未落地的身份与旧结果一并丢弃。
+    ///
+    /// `activeQuery` 这时指向的是还没有结果的新查询 B，而 `result` 还是 A。
+    /// 若只保留 result，回到页面时 onAppear 因 `activeQuery == B` 而不再重搜，
+    /// 界面会用 B 的列表形态渲染 A 的数据，`loadMore` 还会把 B 的第 2 页追加进 A。
+    func testCancelInFlightDiscardsUncommittedSearch() async throws {
         let (session, netease) = makeSession()
         session.draftQuery = "A"
         session.submit(type: .song)
@@ -257,11 +261,27 @@ final class SearchSessionTests: XCTestCase {
 
         session.cancelInFlight()
         XCTAssertFalse(session.isLoading, "离页作废请求后 isLoading 残留为 true")
-        XCTAssertEqual(session.result?.songs.map(\.id), ["A-p1"], "离页不该清掉已有结果")
+        XCTAssertNil(session.result, "整页搜索在途被取消：旧结果不得留在新查询的身份下")
+        XCTAssertNil(session.activeQuery, "身份必须清掉，回页时 onAppear 才会重新发起搜索")
 
         gate.open()
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertEqual(session.result?.songs.map(\.id), ["A-p1"])
+        XCTAssertNil(session.result, "被取消的搜索迟到返回不得再填回结果")
+    }
+
+    /// 没有整页搜索在途时（已加载完/只是翻页），离页保留结果、转圈结束。
+    func testCancelInFlightKeepsSettledResult() async throws {
+        let (session, _) = makeSession()
+        session.draftQuery = "A"
+        session.submit(type: .song)
+        await assertEventually({ session.result != nil })
+        XCTAssertFalse(session.isLoading)
+
+        session.cancelInFlight()
+
+        XCTAssertEqual(session.result?.songs.map(\.id), ["A-p1"], "结果已落地，离页不该清掉")
+        XCTAssertEqual(session.activeQuery, "A")
+        XCTAssertFalse(session.isLoading)
     }
 
     /// 失败重试重跑的是「产生这次失败的那次查询」，不是当前草稿

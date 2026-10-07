@@ -375,6 +375,9 @@ public class AppState: ObservableObject {
             await social.clearCache()
             if let index = userPlaylists.firstIndex(where: { $0.id == playlist.id }) {
                 userPlaylists[index].trackCount = max(0, userPlaylists[index].trackCount + (add ? songIDs.count : -songIDs.count))
+                // 与 create/delete/rename 一致：改了就要落盘，否则加删歌后
+                // 在下次整表刷新前重启，曲目数会退回旧值。
+                PersistenceStore.shared.saveCachedUserPlaylists(userPlaylists)
             }
             return true
         } catch {
@@ -451,6 +454,9 @@ public class AppState: ObservableObject {
             userPlaylists = cached
         }
         isLoadingUserPlaylists = userPlaylists.isEmpty
+        // 用 defer 复位：成功路径会在代次/取消校验失败时提前 return，
+        // 卡住的话空歌单账号的侧栏会一直转圈（其它 session 都靠 defer 兜底）。
+        defer { if userPlaylistsToken == token { isLoadingUserPlaylists = false } }
         do {
             let loaded = try await provider.fetchUserPlaylists()
             guard userPlaylistsToken == token, generation == accountGeneration,
@@ -462,8 +468,6 @@ public class AppState: ObservableObject {
             // 失败时保留缓存内容，避免侧栏闪空
             CTLog.general.error("加载歌单失败: \(CTLog.sanitize(error.localizedDescription))")
         }
-        guard userPlaylistsToken == token else { return }
-        isLoadingUserPlaylists = false
     }
 
     /// 切换收藏状态（乐观更新，失败回滚）。返回切换后的状态。

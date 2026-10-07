@@ -185,7 +185,8 @@ final class SearchSession: ObservableObject {
         draftQuery = ""
     }
 
-    /// 离开搜索页：只作废在途请求，保留结果（回到页面时不该重新加载一遍）。
+    /// 离开搜索页：作废在途请求，尽量保留已有结果（回到页面时不该重新加载一遍）。
+    ///
     /// `isLoading` 必须复位 —— 任务已被取消，不会再有回调把它置回 false，
     /// 留着 true 会让回到页面时永远卡在转圈，且 `loadMore` 的 `!isLoading` 也会被卡死。
     func cancelInFlight() {
@@ -195,11 +196,25 @@ final class SearchSession: ObservableObject {
         // （`onDisappear` 调这里）→ 回来再滚 → 直接请求**第 3 页**，
         // 31–60 条永久缺失，界面上看不出任何异常。
         let hadInFlightPagination = loadMoreTask != nil
+        // 整页搜索在途（`isLoading`）时，`activeQuery` 指向的是**还没有结果**的新查询，
+        // 而 `result` 还是上一份结果集的。只保留 result 会留下「身份=新查询 / 数据=旧结果」
+        // 的错配：回到页面时 onAppear 因为 `activeQuery` 已等于输入词而不再重搜，
+        // 界面用新类型的形态渲染旧数据，`loadMore` 还会把新查询的第 2 页追加进旧列表。
+        // 丢弃这份未落地的身份与旧结果，回到页面时 onAppear 会按输入词重新发起搜索。
+        let hadInFlightSearch = isLoading
         generation += 1
         searchTask?.cancel()
         searchTask = nil
         loadMoreTask?.cancel()
         loadMoreTask = nil
+        if hadInFlightSearch {
+            activeQuery = nil
+            activeType = nil
+            result = nil
+            currentPage = 1
+            errorMessage = nil
+            paginationError = nil
+        }
         if hadInFlightPagination { currentPage = max(1, currentPage - 1) }
         isLoading = false
         isLoadingMore = false

@@ -82,4 +82,16 @@ final class LRCParserTests: XCTestCase {
         XCTAssertEqual(lines[0].words?.count, 2)
         XCTAssertEqual(lines[0].text, "我们")
     }
+
+    /// YRC 歌也要带上音译。原先 `parseYRC` 收下了 `romanization` 参数却从不读它，
+    /// 于是有逐字时间轴的歌永远看不到音译，只有普通 LRC 能看到。
+    func testYRCMergesRomanization() {
+        let yrc = "[0,1000]我(0,200,0)们(200,300,0)"
+        let trans = "[00:00.00]We"
+        let roma = "[00:00.00]wo men"
+        let lines = LRCParser.parseYRC(yrc, translation: trans, romanization: roma)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines[0].translation, "We")
+        XCTAssertEqual(lines[0].romanization, "wo men")
+    }
 }

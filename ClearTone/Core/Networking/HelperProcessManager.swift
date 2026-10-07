@@ -183,12 +183,33 @@ public final class HelperProcessManager: ObservableObject {
         CTLog.helper.info("辅助进程已停止")
     }
 
+    /// 查询串的百分号编码。
+    ///
+    /// `URLComponents.queryItems` **不会**编码 `+`（它属于 `urlQueryAllowed`），
+    /// 而辅助进程是 Express 5，默认用 Node 的 `querystring` 解析查询串，会把
+    /// 字面 `+` 解码成空格 —— macOS 搜「C++」到上游变成「C  」。
+    /// 这里显式把 `+`（以及 `&`/`=`）从允许集里去掉，保证它们被转义。
+    /// 顺带按 key 排序，让同一组参数的 URL 稳定可测。
+    nonisolated static func percentEncodedQuery(_ query: [String: String]) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=")
+        func encode(_ value: String) -> String {
+            value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+        }
+        return query
+            .sorted { $0.key < $1.key }
+            .map { "\(encode($0.key))=\(encode($0.value))" }
+            .joined(separator: "&")
+    }
+
     /// 构造带鉴权的请求 URL
     public func makeURL(path: String, query: [String: String] = [:]) throws -> URL {
         guard case .running(let port) = state else { throw MusicError.helperProcessUnavailable }
         var components = URLComponents(string: "http://127.0.0.1:\(port)\(path)")
-        var items = query.map { URLQueryItem(name: $0.key, value: $0.value) }
-        components?.queryItems = items.isEmpty ? nil : items
+        // 不能走 `components.queryItems`：见 `percentEncodedQuery` 的说明
+        if !query.isEmpty {
+            components?.percentEncodedQuery = Self.percentEncodedQuery(query)
+        }
         guard let url = components?.url else { throw MusicError.invalidResponse }
         return url
     }

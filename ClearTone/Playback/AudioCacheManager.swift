@@ -78,6 +78,14 @@ final class AudioCacheManager: ObservableObject {
             && !url.lastPathComponent.hasPrefix(tempPrefix)
     }
 
+    /// 「清除缓存」要删哪些文件。正在播放的缓存文件必须排除：
+    /// AVPlayer 还挂着它，删掉预缓冲窗口立刻失败、播放中断。
+    /// `trimIfNeeded` / `purgeExpired` 都跳过它，clearAll 是唯一没跳的删除路径。
+    nonisolated static func cacheClearDeletionTargets(in urls: [URL], protecting protectedSongID: String?) -> [URL] {
+        guard let protectedSongID else { return urls }
+        return urls.filter { $0.deletingPathExtension().lastPathComponent != protectedSongID }
+    }
+
 private let cacheDirectory: URL
     private var index: [String: CacheMeta] = [:]
 
@@ -226,14 +234,23 @@ private let cacheDirectory: URL
         // 排队中的任务一并作废：它们本来也会被 clearGeneration 拦下，
         // 但留着会让「缓存中」一直亮着
         pendingCaches.removeAll()
-        cachedSongIDs.removeAll()
         cachingSongIDs.removeAll()
-        index.removeAll()
-        persistIndex()
+        // 正在播放的缓存文件必须留下：AVPlayer 还挂着它，删掉会让预缓冲窗口失败、
+        // 播放中断。保留它的索引项，播放栏也才能继续显示「本地缓存」。
+        let protectedID = currentCachedSongID
+        if let protectedID, let meta = index[protectedID] {
+            index = [protectedID: meta]
+            cachedSongIDs = [protectedID]
+        } else {
+            index.removeAll()
+            cachedSongIDs.removeAll()
+        }
         let files = (try? FileManager.default.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
-        for file in files {
+        for file in Self.cacheClearDeletionTargets(in: files, protecting: protectedID) {
             try? FileManager.default.removeItem(at: file)
         }
+        // 删完再落盘：目标里包含 index.json，先写会被随后的删除抹掉
+        persistIndex()
     }
 
     // MARK: - 私有

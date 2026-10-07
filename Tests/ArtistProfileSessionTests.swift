@@ -119,6 +119,28 @@ final class ArtistProfileSessionTests: XCTestCase {
         XCTAssertTrue(session.canLoadMoreSongs)
     }
 
+    /// 分页失败后**重试成功**，分页错误必须消失。
+    ///
+    /// 原先 loadMore* 只在 catch 里写错误、成功时不清，于是点重试加载成功后
+    /// 底部还一直挂着「加载失败 + 重试」，与已经正常加载的页矛盾。
+    func testSuccessfulPaginationRetryClearsSongsError() async {
+        let provider = StubArtistProvider()
+        provider.songPages = [
+            ArtistSongPage(songs: [.fixture(id: "s0")], total: 9, hasMore: true),
+            ArtistSongPage(songs: [.fixture(id: "s1")], total: 9, hasMore: false),
+        ]
+        let session = ArtistProfileSession(artistID: "1", provider: provider)
+        await session.loadSongs()
+
+        provider.failNextSongPage = true
+        await session.loadMoreSongs()
+        XCTAssertNotNil(session.songsError)
+
+        await session.loadMoreSongs()
+        XCTAssertNil(session.songsError, "重试成功后必须清掉分页错误")
+        XCTAssertEqual(session.songs.map(\.id), ["s0", "s1"])
+    }
+
     /// 首屏失败才有错误态；已经有内容时不再显示整页错误。
     func testFirstPageFailureSetsError() async {
         let provider = StubArtistProvider()

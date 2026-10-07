@@ -66,6 +66,19 @@ public enum LRCParser {
             }
         }
 
+        // 合并音译（与翻译同理）。原先参数收下了却完全没用：
+        // 有逐字时间轴的歌（YRC）因此永远看不到音译，只有普通 LRC 能看到。
+        if let roma = romanization, !roma.isEmpty {
+            let romaLines = parseLRC(roma)
+            var romaMap: [TimeInterval: String] = [:]
+            for r in romaLines { romaMap[r.time] = r.text }
+            for i in lines.indices {
+                if let romaText = romaMap[lines[i].time] {
+                    lines[i].romanization = romaText
+                }
+            }
+        }
+
         return lines.sorted { $0.time < $1.time }
     }
 

@@ -221,6 +221,9 @@ final class ArtistProfileSession: ObservableObject {
         guard canLoadMoreSongs else { return }
         let token = generation
         isLoadingMoreSongs = true
+        // 每次尝试都先清错误：失败留下提示、用户点重试成功后，提示必须消失，
+        // 否则底部会一直挂着「加载失败 + 重试」，与已经正常加载的页矛盾。
+        songsError = nil
         defer { if generation == token { isLoadingMoreSongs = false } }
         do {
             let page = try await provider.fetchArtistSongs(
@@ -268,6 +271,7 @@ final class ArtistProfileSession: ObservableObject {
         guard canLoadMoreAlbums else { return }
         let token = generation
         isLoadingMoreAlbums = true
+        albumsError = nil
         defer { if generation == token { isLoadingMoreAlbums = false } }
         do {
             let page = try await provider.fetchArtistAlbums(
@@ -308,6 +312,7 @@ final class ArtistProfileSession: ObservableObject {
         guard canLoadMoreMVs else { return }
         let token = generation
         isLoadingMoreMVs = true
+        mvsError = nil
         defer { if generation == token { isLoadingMoreMVs = false } }
         do {
             let page = try await provider.fetchArtistMVs(id: artistID, offset: mvs.count, limit: mvPageSize)

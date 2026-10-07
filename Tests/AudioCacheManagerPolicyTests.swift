@@ -301,4 +301,27 @@ final class AudioCacheManagerPolicyTests: XCTestCase {
         XCTAssertEqual(store.purgeExpired(now: now), [], "都在 7 天内，不该被时间规则清掉")
         XCTAssertEqual(store.trim(), ["s4", "s3", "s2"], "超容量仍按最久未播放淘汰")
     }
+
+    // MARK: - 清除缓存保护正在播放的文件
+
+    /// 「清除缓存」必须跳过正在播放的缓存文件，否则 AVPlayer 立刻中断。
+    /// `trimIfNeeded` / `purgeExpired` 都跳过它，clearAll 之前是唯一没跳的删除路径。
+    func testClearAllKeepsCurrentlyPlayingFile() {
+        let ext = AudioCacheManager.cacheFileExtension
+        let playing = URL(fileURLWithPath: "/cache/playing.\(ext)")
+        let other = URL(fileURLWithPath: "/cache/other.\(ext)")
+        let index = URL(fileURLWithPath: "/cache/index.json")
+
+        let targets = AudioCacheManager.cacheClearDeletionTargets(
+            in: [playing, other, index], protecting: "playing"
+        )
+        XCTAssertFalse(targets.contains(playing), "正在播放的缓存文件不能删")
+        XCTAssertEqual(Set(targets), [other, index])
+
+        // 没有正在播放的曲目：全部删除
+        XCTAssertEqual(
+            Set(AudioCacheManager.cacheClearDeletionTargets(in: [playing, other], protecting: nil)),
+            [playing, other]
+        )
+    }
 }
