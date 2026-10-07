@@ -203,4 +203,15 @@ public enum SubscribeTarget: Hashable, Sendable {
         case .radio: return "电台"
         }
     }
+
+    /// `fetchUserCounts` 返回的计数字典键（与 `displayName` 不同）。
+    /// 上游没有专辑计数，`.album` 返回 nil。
+    public var countKey: String? {
+        switch self {
+        case .playlist: return "收藏歌单"
+        case .album: return nil
+        case .artist: return "关注歌手"
+        case .radio: return "收藏电台"
+        }
+    }
 }

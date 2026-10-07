@@ -138,8 +138,10 @@ final class LibraryStore: ObservableObject {
             case .radio: radios.removeAll { $0.id == target.id }
             case .playlist: break  // 由 AppState.userPlaylists 管
             }
-            if let value = counts[target.displayName], value > 0 {
-                counts[target.displayName] = value - 1
+            // 计数字典的键是「收藏歌单 / 关注歌手 / 收藏电台」（见 fetchUserCounts），
+            // 不是 displayName（「歌单 / 歌手 / 电台」）—— 原先永远匹配不上。
+            if let key = target.countKey, let value = counts[key], value > 0 {
+                counts[key] = value - 1
             }
             CTLog.general.info("已取消收藏\(target.displayName)：\(name)")
             return true
