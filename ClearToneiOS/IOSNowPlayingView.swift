@@ -8,9 +8,9 @@ struct IOSNowPlayingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var time: Double = 0
     @State private var dragging = false
-    @State private var lyrics: [LyricLine] = []
-    @State private var lyricError: String?
-    @State private var loadingLyrics = false
+    /// 歌词状态机在 Core 里（`LyricsSession`）—— 与 macOS 的正在播放页共用一份，
+    /// 切歌先清空、迟到响应丢弃、取消后复位 loading 这些边界才有断言。
+    @StateObject private var lyrics = LyricsSession.neteaseOnly()
     @State private var lyricRefreshID = UUID()
     @State private var showLyrics = false
     @State private var showQueue = false
@@ -94,17 +94,9 @@ struct IOSNowPlayingView: View {
         .onAppear { time = player.currentTime }
         .onReceive(player.timePublisher) { value in if !dragging { time = min(max(0, value), max(1, player.duration)) } }
         .task(id: "\(player.currentSong?.id ?? "")-\(lyricRefreshID)") {
-            lyrics = []; lyricError = nil; time = player.currentTime; dragging = false
-            guard let song = player.currentSong, song.source == .netease else { loadingLyrics = false; return }
-            loadingLyrics = true
-            do {
-                let result = try await NeteaseProvider.shared.fetchLyrics(songID: song.id)
-                guard !Task.isCancelled, player.currentSong?.id == song.id else { return }
-                lyrics = result.lines; loadingLyrics = false
-            } catch {
-                guard !Task.isCancelled, player.currentSong?.id == song.id else { return }
-                lyricError = error.ctUserMessage; loadingLyrics = false
-            }
+            time = player.currentTime
+            dragging = false
+            await lyrics.load(for: player.currentSong)
         }
         .sheet(isPresented: $showQueue) { IOSQueueView().presentationDragIndicator(.visible) }
         .sheet(isPresented: $showLogin) { IOSLoginView().presentationDragIndicator(.visible) }
@@ -155,14 +147,15 @@ struct IOSNowPlayingView: View {
 
     private var lyricPanel: some View {
         Group {
-            if loadingLyrics { ProgressView("正在获取歌词…").frame(maxWidth: .infinity, maxHeight: .infinity) }
-            else if let lyricError { IOSFailure(message: lyricError) { lyricRefreshID = UUID() }.frame(maxHeight: .infinity) }
-            else if lyrics.isEmpty { ContentUnavailableView("暂无歌词", systemImage: "text.quote", description: Text("让旋律自己说话")) }
+            if lyrics.isLoading { ProgressView("正在获取歌词…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+            else if let lyricError = lyrics.errorMessage { IOSFailure(message: lyricError) { lyricRefreshID = UUID() }.frame(maxHeight: .infinity) }
+            else if lyrics.isPureMusic { ContentUnavailableView("纯音乐", systemImage: "music.note", description: Text("这首歌没有歌词")) }
+            else if lyrics.lines.isEmpty { ContentUnavailableView("暂无歌词", systemImage: "text.quote", description: Text("让旋律自己说话")) }
             else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 22) {
-                            ForEach(lyrics) { line in
+                            ForEach(lyrics.lines) { line in
                                 Button { player.commitSeek(to: line.time) } label: {
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(line.text).font(.title3.weight(activeLine?.id == line.id ? .bold : .medium))
@@ -181,7 +174,7 @@ struct IOSNowPlayingView: View {
             }
         }.background(IOSTheme.surface, in: RoundedRectangle(cornerRadius: 22))
     }
-    private var activeLine: LyricLine? { lyrics.last { $0.time <= time } }
+    private var activeLine: LyricLine? { lyrics.lines.last { $0.time <= time } }
     private var modeIcon: String {
         switch player.queue.mode {
         case .shuffle: "shuffle"

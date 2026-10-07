@@ -14,13 +14,14 @@ struct NowPlayingView: View {
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.dismiss) var dismiss
 
-    @State private var lyrics: [LyricLine] = []
+    /// 歌词状态机在 Core 里（`LyricsSession`）—— 与 iOS 的正在播放页共用一份。
+    /// 原先两边各手写一份，而两个视图都不在测试 target 里，切歌清空 / 迟到响应
+    /// 丢弃 / 取消复位这些边界一条断言都写不了。
+    @StateObject private var lyrics = LyricsSession(resolve: NowPlayingView.lyricsResolver)
     @State private var currentLineIndex: Int?
     /// 逐字高亮要用的「当前播放位置」。跟着 0.1s 定时器一起更新，
     /// 不单独订阅 —— 已经是 0.1s 一跳了，再加一路只是多一次 @Published。
     @State private var wordClock: TimeInterval = 0
-    @State private var isPureMusic = false
-    @State private var hasWordTiming = false
     @State private var showTranslation = true
     @State private var showRomanization = false
     @State private var userScrolling = false
@@ -230,13 +231,13 @@ struct NowPlayingView: View {
                         .foregroundStyle(.white)
 
                         // 歌词列表
-                        if isPureMusic {
+                        if lyrics.isPureMusic {
                             Spacer()
                             Text(L10n.Player.pureMusic)
                                 .font(CTTypography.sectionTitle)
                                 .foregroundStyle(.white.opacity(0.6))
                             Spacer()
-                        } else if lyrics.isEmpty {
+                        } else if lyrics.lines.isEmpty {
                             Spacer()
                             Text(L10n.Player.noLyrics)
                                 .font(CTTypography.sectionTitle)
@@ -244,7 +245,7 @@ struct NowPlayingView: View {
                             Spacer()
                         } else {
                             LyricListView(
-                                lyrics: lyrics,
+                                lyrics: lyrics.lines,
                                 currentIndex: currentLineIndex,
                                 currentTime: wordClock,
                                 showTranslation: showTranslation,
@@ -292,7 +293,7 @@ struct NowPlayingView: View {
             // 偏移后的播放位置，供逐字高亮与点击 seek 共用
             wordClock = player.currentTime + lyricOffsetSeconds
             let index = LRCParser.currentLineIndex(
-                in: lyrics, at: player.currentTime, offset: lyricOffsetSeconds
+                in: lyrics.lines, at: player.currentTime, offset: lyricOffsetSeconds
             )
             if index != currentLineIndex {
                 currentLineIndex = index
@@ -302,39 +303,25 @@ struct NowPlayingView: View {
         // 播放卡在「缓冲中」。spectrum 保持全零，Metal 走环境动画回退。
     }
 
-    private func loadLyrics() {
-        guard let song = player.currentSong else { return }
-        // 取消上一次歌词请求：快速切歌时旧响应用歌曲身份校验丢弃
-        lyricsTask?.cancel()
-        let songID = song.id
-        lyrics = []
-        currentLineIndex = nil
-        isPureMusic = false
-        hasWordTiming = false
-
-        lyricsTask = Task {
-            do {
-                let result = try await Self.fetchLyrics(for: song)
-                guard !Task.isCancelled, player.currentSong?.id == songID else { return }
-                lyrics = result.lines
-                isPureMusic = result.isPureMusic
-                hasWordTiming = result.hasWordTiming
-            } catch {
-                guard !Task.isCancelled, player.currentSong?.id == songID else { return }
-                lyrics = []
-                isPureMusic = false
-            }
+    /// 按歌曲来源选择歌词 Provider（本地歌曲不应打到网易云接口）。
+    ///
+    /// 由调用点注入给 `LyricsSession`，而不是让 Core 去 `switch song.source`：
+    /// `Providers/Local` 没有编进 iOS target，把 `LocalProvider` 写死在
+    /// `Core/Lyrics` 里会直接打断 iOS 编译。
+    private static let lyricsResolver: LyricsProviderResolver = { song in
+        switch song.source {
+        case .local: LocalProvider.shared
+        case .netease: NeteaseProvider.shared
         }
     }
 
-    /// 按歌曲来源选择歌词 Provider（本地歌曲不应打到网易云接口）
-    private static func fetchLyrics(for song: Song) async throws -> LyricResult {
-        switch song.source {
-        case .local:
-            return try await LocalProvider.shared.fetchLyrics(songID: song.id)
-        case .netease:
-            return try await NeteaseProvider.shared.fetchLyrics(songID: song.id)
-        }
+    private func loadLyrics() {
+        // 取消上一次歌词请求：快速切歌时旧响应用代次令牌丢弃（见 `LyricsSession`）
+        lyricsTask?.cancel()
+        currentLineIndex = nil
+        // 传 nil（没有正在播放的歌）会清空 —— 原先这里 `guard let song else { return }`，
+        // 停播后会把上一首的歌词留在页面上。
+        lyricsTask = Task { await lyrics.load(for: player.currentSong) }
     }
 
     /// 进度条是否正在被拖动

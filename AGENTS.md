@@ -171,7 +171,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**51 个测试文件 / 513 项**，全部离线可跑且全绿）：
+当前覆盖（**52 个测试文件 / 521 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
@@ -180,7 +180,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | 搜索状态机 | SearchSessionTests（分页不读草稿、清空作废在途请求、旧响应丢弃）/ SearchSessionPaginationTests（**四种类型都能翻页**、分页锁、**取消在途页码回滚**、**分页失败保留旧数据但置 `paginationError`**、**失败的查询不得留下旧 `result`**）/ SearchAssistStoreTests（联想节流、历史、**热搜请求被取消后 loading 必须复位**、历史读入即裁剪到 20、`removeHistory` 大小写不敏感） |
 | **会话失效判定** | **SessionExpiryGuardTests**（单次 301/403 不定罪、需 `/user/account` 旁证、探针在途不递归、复位） |
 | **歌手资料页** | **ArtistProfileSessionTests**（换歌手清空、offset 由已加载条数推导、翻页失败保留旧数据、迟到响应丢弃、followed 不被后续页抹掉）/ **ArtistProfileParsingTests**（`cover`/`avatar` 才是头像、MV 的 `artistName`/`imgurl16v9`、eapi 键序与重命名） |
-| 歌词 / 电台 / 每日推荐 | LRCParserTests / RadioParsingTests / RadioContractTests / DailyRecommendTests |
+| 歌词 / 电台 / 每日推荐 | LRCParserTests / **LyricsSessionTests**（歌词状态机：切歌**先同步清空**、**迟到响应不得写进新歌页面**、取消后复位 `isLoading`、纯音乐标志、无歌/不可解析时不发请求。macOS 与 iOS 的正在播放页原先**各手写一份**，两个视图都不在测试 target 里）/ RadioParsingTests / RadioContractTests / DailyRecommendTests |
 | 榜单 | **TopListSessionTests**（榜单目录：失败**保留旧数据**但置错误、**迟到的旧响应不得覆盖新响应**、取消后 `isLoading` 必须复位）。macOS 的 `TopListStore` 在 `Features/` 里，一条断言都写不了 —— 这份逻辑就是为可测性抽到 `Core/Discover/` 的 |
 | 社区与资料库 | NeteaseSocialParsingTests（评论/通知/私信/榜单/等级/热搜的**字段名**逐个对着上游 `home.md` 核） |
 | 接口契约 | NeteaseEndpointTests（含 `testEveryRequestCallSiteIsMapped` 扫描调用点、**`testEveryKnownRouteHasAnUpstreamModuleFile`** 反查 `api/module/*.js` 是否存在、`testIOSReachableRoutesAreAdaptedByMobileRoute` 钉死 iOS 适配清单）/ NeteaseEapiTests（eapi 与 Node 逐字节对照，含 module 写死参数的 `constants` 登记、query 值恒为字符串） / `scripts/probes/endpoint-table.js`（拿打包 Node 打桩 module，逐条比对 uri / crypto / 上游是否存在）/ `scripts/probes/log-redaction.js`（**日志出口脱敏**：cookie/`MUSIC_U`/`NMTID` 不得出现在 logger 与 `request.js` 的 `[ERR]` 输出里） |
@@ -201,6 +201,8 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 不能证明「接口真的返回了这些字段」。
 
 > **可测性约定**：`project.yml` 把 `Features/**` 排除在测试 target 之外，
+> 于是「已经有一份能跑的实现、但只在视图里」的逻辑要抽到 `Core/`（`LyricsSession`
+> 就是把 macOS / iOS 两份重复的歌词状态机合并出来的）。
 > 所以放在那里的 store 一个都测不到（`LibraryStore` / `SocialStore` 都是这么废掉的）。
 > **有状态机的东西放 `Core/`** —— 照 `Core/Search/SearchSession.swift`、
 > `Core/Comments/CommentsStore.swift` 与 `Core/Artist/ArtistProfileSession.swift`
