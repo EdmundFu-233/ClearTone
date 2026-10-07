@@ -15,6 +15,8 @@ struct IOSNowPlayingView: View {
     @State private var showLyrics = false
     @State private var showQueue = false
     @State private var showLogin = false
+    /// 用户手动滚动歌词后暂停自动跟随，直到点「回到当前」（与 macOS 一致）
+    @State private var lyricUserScrolling = false
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
@@ -170,8 +172,26 @@ struct IOSNowPlayingView: View {
                     }
                     .onAppear { if let id = activeLine?.id { proxy.scrollTo(id, anchor: .center) } }
                     .onChange(of: activeLine?.id) { _, id in
-                        guard let id, !dragging else { return }
+                        // 用户正在手动浏览歌词时不要把他拽回当前行
+                        guard let id, !dragging, !lyricUserScrolling else { return }
                         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .simultaneousGesture(DragGesture().onChanged { _ in lyricUserScrolling = true })
+                    .overlay(alignment: .bottomTrailing) {
+                        if lyricUserScrolling {
+                            Button {
+                                lyricUserScrolling = false
+                                if let id = activeLine?.id {
+                                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                                        proxy.scrollTo(id, anchor: .center)
+                                    }
+                                }
+                            } label: {
+                                Label("回到当前", systemImage: "arrow.down.circle")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .padding(12)
+                        }
                     }
                 }
             }

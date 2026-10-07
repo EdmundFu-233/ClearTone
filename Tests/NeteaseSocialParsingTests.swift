@@ -427,7 +427,6 @@ final class NeteaseSocialParsingTests: XCTestCase {
         guard var dict = json["data"] as? [String: Any] else { return XCTFail("电台应在 data 下") }
         XCTAssertNil(json["djradio"], "实测没有 djradio 这个键")
         if dict["picUrl"] == nil, let pic = dict["pic"] as? String { dict["picUrl"] = pic }
-        if dict["isSub"] == nil { dict["isSub"] = ((dict["subCount"] as? Int) ?? 0) > 0 ? 1 : 0 }
 
         let station = NeteaseProvider.mapRadioStation(dict)
         XCTAssertEqual(station?.id, "336355127")
@@ -437,6 +436,19 @@ final class NeteaseSocialParsingTests: XCTestCase {
         XCTAssertEqual(station?.programCount, 100)
         XCTAssertEqual(station?.creatorName, "代码时间")
         XCTAssertEqual(station?.categoryName, "知识")
+        // 没有 `isSub` 不能拿订阅数伪造：5000 个订阅者是「有没有人订阅」，
+        // 不是「我有没有订阅」。缺失就按未订阅处理。
+        XCTAssertEqual(station?.isSubscribed, false)
+    }
+
+    /// `isSub` 上游两种类型都出现过（Int 1/0 与 Bool），都要认。
+    func testRadioSubscriptionAcceptsBoolOrInt() throws {
+        let intForm = NeteaseProvider.mapRadioStation(["id": 1, "name": "甲", "isSub": 1])
+        XCTAssertEqual(intForm?.isSubscribed, true)
+        let boolForm = NeteaseProvider.mapRadioStation(["id": 2, "name": "乙", "isSub": true])
+        XCTAssertEqual(boolForm?.isSubscribed, true)
+        let absent = NeteaseProvider.mapRadioStation(["id": 3, "name": "丙"])
+        XCTAssertEqual(absent?.isSubscribed, false)
     }
 
     /// 收藏列表的数组键各不相同，实测：album/artist 用 `data`，

@@ -240,12 +240,15 @@ extension NeteaseProvider: MusicSocialProvider {
     /// 电台详情（`/dj/detail`）。
     ///
     /// 补上了一个长期存在的缺口：`/dj/program` 不返回电台名，
-    /// 于是电台详情页此前永远显示「电台」两个字。这个接口会返回
-    /// `djradio.name` 与 `isSub`，而且**不需要登录**。
+    /// 于是电台详情页此前永远显示「电台」两个字。
     ///
     /// 参数名是 `rid` 不是 `id`（`dj_detail.js`: `data = { id: query.rid }`）。
     public func fetchRadioStationDetail(radioID: String) async throws -> RadioStation {
-        let data = try await request("/dj/detail", query: ["rid": radioID], cacheTTL: 600)
+        // 带上登录 cookie：`isSub` 是「**我**有没有订阅」，匿名请求拿不到。
+        // 早期实现不带 cookie，再用 `subCount > 0` 兜底 —— 那是「有没有人订阅」，
+        // 于是任何有听众的电台都显示成「已收藏」，点一下是对没订阅过的电台取消订阅。
+        let cookie = try Self.loadLoginCookie()
+        let data = try await request("/dj/detail", query: ["rid": radioID], cookie: cookie, cacheTTL: 600)
         let json = try parseJSON(data)
         // 实测：电台本体在 `data`（不是 `djradio`），且同一次响应里**不含** programs ——
         // 节目仍要靠 `/dj/program?rid=`。
@@ -254,9 +257,7 @@ extension NeteaseProvider: MusicSocialProvider {
         if dict["picUrl"] == nil, let pic = dict["pic"] as? String {
             dict["picUrl"] = pic
         }
-        if dict["isSub"] == nil {
-            dict["isSub"] = ((dict["subCount"] as? Int) ?? 0) > 0 ? 1 : 0
-        }
+        // 拿不到 `isSub` 就保持未知（显示「收藏电台」），不再用订阅数伪造
         guard let station = Self.mapRadioStation(dict) else { throw MusicError.invalidResponse }
         return station
     }

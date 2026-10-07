@@ -703,7 +703,8 @@ public actor NeteaseProvider: MusicProvider {
             // `/dj/sublist` 用 category，`/dj/hot` 用 categoryName，两个都认
             categoryName: dict["categoryName"] as? String ?? dict["category"] as? String,
             descriptionText: dict["desc"] as? String,
-            isSubscribed: (dict["isSub"] as? Int) == 1
+            // `isSub` 上游有时给 Int(1/0)、有时给 Bool，两种都认
+            isSubscribed: (dict["isSub"] as? Int) == 1 || (dict["isSub"] as? Bool) == true
         )
     }
 
