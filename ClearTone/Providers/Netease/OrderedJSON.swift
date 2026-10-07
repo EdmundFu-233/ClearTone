@@ -4,8 +4,7 @@ import Foundation
 ///
 /// eapi 专用的保序 JSON 编码。
 ///
-/// 当前没有生产调用方（`ClearToneiOS` 已移除，eapi 只走
-/// `NeteaseDirectTransport`），但它是那条路的必要组件，且被
+/// iOS 的 eapi / xeapi 生产路径通过 `NeteaseDirectTransport` 使用它，并被
 /// `NeteaseEapiTests` 完整覆盖 —— 保留它才不会在重新启用时需要重写一遍。
 ///
 /// ## 为什么不能直接用 `JSONSerialization`

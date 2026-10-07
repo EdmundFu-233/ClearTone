@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// 通过本地辅助进程访问网易云 API
+/// macOS 通过本地辅助进程、iOS 通过原生加密传输访问网易云 API
 public actor NeteaseProvider: MusicProvider {
     public let identifier = "netease"
     public let displayName = "网易云音乐"
@@ -46,8 +46,10 @@ public actor NeteaseProvider: MusicProvider {
         self.decoder = JSONDecoder()
     }
 
+    #if os(macOS)
     @MainActor
     private var helper: HelperProcessManager { HelperProcessManager.shared }
+    #endif
 
     /// 收藏失败时给用户看的话。
     ///
@@ -102,6 +104,10 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchQRCodeImage(key: String) async throws -> URL {
+        #if os(iOS)
+        // QR 图像在设备上生成，避免把登录 key 发送给第三方图片服务。
+        return try NeteaseMobileRoute.qrURL(key: key)
+        #else
         // qrimg 接口返回 base64 图片，但 api-enhanced 的 /login/qr/create 直接返回 qrimg URL
         let data = try await request("/login/qr/create", query: ["key": key, "qrimg": "true"])
         let json = try parseJSON(data)
@@ -111,6 +117,7 @@ public actor NeteaseProvider: MusicProvider {
             throw MusicError.invalidResponse
         }
         return url
+        #endif
     }
 
     public func checkQRCodeStatus(key: String) async throws -> QRLoginStatus {
@@ -152,6 +159,11 @@ public actor NeteaseProvider: MusicProvider {
 
     public func fetchAccountInfo() async throws -> AccountInfo? {
         guard let cookie = try Self.loadLoginCookie() else { return nil }
+        return try await fetchAccountInfo(cookie: cookie)
+    }
+
+    /// 先验证临时登录凭据，再让调用方提交到钥匙串。
+    func fetchAccountInfo(cookie: String) async throws -> AccountInfo? {
         let data = try await request("/user/account", cookie: cookie)
         let json = try parseJSON(data)
         guard let account = json["account"] as? [String: Any],
@@ -436,6 +448,7 @@ public actor NeteaseProvider: MusicProvider {
         //    串行遍历：unm 不通再试 gdmusic，行为可预期。
         //    曾试过 withTaskGroup 并发，两条探测会互相争抢带宽，冷启动时
         //    更容易双双超时，反而错过本来可用的一条。
+        #if os(macOS)
         for source in ["unm", "gdmusic"] {
             if let matchURL = try? await fetchMatchURL(songID: songID, source: source),
                let upgraded = upgradeToHTTPS(matchURL),
@@ -444,6 +457,8 @@ public actor NeteaseProvider: MusicProvider {
                 return PlayableURL(url: upgraded, quality: fallbackQuality)
             }
         }
+
+        #endif
 
         // 3) 最后兜底：原样返回标准地址，交给 AVPlayer 再试（避免预检误杀）。
         //    试听流仍标记 isPreview，调用方据此跳过音频缓存
@@ -746,22 +761,32 @@ public actor NeteaseProvider: MusicProvider {
             return cached
         }
 
-        try await helper.startIfNeeded()
-        let url = try await helper.makeURL(path: path, query: query)
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        if method == "POST" {
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        }
-        await helper.applyAuth(to: &request)
-
-        // 通过 query 传递 cookie（辅助进程转发到网易云）
-        // 通过自定义 header 传递 cookie，由辅助进程注入转发，避免出现在 URL 中
-        if let cookie = cookie, !cookie.isEmpty {
-            request.setValue(cookie, forHTTPHeaderField: "X-CT-Cookie")
-        }
-
         do {
+            #if os(iOS)
+            let data: Data
+            do {
+                data = try await NeteaseDirectTransport.shared.mobileRequest(path, query: query, cookie: cookie)
+            } catch let error as MusicError {
+                if case .apiError(let code, _) = error, [301, 401, 403].contains(code), noteAuthRejection {
+                    noteSessionRejection()
+                }
+                throw error
+            }
+            #else
+            try await helper.startIfNeeded()
+            let url = try await helper.makeURL(path: path, query: query)
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            if method == "POST" {
+                request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            }
+            await helper.applyAuth(to: &request)
+
+            // 通过自定义 header 传递 cookie，由辅助进程注入转发，避免出现在 URL 中
+            if let cookie = cookie, !cookie.isEmpty {
+                request.setValue(cookie, forHTTPHeaderField: "X-CT-Cookie")
+            }
+
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw MusicError.invalidResponse }
             // 301/403 都不是「会话失效」的证据，只是一个接口在说「我这儿没登录」。
@@ -782,6 +807,7 @@ public actor NeteaseProvider: MusicProvider {
             guard (200...299).contains(http.statusCode) else {
                 throw MusicError.apiError(code: http.statusCode, message: "HTTP \(http.statusCode)")
             }
+            #endif
             // 同样地，HTTP 200 + body code 301 也只是「这个接口说没登录」。
             // 会话失效的错误响应都是小包；大响应（如 100 首曲目）跳过整包反序列化，
             // 避免这里 JSONSerialization 一遍、调用方 parseJSON 再一遍的双重开销
@@ -1072,6 +1098,7 @@ public actor NeteaseProvider: MusicProvider {
 }
 
 // MARK: - HelperProcessManager 便捷扩展
+#if os(macOS)
 extension HelperProcessManager {
     @MainActor
     func startIfNeeded() async throws {
@@ -1084,3 +1111,5 @@ extension HelperProcessManager {
         }
     }
 }
+
+#endif

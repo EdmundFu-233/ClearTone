@@ -45,10 +45,14 @@ extension NeteaseProvider: MusicSocialProvider {
         let cookie = try await requireLoginCookie()
         // 走 eapi 路由：playlist_subscribe.js 内部强制 checkToken=v2，
         // 辅助进程会为每次调用现取反作弊 token；iOS 直连没有这个能力，
-        // 会在 NeteaseEndpoint.orderedPayload 处显式失败而不是静默降级。
-        let route = subscribe ? "/playlist/subscribe" : "/playlist/unsubscribe"
+        // 会在 NeteaseMobileRoute 显式失败而不是静默降级。
+        //
+        // **取消收藏也打这一条**：module 用 `query.t == 1 ? 'subscribe' :
+        // 'unsubscribe'` 自己分流，而 helper 的路由是从 module 文件名推出来的
+        // （server.js:78），压根不存在 `/playlist/unsubscribe` —— 早先按名字
+        // 分成两条，取消收藏在 macOS 上是实打实的 404。
         let json = try parseJSON(
-            try await request(route, query: ["id": id, "t": subscribe ? "1" : "2"],
+            try await request("/playlist/subscribe", query: ["id": id, "t": subscribe ? "1" : "0"],
                               cookie: cookie, method: "POST")
         )
         try requireWriteSucceeded(json, action: subscribe ? "收藏歌单" : "取消收藏")
@@ -135,41 +139,44 @@ extension NeteaseProvider: MusicSocialProvider {
     }
 
     // MARK: - 收藏专辑 / 歌手 / 电台
+    //
+    // 三者都**只有 sub 一条路由**：module 文件名就是 `album_sub.js` /
+    // `artist_sub.js` / `dj_sub.js`，helper 拿文件名推路由（server.js:78），
+    // 所以 `/album/unsub` 这类名字在 helper 里根本不存在 —— 早先照着上游
+    // uri 分成两条，取消收藏在 macOS 上 404。方向一律由 `query.t` 决定。
 
     public func subscribeAlbum(id: String, subscribe: Bool) async throws {
         try await toggleSub(
-            subRoute: "/album/sub", unsubRoute: "/album/unsub",
-            id: id, subscribe: subscribe, action: "专辑"
+            route: "/album/sub", id: id, subscribe: subscribe, action: "专辑"
         )
     }
 
     public func subscribeArtist(id: String, subscribe: Bool) async throws {
         try await toggleSub(
-            subRoute: "/artist/sub", unsubRoute: "/artist/unsub",
-            id: id, subscribe: subscribe, action: "歌手"
+            route: "/artist/sub", id: id, subscribe: subscribe, action: "歌手"
         )
     }
 
     public func subscribeRadio(id: String, subscribe: Bool) async throws {
         // 注意参数名是 `rid` 不是 `id`（dj_sub.js: `data = { id: query.rid }`）
         try await toggleSub(
-            subRoute: "/dj/sub", unsubRoute: "/dj/unsub",
-            id: id, subscribe: subscribe, action: "电台",
+            route: "/dj/sub", id: id, subscribe: subscribe, action: "电台",
             queryKey: "rid"
         )
     }
 
     private func toggleSub(
-        subRoute: String,
-        unsubRoute: String,
+        route: String,
         id: String,
         subscribe: Bool,
         action: String,
         queryKey: String = "id"
     ) async throws {
         let cookie = try await requireLoginCookie()
+        // `t` 是 module 的分流开关：`query.t == 1` → sub，否则 unsub
+        // （三个 module 都用松散比较，所以 "1" / "0" 都成立）。
         let json = try parseJSON(
-            try await request(subscribe ? subRoute : unsubRoute,
+            try await request(route,
                               query: [queryKey: id, "t": subscribe ? "1" : "0"],
                               cookie: cookie, method: "POST")
         )

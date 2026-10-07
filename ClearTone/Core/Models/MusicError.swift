@@ -15,6 +15,11 @@ public enum MusicError: LocalizedError, Sendable, Equatable {
     case helperProcessUnavailable
     case helperProcessTimeout
     case helperAuthFailed
+    /// 网络请求超时。**与 `.helperProcessTimeout` 的区别在于平台**：
+    /// macOS 有本地 Node 辅助进程，超时确实是「本地服务没回」；
+    /// iOS 是原生直连，压根没有辅助进程 —— 在那儿弹「本地服务响应超时」
+    /// 只会让排查的人一头雾水。
+    case requestTimeout
     case invalidResponse
     case cancelled
     case unsupportedFormat(String)
@@ -33,6 +38,7 @@ public enum MusicError: LocalizedError, Sendable, Equatable {
         case .helperProcessUnavailable: return "本地服务不可用，请尝试重启应用"
         case .helperProcessTimeout: return "本地服务响应超时"
         case .helperAuthFailed: return "本地服务鉴权失败"
+        case .requestTimeout: return "请求超时，请稍后重试"
         case .invalidResponse: return "服务器返回数据格式异常"
         case .cancelled: return "操作已取消"
         case .unsupportedFormat(let format): return "不支持的音频格式：\(format)"
@@ -53,7 +59,7 @@ public enum MusicError: LocalizedError, Sendable, Equatable {
     /// 值得自动重试的错误。用于「加载失败 → 点重试」之外的自动退避重试。
     public var isRetryable: Bool {
         switch self {
-        case .networkUnavailable, .rateLimited, .helperProcessTimeout, .helperProcessUnavailable:
+        case .networkUnavailable, .rateLimited, .helperProcessTimeout, .helperProcessUnavailable, .requestTimeout:
             return true
         case .apiError(let code, _):
             // 5xx 与 429 是服务端/限流侧的暂时问题；4xx 是请求本身错了，重试没用
@@ -72,21 +78,45 @@ public enum MusicError: LocalizedError, Sendable, Equatable {
     ///    都是中文文案；单测也没法断言。
     /// 2. 底层 `URLError` 的语义（超时 / 断网 / 被取消）被整个丢掉，
     ///    `.cancelled` 认不出来，取消的请求会被当成真实失败弹给用户。
+    /// 平台是否有本地 Node 辅助进程。
+    ///
+    /// iOS 走 `NeteaseDirectTransport` 原生直连，**没有** helper ——
+    /// 「本地服务不可用/超时」这类文案在 iOS 上描述的是一个不存在的东西。
+    static var isHelperBacked: Bool {
+        #if os(iOS)
+        return false
+        #else
+        return true
+        #endif
+    }
+
+    /// `URLError.code` → `MusicError`。
+    ///
+    /// 抽成带 `helperBacked` 参数的纯函数，是为了让 macOS 上的离线单测
+    /// 也能覆盖 iOS 那一半分支（测试 target 只跑 macOS）。
+    static func normalizeURLError(_ code: URLError.Code, helperBacked: Bool) -> MusicError? {
+        switch code {
+        case .cancelled:
+            return .cancelled
+        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+            return .networkUnavailable
+        case .timedOut:
+            return helperBacked ? .helperProcessTimeout : .requestTimeout
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return .networkUnavailable
+        case .resourceUnavailable:
+            return helperBacked ? .helperProcessUnavailable : .networkUnavailable
+        default:
+            return nil
+        }
+    }
+
     public static func from(_ error: Error) -> MusicError {
         if let musicError = error as? MusicError { return musicError }
 
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .cancelled: return .cancelled
-            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
-                return .networkUnavailable
-            case .timedOut: return .helperProcessTimeout
-            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
-                return .networkUnavailable
-            case .resourceUnavailable:
-                return .helperProcessUnavailable
-            default: break
-            }
+        if let urlError = error as? URLError,
+           let mapped = normalizeURLError(urlError.code, helperBacked: isHelperBacked) {
+            return mapped
         }
 
         let nsError = error as NSError

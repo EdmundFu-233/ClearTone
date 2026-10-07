@@ -48,15 +48,33 @@ final class NeteaseEapiTests: XCTestCase {
             uri: "/api/search/hot",
             business: .object([("type", .int(1111))])
         )
-        XCTAssertTrue(got.hasPrefix("886AF8D09CBF98AE6DEE4A18C0124D90E49B69771D767F8636040"))
+        XCTAssertEqual(got, "886AF8D09CBF98AE6DEE4A18C0124D90E49B69771D767F86360407771BFDD3C5CBC37FFB464977C270320FB311B703FC35BE63F93DB123A6E172F6E42701E4B8F90200DF8B889B6BE365EE0C268B7C5F744EAC137FBF448B596EBF81AA62FE2A293BCA03AB705694A2A227FD931DFC3A582EFB89D25D48BB12DC1031EF8626CA5554A4C791F0AD236697A8D85C627DBF3C22A55495DB727302CA58C0372D930F6B1F8C7C612D0C3D5FC7080F14DF8EAFE0BB87C3625C4B40F106AC3A9FDA3501BA30CA7FD02A5B33E3565F2B6DDA162281C7E94520F54F66A30BB631932B914C64E522FEECA4BDCBFF665D391F4023663E712D63B59FEED85F9DB27F8385DA49A4AF346E6297A796DDB0A5647ABC4AD6068B6E3A9DD8AD4D20504B21BD71DCC091A80053C0EAB2AB57805B57C93AD602B3B7450729DAA17652D242D18E8DDC465EEF4A69DCB79E93C1D2301D38DAC2651A9B5ADD84265760591BE248A8F37DB77053765B94655D8358A7628FCD75ECC5")
     }
 
+    /// `type` 是写死的数字字面量 `1111`，调用方传什么都不影响 payload。
+    func testSearchHotHardcodedTypeIgnoresQuery() {
+        let payload = NeteaseEndpoint.orderedPayload(forRoute: "/search/hot", query: [:])
+        XCTAssertEqual(OrderedJSON.encode(payload ?? .null), #"{"type":1111}"#)
+        // 上游 `search_hot.js` 根本不读 query.type，所以传进去只会让
+        // 签名与辅助进程发出去的不一致 —— 必须被「未登记键」挡下。
+        XCTAssertNil(NeteaseEndpoint.orderedPayload(forRoute: "/search/hot", query: ["type": "1111"]))
+    }
+
+    /// `daily_signin.js` 是 `type: query.type || 0`，而 query 来自 Express
+    /// —— **有值时拿到的是字符串 `'0'`**，发 `0` 就与辅助进程不是同一个签名。
+    ///
+    /// 前缀只覆盖 uri（`/api/point/dailyTask-36cd479b`），挡不住键值差异，
+    /// 所以这里必须整串相等。
     func testDailySigninMatchesNodeVector() throws {
         let got = try eapiParams(
             uri: "/api/point/dailyTask",
-            business: .object([("type", .int(0))])
+            business: .object([("type", .string("0"))])
         )
-        XCTAssertTrue(got.hasPrefix("04F1A0AB8150EFD085BC839891D19E2E488A2D6C2924C5589260A"))
+        XCTAssertEqual(got, "04F1A0AB8150EFD085BC839891D19E2E488A2D6C2924C5589260A62E82B1A0D319E3E63A1D24E48111D51D5C70B07F59004578442808066D32D21E2C2216D4ED14B5B94FADA0A737C9E53F9987371B0ADA0E2B51511CA022D8465C978D074FEB2A7DF8099D3FB2AF055E42FEB08EC35D1E2DE81684506E6E6613BDA8FE0037934302016E1D6C7091D2A2B647DD9770FBC39E770E77FD65AF6A77C21A742DA7219555F35E4C17DA0DBB412A5E5BDC0C8055FD4FA5B94D31BB96B2DABF32F7288D90CB61020601C910D476622BE2F0823BFCD11C466FA0A7C9F45EB5598D8F7E7E47D70F97B5D78105A543C8CA13A2CF83C1A446A747208EF8B3B685853856BB5EC926E18093711D76A68B7B980BC64588FF9F3F875981AE60F898E188F920E3AB7AC2724C77640F723B1F8057161577E7286F4EF1BE741C9EF075A2E77BE6E036151EBE2A92B4FA1E11468BA5E971A6333F65EF5F6C14B1D6E1DB7D031A236C15A7D3B344789FBF4131D6B2CF8EBD9ED317D35E3DA22FCEC0B553AF4BA1D7DC57")
+        // 同样的 uri，数字 0 → 完全不同的密文。签名失败在界面上只表现为
+        // 「接口报错」，所以这条对照必须是整串的。
+        let asNumber = try eapiParams(uri: "/api/point/dailyTask", business: .object([("type", .int(0))]))
+        XCTAssertNotEqual(got, asNumber, "字符串 '0' 与数字 0 必须产生不同密文")
     }
 
     func testPlaylistTracksMatchesNodeVector() throws {
@@ -198,12 +216,66 @@ final class NeteaseEapiTests: XCTestCase {
         )
     }
 
-    /// 数字型参数不能被当字符串加引号（Node 侧是数字字面量）
+    /// 写死的数字/布尔字面量不能被当字符串加引号；
+    /// 取自 query 的值反过来必须是字符串 —— Express 就是这么给的。
+    func testHardcodedParamsAreNotQuotedButQueryValuesAre() {
+        // playlist_detail.js: `{ id: query.id, n: 100000, s: query.s || 8 }`
+        let playlist = NeteaseEndpoint.orderedPayload(forRoute: "/playlist/track/all", query: ["id": "1"])
+        XCTAssertEqual(
+            OrderedJSON.encode(playlist ?? .null),
+            #"{"id":"1","n":100000,"s":8}"#,
+            "id 来自 query → 字符串；n/s 是上游写死的 → 数字"
+        )
+
+        // cloudsearch.js: limit/offset 取自 query（字符串），
+        // total 是写死的 true —— 这四种类型混在同一条 payload 里，全对才叫对
+        let search = NeteaseEndpoint.orderedPayload(forRoute: "/cloudsearch", query: [
+            "keywords": "周杰伦", "type": "1000", "limit": "30", "offset": "60",
+        ])
+        XCTAssertEqual(
+            OrderedJSON.encode(search ?? .null),
+            #"{"s":"周杰伦","type":"1000","limit":"30","offset":"60","total":true}"#
+        )
+    }
+
+    /// 登记表里新增的三条认证路由（此前被误标 `.plain`）。
+    /// 三条的 uri / crypto / payload 都与 `api/module/*.js` 逐字对照过。
+    func testAuthRoutesWereFixedToEapi() {
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/login/qr/key")?.apiPath, "/api/login/qrcode/unikey")
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/login/qr/key")?.crypto, .eapi)
+        XCTAssertEqual(
+            OrderedJSON.encode(NeteaseEndpoint.orderedPayload(forRoute: "/login/qr/key", query: [:]) ?? .null),
+            #"{"type":3}"#
+        )
+
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/login/qr/check")?.apiPath, "/api/login/qrcode/client/login")
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/login/qr/check")?.crypto, .eapi)
+        let check = NeteaseEndpoint.orderedPayload(forRoute: "/login/qr/check", query: [
+            "key": "fixture", "timestamp": "1700000000000", "randomCNIP": "true",
+        ])
+        XCTAssertEqual(OrderedJSON.encode(check ?? .null), #"{"key":"fixture","type":3}"#,
+                       "timestamp / randomCNIP 是辅助进程的本地开关，不进 payload")
+
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/logout")?.crypto, .eapi)
+        XCTAssertEqual(
+            OrderedJSON.encode(NeteaseEndpoint.orderedPayload(forRoute: "/logout", query: [:]) ?? .null),
+            "{}",
+            "logout.js: data 恒为 {}，认证只靠 cookie"
+        )
+
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/cloudsearch")?.crypto, .eapi)
+        XCTAssertEqual(NeteaseEndpoint.endpoint(forRoute: "/cloudsearch")?.apiPath, "/api/cloudsearch/pc")
+    }
+
+    /// 数字型常量不能被当字符串加引号（`artist_songs.js` 的 `work_type: 1`）
     func testNumericParamsAreNotQuoted() {
-        guard let payload = NeteaseEndpoint.orderedPayload(
-            forRoute: "/search/hot", query: ["type": "1111"]
-        ) else { return XCTFail("应当能构造出有序参数") }
-        XCTAssertEqual(OrderedJSON.encode(payload), #"{"type":1111}"#)
+        let payload = NeteaseEndpoint.orderedPayload(forRoute: "/artist/songs", query: [
+            "id": "1", "order": "hot", "offset": "0", "limit": "50",
+        ])
+        XCTAssertEqual(
+            OrderedJSON.encode(payload ?? .null),
+            #"{"id":"1","private_cloud":"true","work_type":1,"order":"hot","offset":"0","limit":"50"}"#
+        )
     }
 
     func testOrderedPayloadForFixedParamlessRoutes() {

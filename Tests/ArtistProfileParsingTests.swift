@@ -130,6 +130,9 @@ final class ArtistProfileParsingTests: XCTestCase {
 
     /// 收藏改走 `/song/like`（eapi）：module 读 `query.id`/`query.uid`，
     /// 却放进 data 的 `trackId`/`userid`。重命名不登记的话直连层会拼错键名。
+    ///
+    /// `like` 是 module 里 `query.like !== 'false'` 算出来的**布尔**，
+    /// 不是 query 里的那个字符串 —— 发 `"true"` 与辅助进程不是同一个签名。
     func testSongLikeOrderedParamsUsesTrackIdAndUserid() throws {
         let payload = try XCTUnwrap(NeteaseEndpoint.orderedPayload(
             forRoute: "/song/like",
@@ -137,8 +140,14 @@ final class ArtistProfileParsingTests: XCTestCase {
         ))
         XCTAssertEqual(
             OrderedJSON.encode(payload),
-            #"{"trackId":"3438968283","userid":"86080189","like":"true"}"#
+            #"{"trackId":"3438968283","userid":"86080189","like":true}"#
         )
+        // 只有字面 "false" 才是 false，缺省为 true —— 与上游 `!== 'false'` 一致
+        let absent = try XCTUnwrap(NeteaseEndpoint.orderedPayload(
+            forRoute: "/song/like",
+            query: ["id": "1", "uid": "2"]
+        ))
+        XCTAssertEqual(OrderedJSON.encode(absent), #"{"trackId":"1","userid":"2","like":true}"#)
     }
 
     /// 键名错成 `id`/`uid` 必须被挡住

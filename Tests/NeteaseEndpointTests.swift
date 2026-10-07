@@ -25,13 +25,13 @@ final class NeteaseEndpointTests: XCTestCase {
             // 歌单
             "/playlist/detail", "/playlist/track/all", "/playlist/create",
             "/playlist/delete", "/playlist/name/update", "/playlist/tracks",
-            "/playlist/subscribe", "/playlist/unsubscribe", "/playlist/subscribers",
+            "/playlist/subscribe", "/playlist/subscribers",
             "/playlist/catlist", "/playlist/hot", "/top/playlist",
             // 专辑 / 歌手
-            "/album", "/album/sub", "/album/unsub", "/album/sublist", "/album/newest",
+            "/album", "/album/sub", "/album/sublist", "/album/newest",
             "/artist/detail", "/artist/top/song", "/artist/album",
             "/artist/songs", "/artist/desc", "/artist/mv",
-            "/artist/sub", "/artist/unsub", "/artist/sublist",
+            "/artist/sub", "/artist/sublist",
             // 用户数据
             "/user/playlist", "/likelist", "/like", "/song/like", "/user/record",
             "/user/level", "/user/subcount", "/daily_signin",
@@ -43,7 +43,7 @@ final class NeteaseEndpointTests: XCTestCase {
             "/toplist", "/top/song", "/top/album",
             // 电台
             "/dj/catelist", "/dj/hot", "/dj/recommend", "/dj/program",
-            "/dj/detail", "/dj/sub", "/dj/unsub", "/dj/sublist",
+            "/dj/detail", "/dj/sub", "/dj/sublist",
             // 评论
             "/comment/new", "/comment/music", "/comment/hot", "/comment/like",
             // 消息
@@ -107,6 +107,96 @@ final class NeteaseEndpointTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("ClearTone/Providers/Netease")
             .path
+    }
+
+    // MARK: - 与上游 module 的存在性对照
+
+    /// 登记表里每条路由都必须**真的存在**对应的 `api/module/*.js`。
+    ///
+    /// helper 的路由是拿文件名推出来的（`server.js:78` 把 `_` 换成 `/`，
+    /// 外加一张只覆盖三个文件的 `special` 表），所以 `album_unsub.js`
+    /// 不存在就等于 `/album/unsub` 不存在 —— 而这类路由在 macOS 上的
+    /// 症状是 404，在 iOS 上因为压根不走 helper 而毫无痕迹。
+    ///
+    /// `/album/unsub`、`/artist/unsub`、`/dj/unsub`、`/playlist/unsubscribe`
+    /// 就是这么在表里活了一阵子的。
+    func testEveryKnownRouteHasAnUpstreamModuleFile() throws {
+        let moduleDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("ClearTone/Resources/HelperRuntime/api/module")
+            .path
+        // server.js 的 special 表：文件名里的 `_` 不当作路径分隔符
+        let special: Set<String> = ["/daily_signin", "/personal_fm", "/fm_trash"]
+
+        for route in NeteaseEndpoint.knownRoutes {
+            let fileName = route.dropFirst().replacingOccurrences(of: "/", with: "_") + ".js"
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(
+                atPath: moduleDir + "/" + fileName, isDirectory: &isDirectory
+            ) && !isDirectory.boolValue
+            XCTAssertTrue(exists, "\(route) 没有对应的 module 文件 \(fileName) —— helper 上不存在这条路由")
+
+            // 除了 special 表里的三条，文件名反推回来必须还是这条路由本身
+            guard !special.contains(route) else { continue }
+            let derived = "/" + String(fileName.dropLast(3)).replacingOccurrences(of: "_", with: "/")
+            XCTAssertEqual(derived, route,
+                           "\(route) → \(fileName) → \(derived)：helper 会把它挂到别的路径上")
+        }
+    }
+
+    // MARK: - iOS 直连可达性
+
+    /// iOS 只能走 `NeteaseMobileRoute`，**不走 helper**。
+    ///
+    /// 于是「表里登记了但 switch 里没适配」的路由在 iOS 上是静默的：
+    /// `make` 抛 `iOS 暂未适配此接口`，界面只是不显示而已 ——
+    /// `/search/suggest` 就这么让搜索联想一直是空的。
+    ///
+    /// 下面这份清单是 **iOS 会打到的路由**，逐条钉死在 switch 里：
+    /// 从 `NeteaseMobileRoute` 删掉任何一条，这里立刻红。
+    func testIOSReachableRoutesAreAdaptedByMobileRoute() {
+        let reachable = [
+            // 登录 / 会话
+            "/login/qr/key", "/login/qr/check", "/user/account", "/logout",
+            // 搜索（iOS 的联想就靠 /search/suggest）
+            "/cloudsearch", "/search/suggest",
+            // 首页推荐
+            "/recommend/resource", "/recommend/songs", "/personalized",
+            // 播放链路
+            "/playlist/detail", "/playlist/track/all", "/song/detail",
+            "/song/url/v1", "/song/url/match", "/lyric/new",
+            // 详情页
+            "/album", "/artist/detail", "/artist/album", "/artist/songs",
+            "/artist/top/song",
+            // 评论
+            "/comment/new", "/comment/like",
+            // 资料库 / 收藏
+            "/user/playlist", "/likelist", "/song/like",
+            "/playlist/create", "/playlist/delete", "/playlist/tracks",
+            "/playlist/name/update",
+        ]
+        for route in reachable {
+            do {
+                _ = try NeteaseMobileRoute.make(route, query: [:])
+            } catch let error as MusicError {
+                if case .unknown(let message) = error, message.contains("暂未适配") {
+                    XCTFail("\(route) 没有在 NeteaseMobileRoute 里适配 —— iOS 上会静默失败：\(message)")
+                }
+            } catch {
+                XCTFail("\(route) 适配过程中抛出了非 MusicError：\(error)")
+            }
+        }
+    }
+
+    /// 登记表里误标过 `.plain` 的那几条 —— 直连层会照着表选加密方式，
+    /// 选错的症状是「HTTP 200 但空 body」。
+    func testAuthRoutesAreNotPlain() {
+        for route in ["/login/qr/key", "/login/qr/check", "/logout", "/cloudsearch"] {
+            let endpoint = NeteaseEndpoint.endpoint(forRoute: route)
+            XCTAssertNotNil(endpoint, "\(route) 未登记")
+            XCTAssertNotEqual(endpoint?.crypto, .plain, "\(route) 是 eapi，不是明文")
+        }
     }
 
     func testUnknownRouteReturnsNil() {

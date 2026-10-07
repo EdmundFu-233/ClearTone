@@ -2,27 +2,9 @@ import Foundation
 
 /// 不经辅助进程、直接向网易云发请求的传输层。
 ///
-/// ## 当前状态：**已保留，但生产路径不调用它**
-///
-/// macOS 版走 `HelperProcessManager`（Node + api-enhanced），由 Node 侧完成
-/// 加密与路由翻译。`ClearToneiOS` target 已移除，所以本文件目前**没有生产调用方**。
-///
-/// 保留它有两个实际理由，不是「舍不得删」：
-///
-/// 1. **它是唯一一份不依赖 Node 的实现。** 加密链路（weapi 的双重 AES + raw RSA、
-///    eapi 的 MD5 + AES-ECB）已逐字节对过 Node 的标准答案，见 `NeteaseCrypto`
-///    与 `Tests/NeteaseEapiTests.swift`。哪天要去掉 169MB 的 Node 依赖，
-///    或者要在别的平台上跑，这就是现成的路基。
-/// 2. **它是接口约定的可执行文档。** 域名、必需客户端 cookie、表单编码
-///    对标 `URLSearchParams` 这几条坑，都固化在下面的注释与代码里。
-///
-/// ## 如果要重新启用
-///
-/// 1. 配好 `NeteaseEndpoint` 里对应路由的 `orderedParamsKey`（eapi 键序敏感，
-///    未登记会显式抛错而不是静默发错签名）；
-/// 2. 在传输层入口按 `endpoint.crypto` 分派 `.plain` / `.weapi` / `.eapi`；
-/// 3. 用真机联网逐个验证 —— 这些响应结构多数只在上游 `home.md` 里有片段，
-///    离线测试只能验证「我们读的键名与约定一致」。
+/// iOS 的生产传输；macOS 继续走辅助进程。
+/// 路由参数转换见 NeteaseMobileRoute，xeapi 见 NeteaseXeapi。
+/// 响应解析仍与 macOS 共用 NeteaseProvider。
 ///
 /// ## 两种请求形态（实测确认）
 ///
@@ -189,29 +171,53 @@ public actor NeteaseDirectTransport {
         }
     }
 
+    /// JSON 值 → 表单字符串。
+    ///
+    /// **不能用 `String(describing:)`**：`JSONSerialization` 给回来的是 `NSNumber`，
+    /// 布尔会被描述成 `"1"`/`"0"`（Node 的 `querystring` 发的是 `"true"`/`"false"`），
+    /// 数组会被描述成多行的 `(\n 1,\n 2\n)`。两种都会让对端收下错的 body，
+    /// 而响应只是「参数不对」，不指向任何一行代码。
+    ///
+    /// 遇到标量以外的类型直接抛错 —— 宁可显式失败，也不猜。
+    static func formValues(from payload: [String: Any]) throws -> [String: String] {
+        var out: [String: String] = [:]
+        for (key, value) in payload {
+            switch value {
+            case let string as String:
+                out[key] = string
+            case let number as NSNumber:
+                if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                    out[key] = number.boolValue ? "true" : "false"
+                } else {
+                    out[key] = number.stringValue
+                }
+            default:
+                throw MusicError.invalidResponse
+            }
+        }
+        return out
+    }
+
     private func perform(
         url: String,
         body: Data,
         cookie: String?,
         extraHeaderCookie: String? = nil
-    ) async throws -> Data {        guard let target = URL(string: url) else { throw MusicError.invalidResponse }
+    ) async throws -> Data {
+        guard let target = URL(string: url) else { throw MusicError.invalidResponse }
         var request = URLRequest(url: target)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("https://music.163.com", forHTTPHeaderField: "Referer")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        if let cookie, !cookie.isEmpty {
-            request.setValue(cookie + clientCookieSuffix, forHTTPHeaderField: "Cookie")
-        } else if let extraHeaderCookie, !extraHeaderCookie.isEmpty {
-            request.setValue(extraHeaderCookie, forHTTPHeaderField: "Cookie")
-        }
+        request.setValue(extraHeaderCookie ?? ((cookie ?? "") + clientCookieSuffix), forHTTPHeaderField: "Cookie")
         request.httpBody = body
 
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw MusicError.invalidResponse }
             if http.statusCode == 301 || http.statusCode == 401 || http.statusCode == 403 {
-                throw MusicError.apiError(code: 301, message: "登录状态已失效")
+                throw MusicError.apiError(code: http.statusCode, message: "网易云拒绝了这次请求，请稍后重试")
             }
             if http.statusCode == 429 { throw MusicError.rateLimited }
             guard (200...299).contains(http.statusCode) else {
@@ -220,6 +226,14 @@ public actor NeteaseDirectTransport {
             // HTTP 200 但空 body 是表单编码错误（base64 的 + 未编码）的特征
             if data.isEmpty {
                 throw MusicError.invalidResponse
+            }
+            if target.path == "/eapi/login/qrcode/client/login",
+               var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let cookies = HTTPCookie.cookies(withResponseHeaderFields: http.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+                    result[String(describing: pair.key)] = String(describing: pair.value)
+                }, for: target)
+                json["cookie"] = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+                return try JSONSerialization.data(withJSONObject: json)
             }
             return data
         } catch let error as URLError where error.code == .cancelled {
@@ -231,5 +245,42 @@ public actor NeteaseDirectTransport {
             if let musicError = error as? MusicError { throw musicError }
             throw MusicError.from(error)
         }
+    }
+}
+
+
+extension NeteaseDirectTransport {
+    func mobileRequest(_ route: String, query: [String: String], cookie: String?) async throws -> Data {
+        // helper 的 track/all 是先读 trackIds 再查 song/detail 的复合接口。
+        if route == "/playlist/track/all" {
+            let detail = try await mobileRequest("/playlist/detail", query: ["id": query["id"] ?? ""], cookie: cookie)
+            guard let json = try JSONSerialization.jsonObject(with: detail) as? [String: Any],
+                  let playlist = json["playlist"] as? [String: Any],
+                  let tracks = playlist["trackIds"] as? [[String: Any]],
+                  let offset = Int(query["offset"] ?? "0"), offset >= 0,
+                  let limit = Int(query["limit"] ?? "100"), (1...1000).contains(limit) else { throw MusicError.invalidResponse }
+            let ids = tracks.dropFirst(offset).prefix(limit).compactMap { $0["id"].map { String(describing: $0) } }
+            if ids.isEmpty { return Data("{\"songs\":[],\"code\":200}".utf8) }
+            return try await mobileRequest("/song/detail", query: ["ids": ids.joined(separator: ",")], cookie: cookie)
+        }
+        let request = try NeteaseMobileRoute.make(route, query: query)
+        let data: Data
+        switch request.crypto {
+        case .plain:
+            let payload = try JSONSerialization.jsonObject(with: Data(OrderedJSON.encode(request.payload).utf8)) as? [String: Any] ?? [:]
+            data = try await plainAPI(request.path, params: try Self.formValues(from: payload), cookie: cookie)
+        case .weapi:
+            let payload = try JSONSerialization.jsonObject(with: Data(OrderedJSON.encode(request.payload).utf8)) as? [String: Any] ?? [:]
+            data = try await weapi(request.path, params: payload, cookie: cookie)
+        case .eapi:
+            data = try await eapi(request.path, payload: request.payload, cookie: cookie)
+        case .xeapi:
+            data = try await NeteaseXeapi.shared.request(path: request.path, payload: request.payload, cookie: cookie)
+        }
+        if route == "/login/qr/key" {
+            let json = try JSONSerialization.jsonObject(with: data)
+            return try JSONSerialization.data(withJSONObject: ["code": 200, "data": json])
+        }
+        return data
     }
 }

@@ -3,11 +3,9 @@ options:
   bundleIdPrefix: com.cleartone
   deploymentTarget:
     macOS: "14.0"
+    iOS: "17.0"
   createIntermediateGroups: true
 
-# 仅 macOS。曾经的 ClearToneiOS target 已移除：
-# 它没有登录页、设置页、歌单详情页，是一个不完整的第二交付面。
-# 若要恢复，见 git history（commit 在移除之前）。
 targets:
   ClearTone:
     type: application
@@ -35,6 +33,12 @@ targets:
             UTTypeConformsTo: [public.data]
             UTTypeTagSpecification:
               public.filename-extension: [cleartonesong]
+        # **版本号必须指向 build setting，不能写字面量。**
+        # XcodeGen 不写这两项时会自己填 `1.0` / `1`，于是 Info.plist 里的
+        # 值与 `MARKETING_VERSION: 0.1.0` 永远对不上 —— 关于"装的是哪个版本"
+        # 的结论只能靠猜。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.app
@@ -79,6 +83,57 @@ targets:
         com.apple.security.network.client: true
         com.apple.security.files.user-selected.read-only: true
     dependencies: []
+
+  ClearToneiOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ClearToneiOS
+      - path: ClearTone/Core
+        excludes: ["Networking/HelperProcessManager.swift"]
+      - path: ClearTone/Providers/Netease
+      - path: ClearTone/Playback
+      - path: ClearTone/App/AppState.swift
+      - path: ClearTone/App/SettingsStore.swift
+      - path: ClearTone/Rendering/SpectrumAnalyzer.swift
+      - path: ClearTone/DesignSystem/CTDesignSystem.swift
+      - path: ClearTone/DesignSystem/L10n.swift
+      - path: ClearTone/Resources/Assets.xcassets
+    info:
+      path: ClearToneiOS/Info.plist
+      properties:
+        # 与 macOS 同理：不显式声明的话 XcodeGen 会填 `1.0` / `1`，
+        # 与 `MARKETING_VERSION: 0.1.0` 对不上，而 docs/ios 里记的是 0.1.0。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: 澄音
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.cleartone.song
+            UTTypeDescription: 澄音歌曲
+            UTTypeConformsTo: [public.data]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.ios
+        PRODUCT_NAME: ClearToneiOS
+        PRODUCT_MODULE_NAME: ClearTone
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        # 在 Xcode 选择自己的 Personal Team，不继承 macOS 的团队或 entitlement。
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
 
   # ==========================================================
   # 单元测试（macOS host）
@@ -138,5 +193,14 @@ schemes:
       config: Debug
       targets:
         - ClearToneTests
+    archive:
+      config: Release
+
+  ClearToneiOS:
+    build:
+      targets:
+        ClearToneiOS: all
+    run:
+      config: Debug
     archive:
       config: Release

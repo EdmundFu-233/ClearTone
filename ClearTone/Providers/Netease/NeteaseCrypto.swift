@@ -3,12 +3,8 @@ import CommonCrypto
 
 /// 网易云 weapi / eapi 加密的纯 Swift 实现。
 ///
-/// ## 当前状态：**已保留，但生产路径不调用它**
-///
-/// macOS 版通过本地 Node.js 辅助进程（api-enhanced）访问网易云，加密由
-/// `util/crypto.js` 完成。`ClearToneiOS` target 已移除，本文件目前没有生产调用方；
-/// 保留理由见 `NeteaseDirectTransport.swift` 顶部的说明，简言之：
-/// 这是唯一一份不依赖 Node 的加密实现，且已逐字节验证。
+/// iOS 生产路径使用这些加密函数；macOS 仍通过本地 Node 辅助进程完成加密。
+/// xeapi 的实现位于 NeteaseXeapi.swift。
 ///
 /// 本文件的每一步都用 Node 侧（node-forge / CryptoJS）生成的标准答案
 /// 逐字节校验过，验证过程见 `docs/optimization-plan.md`。

@@ -73,6 +73,40 @@ final class ErrorSanitizationTests: XCTestCase {
         XCTAssertEqual(MusicError.from(URLError(.cannotFindHost)), .networkUnavailable)
     }
 
+    /// iOS 是原生直连，**没有**本地 Node 辅助进程。
+    ///
+    /// 同一个 `URLError(.timedOut)` 在 macOS 上是「本地服务响应超时」，
+    /// 在 iOS 上照抄这句话描述的是一个不存在的东西 —— 排查的人会去找
+    /// 一个根本没启动过的进程。`helperBacked` 就是为了让两边各说各的，
+    /// 并且让 iOS 那一半能在 macOS 的离线单测里被覆盖到。
+    func testURLErrorMappingDistinguishesHelperBackedPlatforms() {
+        XCTAssertEqual(MusicError.normalizeURLError(.timedOut, helperBacked: true), .helperProcessTimeout)
+        XCTAssertEqual(MusicError.normalizeURLError(.timedOut, helperBacked: false), .requestTimeout)
+
+        XCTAssertEqual(MusicError.normalizeURLError(.resourceUnavailable, helperBacked: true),
+                       .helperProcessUnavailable)
+        XCTAssertEqual(MusicError.normalizeURLError(.resourceUnavailable, helperBacked: false),
+                       .networkUnavailable)
+
+        // 两侧都不变的那些
+        for backed in [true, false] {
+            XCTAssertEqual(MusicError.normalizeURLError(.cancelled, helperBacked: backed), .cancelled)
+            XCTAssertEqual(MusicError.normalizeURLError(.networkConnectionLost, helperBacked: backed),
+                           .networkUnavailable)
+            XCTAssertEqual(MusicError.normalizeURLError(.dnsLookupFailed, helperBacked: backed),
+                           .networkUnavailable)
+            XCTAssertNil(MusicError.normalizeURLError(.badURL, helperBacked: backed))
+        }
+    }
+
+    /// `requestTimeout` 的文案必须是平台中立的，且可重试
+    func testRequestTimeoutIsNeutralAndRetryable() {
+        XCTAssertEqual(MusicError.requestTimeout.errorDescription, "请求超时，请稍后重试")
+        XCTAssertTrue(MusicError.requestTimeout.isRetryable)
+        // 走一遍脱敏出口，确认没有把内部细节带出来
+        XCTAssertEqual(MusicError.requestTimeout.userFacingMessage, "请求超时，请稍后重试")
+    }
+
     /// 被取消的请求原来会被当成真实失败弹给用户
     func testCancellationIsNotSwallowedIntoUnknownError() {
         XCTAssertEqual(MusicError.from(URLError(.cancelled)), .cancelled)

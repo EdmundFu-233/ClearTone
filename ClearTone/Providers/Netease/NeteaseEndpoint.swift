@@ -13,8 +13,28 @@ import Foundation
 ///    断言「调了但没登记」的路由不可能存在 —— `/song/detail` 当初就是这么漏掉的，
 ///    症状是 iOS 上「喜欢的音乐」必然抛「接口未适配」。
 /// 2. **直连传输的翻译层。** `NeteaseDirectTransport` 按 `crypto` 分派
-///    plain / weapi / eapi。`ClearToneiOS` target 已移除，这条路目前没有生产调用方，
+///    plain / weapi / eapi / xeapi。iOS 生产路径使用这条路，
 ///    保留理由见 `NeteaseDirectTransport.swift` 顶部说明。
+///
+/// ## 这张表怎么核对
+///
+/// 手读 `api/module/*.js` 只能看个大概，所以上游行为用**打包的 Node 运行时**
+/// 打桩复现：把 module 的 `request` 换成桩，记录它真正会发出去的
+/// `(uri, data, options.crypto)`。脚本是 `scripts/probes/endpoint-table.js`，
+/// 改这张表或改上游 api 之后跑一次：
+///
+/// ```bash
+/// ./ClearTone/Resources/HelperRuntime/bin/node scripts/probes/endpoint-table.js
+/// ```
+///
+/// 除了 uri 与加密方式，它还顺带核对两件同样致命的事：
+///
+/// - **helper 有没有这条路由。** helper 的路由是拿 module 文件名推出来的
+///   （`server.js:78` 把 `_` 换成 `/`），所以**不存在 `album_unsub.js` 就不存在
+///   `/album/unsub`** —— 登记一条上游没有的路由，macOS 上会 404。
+///   收藏/取消收藏共用一个 module，方向由 `query.t` 决定（见下）。
+/// - **`data` 的键序与 JSON 类型。** eapi 的签名覆盖整个 `JSON.stringify`
+///   结果，`{"type":0}` 与 `{"type":"0"}` 是两个不同的签名。
 ///
 /// ## 加密方式的判定依据
 ///
@@ -26,11 +46,19 @@ import Foundation
 ///   `util/request.js:218-221` 把空串解析成 `APP_CONF.encrypt ? 'eapi' : 'api'`，
 ///   而 `util/config.json` 里 `encrypt: true` —— 所以**这些 module 全部是 eapi**。
 ///
-/// 这条曾经写错成 `.plain`（5 条路由），并被 `NeteaseEndpointTests` 断言锁死。
-/// 现已按 `helper.log` 里的 `[INFO] Request Success: [eapi] <route>` 实测日志校正。
+/// 这条曾经写错成 `.plain`（`/login/qr/key`、`/login/qr/check`、`/logout`、
+/// `/cloudsearch` 等），照着表重写直连会得到错签名。现已用上述探针逐条校正。
 ///
 /// - `weapi`：AesRsaWeapi。请求发往 `music.163.com/weapi/<uri 去掉前 5 字符>`。
 /// - `plain`：明文表单，POST 到 `interface.music.163.com` + 原始 uri。
+///   **当前表里没有任何一条网络路由是 plain** —— 上游全是 eapi/weapi/xeapi；
+///   `.plain` 这个 case 只留给「module 自己不发请求」的占位行与将来可能出现的例外。
+///
+/// ## apiPath 里的模板
+///
+/// 有的 module 把参数拼进路径（`/api/v1/album/${query.id}`）。这类行把模板写成
+/// `{id}` 之类的占位符，由调用方替换 —— 写成裸前缀的话，「表里看着对、发出去少一截」
+/// 没人能发现。`NeteaseMobileRoute` 统一做替换。
 public enum NeteaseEndpoint {
 
     public enum Crypto: Sendable {
@@ -42,9 +70,9 @@ public enum NeteaseEndpoint {
         case eapi
         /// 需要运行时公钥 + 反作弊 token 的加强签名。
         ///
-        /// **直连层不支持**（`NeteaseDirectTransport` 会显式失败而不是静默降级）。
-        /// 登记它是为了让这张表如实反映上游 module 的加密方式 —— 之前
-        /// `/song/url/v1` 被标成 `.plain`，照着表重写直连会得到错签名。
+        /// 由 `NeteaseXeapi` 支持（`NeteaseDirectTransport` 直接分派过去）。
+        /// 登记它是因为上游 `song_url_v1.js` 显式 `createOption(query, 'xeapi')` ——
+        /// 早先标成 `.plain`，照着表重写直连会得到错签名。
         case xeapi
     }
 
@@ -78,15 +106,33 @@ public enum NeteaseEndpoint {
         /// module 里**写死**、不从 query 读的值。直连层必须自己补上，
         /// 否则 `JSON.stringify` 的结果与辅助进程发出去的不一致，签名必失败。
         public let constants: OrderedJSON.Value?
+        /// query 里**没给**时用的值，对标上游的 `query.x || 默认值`。
+        public let defaults: [String: OrderedJSON.Value]
+        /// 取自 query、但上游会转成**布尔**的键（如 `query.like !== 'false'`）。
+        ///
+        /// 语义与上游一致：值等于 `"false"` 才是 false，缺省走 `defaults`。
+        public let boolKeys: Set<String>
+        /// 辅助进程特有、上游 module 根本不读的 query 键。
+        ///
+        /// 「未登记键一律拒绝」是防拼错的护栏，但 `randomCNIP`、`timestamp`
+        /// 这类只对本地 helper 有意义的开关不该被它误伤 —— 发不发都不影响
+        /// payload，所以在这里显式豁免。
+        public let ignoredQueryKeys: Set<String>
 
         public init(
             _ payloadKeys: [String],
             renames: [String: String] = [:],
-            constants: OrderedJSON.Value? = nil
+            constants: OrderedJSON.Value? = nil,
+            defaults: [String: OrderedJSON.Value] = [:],
+            boolKeys: Set<String> = [],
+            ignoredQueryKeys: Set<String> = []
         ) {
             self.payloadKeys = payloadKeys
             self.renames = renames
             self.constants = constants
+            self.defaults = defaults
+            self.boolKeys = boolKeys
+            self.ignoredQueryKeys = ignoredQueryKeys
         }
 
         /// 上游 payload 键 → 辅助进程 query 键
@@ -103,15 +149,23 @@ public enum NeteaseEndpoint {
 
     /// 辅助进程路由名 → 端点。取自 `api/module/*.js` 逐一核对。
     private static let table: [String: Endpoint] = [
-        // MARK: 认证（实测：weapi 全部 code 200）
-        "/login/qr/key":    Endpoint(apiPath: "/api/login/qr/unikey", crypto: .plain),
+        // MARK: 认证
+        //
+        // 三条 qr 路由的 module 全部是裸 `createOption(query)` → eapi，
+        // 而且真实 uri 用的是 `qrcode` 而不是 `qr`（探针实测）。
+        // 早先登记成 `.plain` + `/api/login/qr/*`，两条都是错的。
+        "/login/qr/key":    Endpoint(apiPath: "/api/login/qrcode/unikey", crypto: .eapi, orderedParamsKey: "qrKey"),
+        // 上游 module 不发网络请求（本地拼 URL + qrcode 出图），crypto 无意义。
+        // 仍登记是因为 macOS 的 fetchQRCodeImage 会调它，路由不能从表里消失。
         "/login/qr/create": Endpoint(apiPath: "/api/login/qr/create", crypto: .plain),
-        "/login/qr/check":  Endpoint(apiPath: "/api/login/qr/check", crypto: .plain),
+        "/login/qr/check":  Endpoint(apiPath: "/api/login/qrcode/client/login", crypto: .eapi, orderedParamsKey: "qrCheck"),
         "/user/account":    Endpoint(apiPath: "/api/nuser/account/get", crypto: .weapi),
-        "/logout":          Endpoint(apiPath: "/api/logout", crypto: .plain),
+        // logout.js: `request('/api/logout', {}, createOption(query))` ——
+        // data 是**空对象**，只靠 cookie 认证，query 一律不发。
+        "/logout":          Endpoint(apiPath: "/api/logout", crypto: .eapi, orderedParamsKey: "logout"),
 
         // MARK: 搜索
-        "/cloudsearch":     Endpoint(apiPath: "/api/cloudsearch/pc", crypto: .plain),
+        "/cloudsearch":     Endpoint(apiPath: "/api/cloudsearch/pc", crypto: .eapi, orderedParamsKey: "cloudsearch"),
         "/search/suggest":  Endpoint(apiPath: "/api/search/suggest/web", crypto: .weapi),
         "/search/hot":      Endpoint(apiPath: "/api/search/hot", crypto: .eapi, orderedParamsKey: "searchHot"),
         "/search/hot/detail": Endpoint(apiPath: "/api/hotsearchlist/get", crypto: .weapi),
@@ -122,7 +176,8 @@ public enum NeteaseEndpoint {
         // MARK: 歌单 / 专辑
         "/playlist/detail":     Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .eapi, orderedParamsKey: "playlistDetailV6"),
         "/playlist/track/all":  Endpoint(apiPath: "/api/v6/playlist/detail", crypto: .eapi, orderedParamsKey: "playlistDetailV6"),
-        "/album":               Endpoint(apiPath: "/api/v1/album", crypto: .weapi),
+        // **apiPath 是模板**：`album.js` 打的是 `/api/v1/album/${query.id}`
+        "/album":               Endpoint(apiPath: "/api/v1/album/{id}", crypto: .weapi),
         // `artist_detail.js` 用的是裸 `createOption(query)`（第二参缺省）→ eapi，
         // 之前登记成 `.plain` 是错的。
         "/artist/detail":       Endpoint(apiPath: "/api/artist/head/info/get", crypto: .eapi, orderedParamsKey: "artistDetail"),
@@ -137,6 +192,8 @@ public enum NeteaseEndpoint {
 
         // MARK: 播放地址
         "/song/url/v1":         Endpoint(apiPath: "/api/song/enhance/player/url/v1", crypto: .xeapi),
+        // 上游 `song_url_match.js` 走的是第三方解锁（unblockmusic-utils），
+        // 不经网易云的 createOption/request，crypto 无意义。
         "/song/url/match":      Endpoint(apiPath: "/api/song/enhance/player/url", crypto: .plain),
 
         // MARK: 歌词
@@ -164,8 +221,6 @@ public enum NeteaseEndpoint {
         "/dj/recommend": Endpoint(apiPath: "/api/djradio/recommend/v1", crypto: .weapi),
         "/dj/program":   Endpoint(apiPath: "/api/dj/program/byradio", crypto: .weapi),
         "/dj/detail":    Endpoint(apiPath: "/api/djradio/v2/get", crypto: .weapi),
-        "/dj/sub":       Endpoint(apiPath: "/api/djradio/sub", crypto: .weapi),
-        "/dj/unsub":     Endpoint(apiPath: "/api/djradio/unsub", crypto: .weapi),
         "/dj/sublist":   Endpoint(apiPath: "/api/djradio/get/subed", crypto: .weapi),
 
         // MARK: 榜单 / 分类
@@ -181,22 +236,30 @@ public enum NeteaseEndpoint {
         // 注意：加歌/删歌用 `/playlist/tracks`（op=add|del），**不是**
         // `/playlist/track/add` —— 后者在 api-enhanced 里是给「视频歌单」
         // 用的，home.md 的标题就是「收藏视频到视频歌单」。
+        //
+        // 收藏与取消收藏**共用 `/playlist/subscribe`**，方向由 `query.t` 决定
+        // （`playlist_subscribe.js`: `query.t == 1 ? 'subscribe' : 'unsubscribe'`）。
+        // helper 的路由是从 module 文件名推出来的（`server.js:78`），
+        // **没有 `playlist_unsubscribe.js` 就没有 `/playlist/unsubscribe`** ——
+        // 早先登记了这条路由并照着调，macOS 上是 404。
         "/playlist/create":       Endpoint(apiPath: "/api/playlist/create", crypto: .weapi),
         "/playlist/delete":       Endpoint(apiPath: "/api/playlist/remove", crypto: .weapi),
         // 重命名走 eapi（createOption 无第二参），键序 { id, name }
         "/playlist/name/update":  Endpoint(apiPath: "/api/playlist/update/name", crypto: .eapi, orderedParamsKey: "playlistNameUpdate"),
         "/playlist/tracks":       Endpoint(apiPath: "/api/playlist/manipulate/tracks", crypto: .eapi, orderedParamsKey: "playlistTracks"),
         "/playlist/subscribe":    Endpoint(apiPath: "/api/playlist/subscribe", crypto: .eapi, orderedParamsKey: "playlistSubscribe"),
-        "/playlist/unsubscribe":  Endpoint(apiPath: "/api/playlist/unsubscribe", crypto: .eapi, orderedParamsKey: "playlistSubscribe"),
         "/playlist/subscribers":  Endpoint(apiPath: "/api/playlist/subscribers", crypto: .eapi, orderedParamsKey: "playlistSubscribers"),
         "/album/sublist":         Endpoint(apiPath: "/api/album/sublist", crypto: .weapi),
         "/artist/sublist":        Endpoint(apiPath: "/api/artist/sublist", crypto: .weapi),
 
-        // MARK: 收藏专辑 / 歌手
+        // MARK: 收藏专辑 / 歌手 / 电台
+        //
+        // 与歌单同理：三个 module 各自一个文件，方向由 `query.t` 分派
+        // （`t == 1` → sub，否则 unsub），**不存在 `*_unsub.js`**。
+        // 调用方只准用下面这三条，`t` 由 `NeteaseSocialProvider.toggleSub` 传。
         "/album/sub":   Endpoint(apiPath: "/api/album/sub", crypto: .weapi),
-        "/album/unsub": Endpoint(apiPath: "/api/album/unsub", crypto: .weapi),
-        "/artist/sub":   Endpoint(apiPath: "/api/artist/sub", crypto: .weapi),
-        "/artist/unsub": Endpoint(apiPath: "/api/artist/unsub", crypto: .weapi),
+        "/artist/sub":  Endpoint(apiPath: "/api/artist/sub", crypto: .weapi),
+        "/dj/sub":      Endpoint(apiPath: "/api/djradio/sub", crypto: .weapi),
 
         // MARK: 推荐扩展
         "/recommend/songs/dislike": Endpoint(apiPath: "/api/v2/discovery/recommend/dislike", crypto: .weapi),
@@ -211,15 +274,19 @@ public enum NeteaseEndpoint {
         // macOS helper 用 `/comment/new` 提供排序；旧的歌曲专用读取路由保留登记。
         // 点赞与取消点赞均走 `/comment/like`，由 query.t 分派原始 uri。
         "/comment/new":    Endpoint(apiPath: "/api/v2/resource/comments", crypto: .eapi, orderedParamsKey: "commentNew"),
-        "/comment/music":  Endpoint(apiPath: "/api/v1/resource/comments/R_SO_4_", crypto: .weapi),
-        "/comment/hot":    Endpoint(apiPath: "/api/v1/resource/hotcomments/R_SO_4_", crypto: .weapi),
+        // **两条都是模板**：resource id 拼在 uri 尾巴上
+        // （`comment_music.js`: `.../R_SO_4_${query.id}`；
+        //  `comment_hot.js`: `.../${resourceTypeMap[type]}${query.id}`）
+        "/comment/music":  Endpoint(apiPath: "/api/v1/resource/comments/R_SO_4_{id}", crypto: .weapi),
+        "/comment/hot":    Endpoint(apiPath: "/api/v1/resource/hotcomments/{type}{id}", crypto: .weapi),
         "/comment/like":   Endpoint(apiPath: "/api/v1/comment/like", crypto: .weapi),
 
         // MARK: 消息
         "/msg/notices":         Endpoint(apiPath: "/api/msg/notices", crypto: .weapi),
         "/msg/private":         Endpoint(apiPath: "/api/msg/private/users", crypto: .weapi),
         "/msg/private/history": Endpoint(apiPath: "/api/msg/private/history", crypto: .weapi),
-        "/msg/comments":        Endpoint(apiPath: "/api/v1/user/comments/", crypto: .weapi),
+        // **apiPath 是模板**：`msg_comments.js` 打 `/api/v1/user/comments/${query.uid}`
+        "/msg/comments":        Endpoint(apiPath: "/api/v1/user/comments/{uid}", crypto: .weapi),
 
         // MARK: 账号数据
         "/daily_signin":  Endpoint(apiPath: "/api/point/dailyTask", crypto: .eapi, orderedParamsKey: "dailySignin"),
@@ -250,20 +317,44 @@ public enum NeteaseEndpoint {
         // /api/toplist 与 /api/playlist/catalogue 都是 `request(uri, {}, ...)`，无参数
         "toplist": EapiParamSpec([]),
         "playlistCatlist": EapiParamSpec([]),
-        // search_hot.js: { type: 1111 }
-        "searchHot": EapiParamSpec(["type"]),
-        // daily_signin.js: { type: 0 }（0=安卓端 3 经验，1=web 2 经验）
+        // logout.js: `request('/api/logout', {}, ...)` —— data 是空对象，
+        // query 一个都不读（认证只靠 cookie）。
+        "logout": EapiParamSpec([], ignoredQueryKeys: ["randomCNIP", "timestamp", "cookie", "method"]),
+        // search_hot.js: `data = { type: 1111 }` —— 写死的数字字面量，
+        // **不读 query.type**，所以传 type 进来会被「未登记键」挡下。
+        "searchHot": EapiParamSpec(["type"], constants: .object([("type", .int(1111))])),
+        // login_qr_key.js: `data = { type: 3 }`（写死）
+        "qrKey": EapiParamSpec(["type"], constants: .object([("type", .int(3))]),
+                               ignoredQueryKeys: ["randomCNIP", "timestamp"]),
+        // login_qr_check.js: `data = { key: query.key, type: 3 }`
+        "qrCheck": EapiParamSpec(["key", "type"], constants: .object([("type", .int(3))]),
+                                 ignoredQueryKeys: ["randomCNIP", "timestamp"]),
+        // cloudsearch.js: `data = { s: query.keywords, type: query.type || 1,
+        //   limit: query.limit || 30, offset: query.offset || 0, total: true }`
+        // 调用方每次都传齐 type/limit/offset，所以默认值由 NeteaseMobileRoute 先补上。
+        "cloudsearch": EapiParamSpec(["s", "type", "limit", "offset", "total"],
+                                     renames: ["keywords": "s"],
+                                     constants: .object([("total", .bool(true))])),
+        // daily_signin.js: `data = { type: query.type || 0 }` —— query 来自
+        // Express，**是字符串**，所以这里发 `"0"` 而不是 `0`（与辅助进程逐字一致）。
         "dailySignin": EapiParamSpec(["type"]),
-        // playlist_subscribe.js: { id, checkToken? }
-        "playlistSubscribe": EapiParamSpec(["id"]),
+        // playlist_subscribe.js: `data = { id, checkToken? }`。
+        // `checkToken` 那半边是 `query.t === 1` 的**严格**比较，而 query 里
+        // 永远是字符串 `'1'` —— 上游实际从来不会把它放进 data，所以不登记。
+        // `t` 只决定 module 打哪条 uri，`checkToken` 只影响上游是否现取
+        // 反作弊 token —— 两者都不进 payload，在这里豁免。
+        "playlistSubscribe": EapiParamSpec(["id"], ignoredQueryKeys: ["t", "checkToken"]),
         // playlist_name_update.js: { id, name }
         "playlistNameUpdate": EapiParamSpec(["id", "name"]),
         // playlist_subscribers.js: { id, limit, offset }
         "playlistSubscribers": EapiParamSpec(["id", "limit", "offset"]),
-        // playlist_tracks.js: { op, pid, tracks: JSON字符串, imme: 'true' }
+        // playlist_tracks.js: { op, pid, trackIds: JSON字符串, imme: 'true' }
         "playlistTracks": EapiParamSpec(["op", "pid", "trackIds", "imme"]),
-        // song_like.js: { trackId: query.id, userid: query.uid, like }
-        "songLike": EapiParamSpec(["trackId", "userid", "like"], renames: ["id": "trackId", "uid": "userid"]),
+        // song_like.js: `like = query.like !== 'false'` → 缺省为 true
+        "songLike": EapiParamSpec(["trackId", "userid", "like"],
+                                  renames: ["id": "trackId", "uid": "userid"],
+                                  defaults: ["like": .bool(true)],
+                                  boolKeys: ["like"]),
         // artist_detail.js: { id: query.id }
         "artistDetail": EapiParamSpec(["id"]),
         "commentNew": EapiParamSpec(["threadId", "pageNo", "showInner", "pageSize", "cursor", "sortType"]),
@@ -276,13 +367,27 @@ public enum NeteaseEndpoint {
             ["id", "private_cloud", "work_type", "order", "offset", "limit"],
             constants: .object([("private_cloud", .string("true")), ("work_type", .int(1))])
         ),
-        // 以下四条是「crypto 从 .plain 改成 .eapi」之后才暴露出来的缺口。
+        // 以下三条是「crypto 从 .plain 改成 .eapi」之后才暴露出来的缺口。
         // 键序直接抄自上游 module 的 `data` 对象字面量顺序 ——
         // eapi 的签名对键序敏感，顺序错了就是签名失败，
         // 而签名失败在界面上表现为「接口报错」，极难定位。
         "likelist":           EapiParamSpec(["uid"]),
-        "playlistDetailV6":   EapiParamSpec(["id", "n", "s"]),
-        "lyricNew":           EapiParamSpec(["id", "cp", "tv", "lv", "rv", "kv", "yv", "ytv", "yrv"]),
+        // playlist_detail.js / playlist_track_all.js:
+        //   { id: query.id, n: 100000, s: query.s || 8 }
+        "playlistDetailV6":   EapiParamSpec(["id", "n", "s"],
+                                            constants: .object([("n", .int(100000))]),
+                                            defaults: ["s": .int(8)]),
+        // lyric_new.js: { id, cp: false, tv: 0, lv: 0, rv: 0, kv: 0, yv: 0, ytv: 0, yrv: 0 }
+        // 除 id 外全是写死的 —— 调用方只传 id，剩下的必须由 constants 补齐，
+        // 否则 payload 少八个键，与辅助进程发出去的不是同一个签名。
+        "lyricNew":           EapiParamSpec(
+            ["id", "cp", "tv", "lv", "rv", "kv", "yv", "ytv", "yrv"],
+            constants: .object([
+                ("cp", .bool(false)), ("tv", .int(0)), ("lv", .int(0)),
+                ("rv", .int(0)), ("kv", .int(0)), ("yv", .int(0)),
+                ("ytv", .int(0)), ("yrv", .int(0)),
+            ])
+        ),
     ]
 
     /// 为 eapi 路由构造有序请求体。
@@ -333,13 +438,18 @@ public enum NeteaseEndpoint {
                 continue
             }
             let queryKey = spec.queryKey(forPayloadKey: payloadKey)
-            guard let raw = query[queryKey] else { continue }
-            // Node 侧这些字段是数字/布尔，JSON.stringify 的输出不能带引号
-            switch payloadKey {
-            case "type", "work_type":
-                guard let number = Int(raw) else { return nil }
-                pairs.append((payloadKey, .int(number)))
-            default:
+            guard let raw = query[queryKey] else {
+                // 对标上游的 `query.x || 默认值`；两边都没有就整条键省略
+                if let fallback = spec.defaults[payloadKey] { pairs.append((payloadKey, fallback)) }
+                continue
+            }
+            if spec.boolKeys.contains(payloadKey) {
+                // 上游写的是 `query.x !== 'false'`：只有字面 "false" 才是 false
+                pairs.append((payloadKey, .bool(raw != "false")))
+            } else {
+                // 取自 query 的值一律是**字符串** —— Express 就是这么给的
+                // （`query.type || 1` 在有值时拿到的也是字符串）。
+                // 要发数字或布尔，登记成 constants / boolKeys，不要猜。
                 pairs.append((payloadKey, .string(raw)))
             }
         }
@@ -347,8 +457,10 @@ public enum NeteaseEndpoint {
         // 而签名失败在界面上表现为「接口报错」，极难定位。
         // module 写死的键（constants）反过来不能出现在 query 里 ——
         // 传了会被 module 忽略，却让直连层多拼一个上游根本不收的字段。
+        // `ignoredQueryKeys` 是豁免名单：本地 helper 的开关，上游不读也不收。
         let acceptedQueryKeys = Set(spec.payloadKeys.map(spec.queryKey(forPayloadKey:)))
             .subtracting(spec.constantKeys)
+            .union(spec.ignoredQueryKeys)
         for key in query.keys where !acceptedQueryKeys.contains(key) {
             return nil
         }
