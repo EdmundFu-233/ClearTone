@@ -75,6 +75,25 @@ final class PlaybackFeaturesTests: XCTestCase {
         XCTAssertLessThanOrEqual(rates.last ?? 99, 3.0)
     }
 
+    /// 持久化恢复的倍速必须吸附到可选档位。
+    ///
+    /// 回归：原先判的是 `availableRates.contains(playbackRate)`，而 init 阶段
+    /// `playbackRate` 恒为 1.0（一定在档位里），else 分支是死代码 ——
+    /// 手改/损坏的 `"playbackRate": 99` 会被原样采纳并再次落盘。
+    func testRestoredPlaybackRateSnapsToAvailableRate() {
+        // 合法档位原样保留
+        for rate in PlayerController.availableRates {
+            XCTAssertEqual(PlayerController.resolveRestoredPlaybackRate(rate), rate)
+        }
+        // 越界值吸附到最近档位，而不是原样带进来
+        XCTAssertEqual(PlayerController.resolveRestoredPlaybackRate(99), 2.0)
+        XCTAssertEqual(PlayerController.resolveRestoredPlaybackRate(0), 0.5)
+        XCTAssertEqual(PlayerController.resolveRestoredPlaybackRate(-5), 0.5)
+        // 档位之间的历史值取最近档
+        XCTAssertEqual(PlayerController.resolveRestoredPlaybackRate(1.1), 1.0)
+        XCTAssertEqual(PlayerController.resolveRestoredPlaybackRate(1.9), 2.0)
+    }
+
     // MARK: - 睡眠定时器
 
     func testSleepTimerSetsAndCancels() {

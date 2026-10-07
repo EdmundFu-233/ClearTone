@@ -73,6 +73,18 @@ public final class PlayerController: ObservableObject {
         return text + "×"
     }
 
+    /// 把持久化的倍速吸附到可选档位。
+    ///
+    /// 旧队列文件里可能存过 `availableRates` 之外的任意浮点数（界面只给固定档位，
+    /// 但更早的版本对写入值没有夹取）。这里必须判断**传入值**是否合法 ——
+    /// 原先写的是 `availableRates.contains(playbackRate)`，而 `playbackRate`
+    /// 在 `init` 阶段恒为 1.0（一定在档位里），于是 else 分支永远是死代码：
+    /// 手改过的 `"playbackRate": 99` 会被原样采纳并再次落盘。
+    static func resolveRestoredPlaybackRate(_ value: Float) -> Float {
+        if availableRates.contains(value) { return value }
+        return availableRates.min(by: { abs($0 - value) < abs($1 - value) }) ?? 1.0
+    }
+
     /// 切换倍速。1.0 视为「正常」，UI 上不显示倍率。
     public func setPlaybackRate(_ rate: Float) {
         let clamped = min(max(rate, 0.25), 3.0)
@@ -649,7 +661,19 @@ public final class PlayerController: ObservableObject {
     public func pause() {
         // 同步恢复期间的播放意图：若 seek 尚未完成，完成回调不得再自动出声
         pendingAutoplay = false
+        // 失败后排队等待自动切歌的任务必须一并取消：用户按下暂停就是对
+        // 「换一首继续放」说了不，否则 1.5 秒后它会照样 beginPlay(autoplay: true)。
+        cancelAutoAdvance()
         player?.pause()
+        // 失败态的 songID 也非 nil：不能把「播放源坏了、需要重建」的锁存态
+        // 抹成 .paused。系统媒体中心的 pauseCommand、耳机线控、iOS 中断与
+        // 拔耳机（routeChange）都会直连 pause()，一旦降级成 .paused，
+        // 之后的 resume() 就跳过了重建分支，在同一个坏 item 上 play() ——
+        // 界面显示「播放中」却永远静音。
+        if case .failed = playbackState {
+            updateNowPlayingPlaybackState()
+            return
+        }
         if let songID = playbackState.songID {
             playbackState = .paused(songID: songID)
         }
@@ -871,11 +895,17 @@ public final class PlayerController: ObservableObject {
 
     public func removeFromQueue(itemID: UUID) {
         let wasCurrent = currentSong != nil && queue.currentItem?.id == itemID
+        // 删的是「正在播放且已是最后一首」：后面没有可接的歌，应当停止。
+        // `PlayQueue.remove` 在删掉末项后会把 currentIndex 回夹到 `count - 1`，
+        // 于是 `queue.currentItem` 变成**上一首**，照原逻辑会倒着播回去。
+        let removedLastCurrent = wasCurrent && queue.currentIndex == queue.items.count - 1
         guard queue.remove(itemID: itemID) else { return }
         persistState(structureChanged: true)
         // 删除的是正在播放的条目：立即同步到新的当前歌曲，避免结束回调再推进一次导致跳歌
         guard wasCurrent else { return }
-        if let next = queue.currentItem {
+        if removedLastCurrent {
+            stopPlayback()
+        } else if let next = queue.currentItem {
             play(song: next.song)
         } else {
             stopPlayback()
@@ -899,9 +929,12 @@ public final class PlayerController: ObservableObject {
     }
 
     /// 批量插到当前歌曲之后（保持传入顺序）。
+    ///
+    /// `PlayQueue.insertNext` 每首固定插在 `currentIndex + 1`，所以正序遍历
+    /// 会把整批插成倒序（`[1,2,3]` → 当前,3,2,1）。倒序插入才能得到 1,2,3。
     public func insertNext(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
-        for song in songs {
+        for song in songs.reversed() {
             queue.insertNext(song)
         }
         persistState(structureChanged: true)
@@ -1129,13 +1162,7 @@ public final class PlayerController: ObservableObject {
         // `= 1.0` 默认值兼容旧文件，可 `loadPersistedState` 从来没读过它，
         // 于是「重启后保留倍速」这个承诺（写进代码注释的）根本没实现。
         // 夹到可选档位内：旧文件里存过任意浮点数的话不该带进来。
-        if Self.availableRates.contains(playbackRate) {
-            self.playbackRate = data.playbackRate
-        } else {
-            playbackRate = Self.availableRates.min(by: {
-                abs($0 - data.playbackRate) < abs($1 - data.playbackRate)
-            }) ?? 1.0
-        }
+        playbackRate = Self.resolveRestoredPlaybackRate(data.playbackRate)
         currentSong = queue.currentItem?.song
         duration = currentSong?.duration ?? 0
         currentTime = data.currentTime

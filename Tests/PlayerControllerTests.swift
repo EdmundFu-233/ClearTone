@@ -361,4 +361,102 @@ final class PlayerControllerTests: XCTestCase {
         let refetched = await pollUntil { await provider.callCount > callsBefore }
         XCTAssertTrue(refetched, "resume() 应重新发起一轮拉流，而不是就地改状态")
     }
+
+    /// 失败锁存态不能被 `pause()` 抹掉。
+    ///
+    /// 系统媒体中心的 `pauseCommand`、耳机线控、iOS 中断与拔耳机（routeChange）
+    /// 都直连 `pause()`。`.failed` 的 songID 也非 nil，原先它会被降级成 `.paused`，
+    /// 之后的 `resume()` 便跳过「重建播放源」分支，在同一个坏 item 上 `play()`：
+    /// 界面显示「播放中」却永远静音 —— 与 `resume()` 那个修复属同一类问题。
+    func testPauseKeepsFailedLatch() async throws {
+        _ = Self.storageIsolated
+        let gate = ManualGate()
+        let provider = GatedProvider(
+            gate: gate,
+            url: URL(fileURLWithPath: "/nonexistent/cleartone-missing.wav")
+        )
+        player.setProvider(provider)
+        player.clearQueue()
+
+        player.play(songs: [makeSong(id: "G")])
+        gate.open()
+
+        guard await pollUntil({ if case .failed = self.player.playbackState { return true }; return false }) else {
+            throw XCTSkip("AVPlayer 未把不存在的文件判为失败，无法构造 .failed 态")
+        }
+
+        // 模拟系统/线控发来的暂停
+        player.pause()
+
+        guard case .failed = player.playbackState else {
+            XCTFail("pause() 把失败锁存态降级成了 \(player.playbackState)：之后的 resume() 会重建不了播放源")
+            return
+        }
+
+        let callsBefore = await provider.callCount
+        player.resume()
+        XCTAssertEqual(player.playbackState, .loading(songID: "G"), "维持失败态后 resume() 仍必须重建播放源")
+        let refetched = await pollUntil { await provider.callCount > callsBefore }
+        XCTAssertTrue(refetched, "维持失败态时 resume() 应重新拉流")
+    }
+
+    /// 删除「正在播放且是最后一首」应停止，而不是被索引回夹带回去播上一首。
+    ///
+    /// `PlayQueue.remove` 删掉末项后会把 currentIndex 夹到 `count - 1`，
+    /// 于是 `queue.currentItem` 变成上一首，原逻辑便倒着播回去。
+    func testRemovingCurrentLastQueueItemStopsPlayback() async throws {
+        _ = Self.storageIsolated
+        let gate = ManualGate()
+        gate.open()
+        player.setProvider(GatedProvider(
+            gate: gate, url: URL(fileURLWithPath: "/nonexistent/cleartone-missing.wav")
+        ))
+        player.clearQueue()
+
+        player.play(songs: [makeSong(id: "A"), makeSong(id: "B"), makeSong(id: "C")], startAt: 2)
+        XCTAssertEqual(player.currentSong?.id, "C")
+        let lastID = player.queue.items[2].id
+
+        player.removeFromQueue(itemID: lastID)
+
+        XCTAssertEqual(player.playbackState, .idle, "删掉正在播放的最后一首应停止，而不是倒回上一首")
+        XCTAssertNil(player.currentSong)
+        XCTAssertEqual(player.queue.count, 2)
+    }
+
+    /// 删除中间位置的当前项：应接上后一首（索引原地顺延）。
+    func testRemovingCurrentMiddleQueueItemPlaysNext() async throws {
+        _ = Self.storageIsolated
+        let gate = ManualGate()
+        gate.open()
+        player.setProvider(GatedProvider(
+            gate: gate, url: URL(fileURLWithPath: "/nonexistent/cleartone-missing.wav")
+        ))
+        player.clearQueue()
+
+        player.play(songs: [makeSong(id: "A"), makeSong(id: "B"), makeSong(id: "C")], startAt: 1)
+        XCTAssertEqual(player.currentSong?.id, "B")
+        let currentID = player.queue.items[1].id
+
+        player.removeFromQueue(itemID: currentID)
+
+        XCTAssertEqual(player.currentSong?.id, "C", "删中间当前项应接上后一首")
+        XCTAssertEqual(player.queue.currentIndex, 1)
+    }
+
+    /// 批量插队必须保持传入顺序。
+    ///
+    /// `PlayQueue.insertNext` 固定插在 `currentIndex + 1`，正序遍历会把整批反转
+    /// （`[1,2,3]` → 当前,3,2,1）。
+    func testInsertNextBatchKeepsOrder() {
+        _ = Self.storageIsolated
+        player.clearQueue()
+        player.appendToQueue(makeSong(id: "base"))
+        player.insertNext([makeSong(id: "1"), makeSong(id: "2"), makeSong(id: "3")])
+
+        XCTAssertEqual(
+            player.queue.items.map(\.song.id), ["base", "1", "2", "3"],
+            "批量插队被逐首头插反转了"
+        )
+    }
 }
