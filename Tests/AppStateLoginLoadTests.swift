@@ -34,8 +34,32 @@ final class AppStateLoginLoadTests: XCTestCase {
         /// 恢复登录态时返回的账号；nil 表示「没有登录态」
         private let accountToReturn: AccountInfo?
 
-        init(accountToReturn: AccountInfo? = nil) {
+        /// 让指定 id 的 likeSong 挂起（直到 releaseLike），以及哪些 id 要抛限流错误。
+        /// 用来构造「A 的写请求还在途时 B 已经成功」这种并发时序。
+        private let holdLikeIDs: Set<String>
+        private let failLikeIDs: Set<String>
+        private var likeWaiters: [String: CheckedContinuation<Void, Never>] = [:]
+        private var releasedLikeIDs: Set<String> = []
+
+        /// 首次 fetchLikedSongs 抛错，用来验证「详情失败后仍能重试」
+        private var failFirstLikedSongsFetch: Bool
+
+        init(accountToReturn: AccountInfo? = nil,
+             holdLikeIDs: Set<String> = [],
+             failLikeIDs: Set<String> = [],
+             failFirstLikedSongsFetch: Bool = false) {
             self.accountToReturn = accountToReturn
+            self.holdLikeIDs = holdLikeIDs
+            self.failLikeIDs = failLikeIDs
+            self.failFirstLikedSongsFetch = failFirstLikedSongsFetch
+        }
+
+        func isLikeHeld(_ id: String) -> Bool { likeWaiters[id] != nil }
+
+        func releaseLike(_ id: String) {
+            releasedLikeIDs.insert(id)
+            likeWaiters[id]?.resume()
+            likeWaiters[id] = nil
         }
 
         func fetchQRCodeKey() async throws -> String { "" }
@@ -74,13 +98,24 @@ final class AppStateLoginLoadTests: XCTestCase {
         }
         func fetchLikedSongs() async throws -> [Song] {
             likedSongCalls += 1
+            if failFirstLikedSongsFetch {
+                failFirstLikedSongsFetch = false
+                throw MusicError.networkUnavailable
+            }
             return [Song(id: "s1", title: "歌", artists: [], source: .netease)]
         }
         func fetchLikedSongIDs() async throws -> [String] {
             likedIDCalls += 1
             return ["s1"]
         }
-        func likeSong(id: String, like: Bool) async throws {}
+        func likeSong(id: String, like: Bool) async throws {
+            if holdLikeIDs.contains(id), !releasedLikeIDs.contains(id) {
+                await withCheckedContinuation { likeWaiters[id] = $0 }
+            }
+            if failLikeIDs.contains(id) {
+                throw MusicError.apiError(code: 524, message: "风控")
+            }
+        }
         func fetchRecommendPlaylists() async throws -> [Playlist] { [] }
         func fetchDailyRecommendSongs() async throws -> [Song] { [] }
     }
@@ -196,4 +231,59 @@ final class AppStateLoginLoadTests: XCTestCase {
         )
     }
 
+    // MARK: - 并发收藏回滚
+
+    /// 并发收藏两首歌，其中一首失败：另一首的成功**不能**被一起回滚。
+    ///
+    /// 早期 `toggleLike` 把整份 `likedIDs`/`likedSongs` 快照下来，失败时整体还原。
+    /// 用户很快点了两个心形（A 在途、B 已完成）时，A 失败会把 B 已经成功的收藏
+    /// 一起抹掉并写回磁盘 —— 服务端认为 B 已收藏，本地却显示未收藏。
+    func testConcurrentLikeRollbackKeepsOtherSongsSuccess() async {
+        let provider = RecordingProvider(holdLikeIDs: ["a"], failLikeIDs: ["a"])
+        let state = AppState(provider: provider)
+        state.didLogin(account: AccountInfo(userID: "86080189", nickname: "测试"))
+        await waitUntil("登录加载完成") { state.isLiked("s1") }
+
+        let songA = Song(id: "a", title: "A", artists: [], source: .netease)
+        let songB = Song(id: "b", title: "B", artists: [], source: .netease)
+
+        // A 的写请求挂起
+        let taskA = Task { await state.toggleLike(songA) }
+        await waitUntil("A 的写请求挂起") { await provider.isLikeHeld("a") }
+        XCTAssertTrue(state.isLiked("a"), "乐观更新应先把 A 标为已收藏")
+
+        // B 在 A 还挂着的时候成功
+        let taskB = Task { await state.toggleLike(songB) }
+        let bSucceeded = await taskB.value
+        XCTAssertTrue(bSucceeded, "B 的收藏应成功")
+        XCTAssertTrue(state.isLiked("b"))
+
+        // 放行 A，让它以限流错误失败
+        await provider.releaseLike("a")
+        let aSucceeded = await taskA.value
+        XCTAssertFalse(aSucceeded, "A 的写入被限流，应返回切换前状态")
+        XCTAssertFalse(state.isLiked("a"), "A 应回滚为未收藏")
+        XCTAssertTrue(state.isLiked("b"), "A 的回滚不得抹掉 B 已经成功的收藏")
+    }
+
+    // MARK: - 喜欢详情列表的瞬时失败
+
+    /// `fetchLikedSongs` 一次失败后，详情列表必须还能重试。
+    ///
+    /// 早期 `hasLoadedLikes` 在 id 拉回来后就置 true，详情失败也只是记日志：
+    /// 之后所有 `loadLikedSongs()`（默认 force=false）都被 guard 挡下，
+    /// 详情列表整场会话不再刷新，用户只看到「还没有喜欢的歌曲」。
+    func testLikedSongsDetailRetriesAfterTransientFailure() async {
+        let provider = RecordingProvider(failFirstLikedSongsFetch: true)
+        let state = AppState(provider: provider)
+        state.didLogin(account: AccountInfo(userID: "86080189", nickname: "测试"))
+
+        await waitUntil("首次详情请求失败") { await provider.likedSongCalls >= 1 }
+        XCTAssertTrue(state.isLiked("s1"), "id 已就位，心形应可用")
+
+        // 再次加载：详情应重试并成功
+        await state.loadLikedSongs()
+        await waitUntil("详情重试成功") { await provider.likedSongCalls >= 2 }
+        XCTAssertFalse(state.likedSongs.isEmpty, "详情失败后再次加载必须能恢复")
+    }
 }

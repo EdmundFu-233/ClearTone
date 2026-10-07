@@ -119,6 +119,10 @@ public class AppState: ObservableObject {
     /// 收藏状态，其余 2308 首永远显示未收藏。
     private var likedIDs: Set<String> = []
     private var hasLoadedLikes = false
+    /// 详情列表是否加载完成。与 `hasLoadedLikes`（id 集合，心形状态）分开：
+    /// id 到位但详情失败时，心形已经可用，详情列表还得能重试 ——
+    /// 早期共用一个标志，`fetchLikedSongs` 一次失败就让详情列表整场会话不再刷新。
+    private var hasLoadedLikedSongs = false
     private let provider: MusicProvider
     /// 会话闸门与账号缓存的复位。这两个是**网易云专属**的内存副作用，
     /// 不放进 `MusicProvider`：一是本地/桩实现根本没这两样东西，
@@ -280,6 +284,7 @@ public class AppState: ObservableObject {
         // 不复位的话退登后仍在按无损请求，白白拿 403。
         PlayerController.shared.setAccountIsVIP(false)
         hasLoadedLikes = false
+        hasLoadedLikedSongs = false
         likedIDs = []
         likedSongs = []
         likesVersion += 1
@@ -407,7 +412,7 @@ public class AppState: ObservableObject {
 
     func loadLikedSongs(force: Bool = false) async {
         guard isLoggedIn else { return }
-        if hasLoadedLikes && !force { return }
+        if hasLoadedLikes && hasLoadedLikedSongs && !force { return }
         // 账号代次：切换账号/退出会自增。await 之后必须比对，
         // 否则「A 账号请求在途 → 退出 → B 账号登录 → A 的响应回来」
         // 会把 A 的收藏写进 B 的界面，并污染磁盘缓存。
@@ -426,6 +431,7 @@ public class AppState: ObservableObject {
             guard generation == accountGeneration, dataContext == dataContextKey else { return }
             applyLikedSongs(songs, ids: ids)
             PersistenceStore.shared.saveCachedLikedSongs(songs)
+            hasLoadedLikedSongs = true
         } catch {
             CTLog.general.error("加载喜欢的歌曲失败: \(CTLog.sanitize(error.localizedDescription))")
         }
@@ -501,8 +507,6 @@ public class AppState: ObservableObject {
         defer { likeRequestsInFlight.remove(song.id) }
 
         let wasLiked = likedIDs.contains(song.id)
-        let previousIDs = likedIDs
-        let previousSongs = likedSongs
 
         // 乐观更新：状态集合增删单首，列表同步增删该曲
         updateLikedID(song.id, isLiked: !wasLiked)
@@ -518,10 +522,15 @@ public class AppState: ObservableObject {
             return !wasLiked
         } catch {
             CTLog.general.error("收藏操作失败: \(CTLog.sanitize(error.localizedDescription))")
-            // 回滚：两处都要还原，否则状态与列表会不一致
-            likedIDs = previousIDs
-            likedSongs = previousSongs
-            likesVersion += 1
+            // 只回滚**这一首**。早期把整份 likedIDs/likedSongs 快照下来、失败时整体
+            // 还原：用户很快点了两个心形时，A 失败会把 B 已经成功的收藏一起抹掉，
+            // 并把旧值写回磁盘 —— 服务端认为 B 已收藏，本地却显示未收藏。
+            updateLikedID(song.id, isLiked: wasLiked)
+            var reverted = likedSongs.filter { $0.id != song.id }
+            if wasLiked { reverted.insert(song, at: 0) }
+            likedSongs = reverted
+            PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs))
+            PersistenceStore.shared.saveCachedLikedSongs(likedSongs)
             // 失败必须让用户看见。原来只写日志，界面表现是「心形弹回去、
             // 什么都不说」，用户只会以为 App 卡了。
             lastWriteError = error.ctUserMessage
