@@ -7,18 +7,31 @@ final class MobileLocalLibrary: ObservableObject {
     @Published private(set) var songs: [Song]
     private let directory: URL
     init() {
-        directory = PersistenceStore.storageRoot.appendingPathComponent("LocalAudio", isDirectory: true)
-        songs = PersistenceStore.shared.loadSetting(forKey: "mobileLocalSongs", as: [Song].self) ?? []
-        // App 更新后容器路径可能变化，按受控文件名重建 URL。
-        songs = songs.map { song in
+        // 用局部常量，避免闭包在 `songs` 初始化完成前捕获 self
+        let dir = PersistenceStore.storageRoot.appendingPathComponent("LocalAudio", isDirectory: true)
+        directory = dir
+        let stored = PersistenceStore.shared.loadSetting(forKey: "mobileLocalSongs", as: [Song].self) ?? []
+        // App 更新后容器路径可能变化，按受控文件名重建 URL；同时剔除文件已不在的
+        // 条目（系统清理 / 容器迁移后留下的是永远播不了的死行）。
+        let pruned = stored.compactMap { song -> Song? in
+            guard let name = song.localFileURL?.lastPathComponent else { return nil }
+            let url = dir.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
             var rebuilt = song
-            if let name = song.localFileURL?.lastPathComponent { rebuilt.localFileURL = directory.appendingPathComponent(name) }
+            rebuilt.localFileURL = url
             return rebuilt
+        }
+        songs = pruned
+        if pruned.count != stored.count {
+            PersistenceStore.shared.saveSetting(pruned, forKey: "mobileLocalSongs")
         }
     }
     func importFiles(_ urls: [URL]) async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // 同一批里出现重复来源路径时只导入一次
+        var seen = Set<String>()
         for url in urls {
+            guard seen.insert(url.standardizedFileURL.path).inserted else { continue }
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             let id = UUID().uuidString

@@ -36,6 +36,8 @@ final class ProfileStore: ObservableObject {
         levelToken = current
         isLoadingLevel = level == nil
         levelError = nil
+        // defer 兜底：取消 / 换令牌时提前 return，不能让 loading 永久卡住
+        defer { if levelToken == current { isLoadingLevel = false } }
         do {
             let loaded = try await provider.fetchUserLevel()
             guard levelToken == current, !Task.isCancelled else { return }
@@ -44,13 +46,13 @@ final class ProfileStore: ObservableObject {
             guard levelToken == current else { return }
             levelError = error.ctUserMessage
         }
-        guard levelToken == current else { return }
-        isLoadingLevel = false
     }
 
     // MARK: - 打卡
 
     func signIn() async {
+        // 失败后允许重试：否则按钮可点，但 guard 直接返回、看起来毫无反应
+        if case .failed = signInResult { resetSignIn() }
         guard signInResult == nil, !isSigningIn else { return }
         isSigningIn = true
         defer { isSigningIn = false }
@@ -73,6 +75,7 @@ final class ProfileStore: ObservableObject {
         recordsToken = current
         isLoadingRecords = records.isEmpty
         recordsError = nil
+        defer { if recordsToken == current { isLoadingRecords = false } }
         do {
             let loaded = try await provider.fetchListenRecords(weekly: recordsWeekly)
             guard recordsToken == current, !Task.isCancelled else { return }
@@ -81,7 +84,5 @@ final class ProfileStore: ObservableObject {
             guard recordsToken == current else { return }
             recordsError = error.ctUserMessage
         }
-        guard recordsToken == current else { return }
-        isLoadingRecords = false
     }
 }

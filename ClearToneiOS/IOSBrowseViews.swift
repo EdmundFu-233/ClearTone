@@ -203,6 +203,14 @@ struct IOSSearchView: View {
         }
         .onChange(of: appState.dataContextKey) { _, _ in session.refreshDataContext(type: type) }
         .onDisappear { session.cancelInFlight(); assist.clearSuggestions() }
+        .onAppear {
+            // 与 macOS 对齐：离页时若整页搜索在途，`cancelInFlight` 会丢弃未落地的
+            // 身份与旧结果；回到页面必须按输入词重新发起，否则只剩一个空面板。
+            let incoming = session.draftQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !incoming.isEmpty, session.activeQuery != incoming {
+                search(incoming)
+            }
+        }
         .task { await assist.loadHotTerms() }
         .confirmationDialog("清除最近搜索？", isPresented: $clearingHistory, titleVisibility: .visible) {
             Button("清除历史", role: .destructive) { assist.clearHistory() }

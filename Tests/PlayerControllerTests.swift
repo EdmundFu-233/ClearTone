@@ -422,6 +422,27 @@ final class PlayerControllerTests: XCTestCase {
         XCTAssertEqual(player.playbackState, .idle, "删掉正在播放的最后一首应停止，而不是倒回上一首")
         XCTAssertNil(player.currentSong)
         XCTAssertEqual(player.queue.count, 2)
+
+        // 播放键不能因此变成死键：队列还有歌时应从当前条目接着放
+        player.togglePlayPause()
+        XCTAssertEqual(player.currentSong?.id, "B", "停止后队列仍有歌，播放键应能恢复播放")
+    }
+
+    /// 空队列上批量插队必须保持顺序。
+    ///
+    /// `PlayQueue.insertNext` 在空队列下首次调用是 append（currentIndex 变 0），
+    /// 之后再插会插到索引 1 —— 倒序补偿在这里反而会把整批插反。
+    func testInsertNextBatchOnEmptyQueueKeepsOrder() {
+        _ = Self.storageIsolated
+        player.clearQueue()
+
+        player.insertNext([makeSong(id: "1"), makeSong(id: "2"), makeSong(id: "3")])
+
+        XCTAssertEqual(
+            player.queue.items.map(\.song.id), ["1", "2", "3"],
+            "空队列批量插队不得被倒序逻辑插反"
+        )
+        XCTAssertEqual(player.queue.currentIndex, 0)
     }
 
     /// 删除中间位置的当前项：应接上后一首（索引原地顺延）。

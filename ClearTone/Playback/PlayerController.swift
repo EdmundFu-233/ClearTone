@@ -735,6 +735,18 @@ public final class PlayerController: ObservableObject {
             updateNowPlayingPlaybackState()
             return
         }
+        // 队列里还有歌、却没有「当前歌曲」（典型：删掉了正在播放的最后一首，
+        // stopPlayback 清空了 currentSong 而队列非空）：从队列当前条目接着放。
+        // 否则播放键会变成死键 —— player / currentSong 都是 nil，点下去毫无反应。
+        if currentSong == nil {
+            if queue.currentItem != nil {
+                playCurrent()
+            } else if let first = queue.items.first {
+                queue.jumpTo(itemID: first.id)
+                playCurrent()
+            }
+            return
+        }
         if player == nil {
             // 播放器尚未建立（如重启后从持久化恢复）：重建播放并按用户意图恢复进度
             beginRestoredPlayback(autoplay: true)
@@ -948,12 +960,18 @@ public final class PlayerController: ObservableObject {
 
     /// 批量插到当前歌曲之后（保持传入顺序）。
     ///
-    /// `PlayQueue.insertNext` 每首固定插在 `currentIndex + 1`，所以正序遍历
-    /// 会把整批插成倒序（`[1,2,3]` → 当前,3,2,1）。倒序插入才能得到 1,2,3。
+    /// 非空队列：`PlayQueue.insertNext` 每首固定插在 `currentIndex + 1`，
+    /// 正序遍历会把整批插成倒序，所以倒序插入。
+    /// 空队列：首次 `insertNext` 是 append（currentIndex 变 0），之后再插会插到
+    /// 索引 1（已插入项之前）—— 倒序遍历在这里反而会插反，必须直接 append。
     public func insertNext(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
-        for song in songs.reversed() {
-            queue.insertNext(song)
+        if queue.currentIndex < 0 {
+            queue.append(contentsOf: songs)
+        } else {
+            for song in songs.reversed() {
+                queue.insertNext(song)
+            }
         }
         persistState(structureChanged: true)
     }

@@ -72,7 +72,6 @@ struct ArtistNameLinks: View {
     @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
-        // 本地歌曲的 artists 永远是空数组，此时不该渲染任何东西
         if artists.isEmpty {
             EmptyView()
         } else {
@@ -83,16 +82,26 @@ struct ArtistNameLinks: View {
                             .font(font)
                             .foregroundStyle(CTColors.textSecondary(for: colorScheme))
                     }
-                    Button {
-                        appState.openArtist(artist.id)
-                    } label: {
+                    // 只有网易云的歌手 id 是纯数字；本地曲目用的是合成 id
+                    // （LocalProvider 的 "local-artist-<名字>"、iOS 的 "local"），
+                    // 点进去只会打开一个不存在的歌手页。这类退化成纯文本。
+                    if Int64(artist.id) != nil {
+                        Button {
+                            appState.openArtist(artist.id)
+                        } label: {
+                            Text(artist.name)
+                                .font(font)
+                                .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .help("查看歌手：\(artist.name)")
+                    } else {
                         Text(artist.name)
                             .font(font)
                             .foregroundStyle(CTColors.textSecondary(for: colorScheme))
                             .lineLimit(1)
                     }
-                    .buttonStyle(.plain)
-                    .help("查看歌手：\(artist.name)")
                 }
             }
         }

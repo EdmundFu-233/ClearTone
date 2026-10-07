@@ -144,11 +144,13 @@ public final class KeychainStore: @unchecked Sendable {
     /// 反过来（钥匙串 → 文件）是原本就有的方向，但原先用 `try? save` 配**无条件** delete：
     /// 保存失败也照样删源，凭据彻底丢失、被迫重新扫码。
     private func readUncached(_ key: Key) throws -> String? {
+        // 显式删除过：**任何**后端都不该再把值交出来，直到用户重新 save。
+        // 必须放在 readActive 之前 —— 另一侧删失败后若用户切换了存储模式，
+        // 那份残留就会变成「当前后端」，先读它就又把登出后的凭据放出来了。
+        if isDeleted(key) { return nil }
         // 当前后端必须抛错（文件损坏 / 钥匙串拒绝都不能伪装成「未登录」）；
         // 另一侧是 best-effort —— 它坏了不该挡住正常的读取。
         if let primary = try readActive(key) { return primary }
-        // 显式删除过、且当前后端没有值：不要从另一侧把已删除的凭据迁回来
-        if isDeleted(key) { return nil }
         let legacy: String? = (try? readInactive(key)) ?? nil
         guard let legacy else { return nil }
         do {

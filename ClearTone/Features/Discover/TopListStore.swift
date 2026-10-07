@@ -45,6 +45,7 @@ final class TopListStore: ObservableObject {
         listToken = token
         isLoadingLists = lists.isEmpty
         listsError = nil
+        defer { if listToken == token { isLoadingLists = false } }
         do {
             let loaded = try await provider.fetchTopLists()
             guard listToken == token, !Task.isCancelled else { return }
@@ -53,8 +54,6 @@ final class TopListStore: ObservableObject {
             guard listToken == token else { return }
             listsError = error.ctUserMessage
         }
-        guard listToken == token else { return }
-        isLoadingLists = false
     }
 
     // MARK: - 榜单曲目
@@ -67,6 +66,7 @@ final class TopListStore: ObservableObject {
         tracksError = nil
         tracks = []
         loadedListID = list.id
+        defer { if trackToken == token { isLoadingTracks = false } }
         do {
             let detail = try await provider.fetchPlaylistDetail(id: list.id)
             guard trackToken == token, !Task.isCancelled else { return }
@@ -87,8 +87,6 @@ final class TopListStore: ObservableObject {
             guard trackToken == token else { return }
             tracksError = error.ctUserMessage
         }
-        guard trackToken == token else { return }
-        isLoadingTracks = false
     }
 
     /// 按 id 去重合并（榜单分页偶尔会重复边界项）
@@ -114,6 +112,7 @@ final class TopListStore: ObservableObject {
         let token = UUID()
         newSongsToken = token
         isLoadingNewSongs = true
+        defer { if newSongsToken == token { isLoadingNewSongs = false } }
         do {
             let loaded = try await provider.fetchTopSongs(area: target)
             guard newSongsToken == token, !Task.isCancelled else { return }
@@ -123,8 +122,6 @@ final class TopListStore: ObservableObject {
             newSongs = []
             CTLog.general.error("加载新歌速递失败: \(CTLog.sanitize(error.localizedDescription))")
         }
-        guard newSongsToken == token else { return }
-        isLoadingNewSongs = false
     }
 
     // MARK: - 歌单广场
