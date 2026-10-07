@@ -29,6 +29,25 @@
 
 当前复用的免费 profile 将于 **2026-10-02 21:23:58（多伦多时间）** 到期，到期需重新签名安装。此次安装与进程检查不能代替账号写操作、真机后台音频及 VoiceOver 的功能验收。
 
+## 真机覆盖部署（热搜 / 榜单 / 歌词状态机）
+
+2026-10-07：把当前工作区（新增 `feat(iOS): 补齐搜索热搜与排行榜`、
+`refactor: 歌词状态机合并到 Core` 两批改动）覆盖安装到已配对的 iPhone 17，
+沿用原 App ID `com.cleartone.app.ios` 与现有免费 Personal Team profile，
+未卸载应用、保留原有数据。
+
+- 新增 `scripts/deploy-ios.sh` 把「签名 → 安装 → 启动」固化下来
+  （`build-ios.sh` 产出的是**未签名**包，装不上真机）。脚本会校验签名里只有
+  application-identifier / team-identifier / get-task-allow 三项。
+- `codesign --verify --deep --strict` 通过；`devicectl device install app` 安装成功；
+  `devicectl device process launch --terminate-existing` 启动成功，
+  并在设备进程列表里确认 `ClearToneiOS` 仍在运行（PID 7844）。
+- 本机离线验证：`./scripts/run-tests.sh` 521 项 0 失败 0 跳过；macOS 与 iOS 模拟器构建通过。
+- 构建日志：`build/iOS/build-device-deploy.log`。
+
+此次只做了安装与启动验证，**没有**在真机上逐页面验收热搜 / 榜单加载
+（需要用户登录后在设备上确认），也不能代替账号写操作与后台音频验收。
+
 ## 音量修复更新
 
 2026-09-30：iPhone 17 已覆盖更新为构建号 3，并通过启动与进程存活检查。消除 iOS 播放器内部默认 0.8 和旧音量/静音快照带来的额外衰减，系统音量保持由用户控制。457 项离线测试通过，iOS 运行时探针通过。见 [音量修复记录](volume-fix.md)。

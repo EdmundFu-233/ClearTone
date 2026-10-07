@@ -12,7 +12,10 @@ xcodegen generate
 ./scripts/build-ios.sh --simulator   # 本地 ad-hoc 签名，不需要 Apple 账号
 ./scripts/build-ios.sh --device      # 未签名 Debug 设备构建
 ./scripts/build-ios.sh --ipa         # 未签名 Release IPA，供侧载工具重新签名
+./scripts/deploy-ios.sh              # 已配对的 iPhone：用 Personal Team 签名 + 安装 + 启动
 ```
+
+`build-ios.sh` 产出的设备包**没有签名**，装不上真机；`deploy-ios.sh` 补上这一步：自动找已配对的设备、用 `project.yml` 里 macOS target 的团队签名、校验签名里只有免费账号拿得到的那三项 entitlement，然后 `devicectl` 安装并启动。锁屏时自动启动会被系统拒绝，脚本只提示、不算失败。
 
 IPA 输出到 `build/iOS/ClearTone-unsigned.ipa`。该文件本身不能直接安装到真机，需用自己的免费账号通过侧载工具重新签名，或直接在 Xcode 中运行：
 
@@ -22,6 +25,8 @@ IPA 输出到 `build/iOS/ClearTone-unsigned.ipa`。该文件本身不能直接�
 4. 连接 iPhone / iPad，按设备提示启用 Developer Mode，选择设备后运行。
 
 工程没有给 iOS 写死团队 ID。免费 Personal Team 的设备测试流程与限制见 [Apple 官方说明](https://developer.apple.com/support/compare-memberships/)。本次实现不代用户登录 Xcode 或申请 provisioning profile。
+
+真机安装沿用的是**已注册的 App ID `com.cleartone.app.ios`**（免费 Personal Team 的 profile 里已经包含这台设备），而 `project.yml` 里写的是 `com.cleartone.ios`。两者不一致是历史原因：设备上先装的是前者。按 `project.yml` 装会变成「第二个 App」—— 原 App 的数据看不到，还会多占一个 App ID 名额（免费账号一共只有 10 个）。`deploy-ios.sh` 默认显式覆盖成前者；要换 App ID 用 `IOS_BUNDLE_ID=`。
 
 ## 签名与能力边界
 
