@@ -137,9 +137,16 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         applyDrawableSize(for: view)
     }
 
+    /// 防止 `applyDrawableSize` → `drawableSizeWillChange` → `applyDrawableSize` 递归
+    private var isAdjustingDrawableSize = false
+
     /// 按当前 `renderScale` 设置 drawable 尺寸（降分辨率渲染的真实来源）。
-    /// 设置 `drawableSize` 会再次回调 `drawableSizeWillChange`，靠等值判断防递归。
+    /// 设置 `drawableSize` 会再次回调 `drawableSizeWillChange`，用重入标志兜底，
+    /// 不依赖 MTKView 是否原样保存我们设的尺寸。
     func applyDrawableSize(for view: MTKView) {
+        guard !isAdjustingDrawableSize else { return }
+        isAdjustingDrawableSize = true
+        defer { isAdjustingDrawableSize = false }
         let scale = CGFloat(max(0.25, min(renderScale, 1.0)))
         let target = CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale)
         if target.width >= 1, target.height >= 1, view.drawableSize != target {

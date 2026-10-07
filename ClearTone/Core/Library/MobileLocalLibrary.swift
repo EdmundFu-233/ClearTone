@@ -11,19 +11,17 @@ final class MobileLocalLibrary: ObservableObject {
         let dir = PersistenceStore.storageRoot.appendingPathComponent("LocalAudio", isDirectory: true)
         directory = dir
         let stored = PersistenceStore.shared.loadSetting(forKey: "mobileLocalSongs", as: [Song].self) ?? []
-        // App 更新后容器路径可能变化，按受控文件名重建 URL；同时剔除文件已不在的
-        // 条目（系统清理 / 容器迁移后留下的是永远播不了的死行）。
-        let pruned = stored.compactMap { song -> Song? in
+        // App 更新后容器路径可能变化，按受控文件名重建 URL；文件已不在的条目
+        // 不显示（否则留下永远播不了的死行）。**只过滤、不回写**：`fileExists`
+        // 在数据保护未就绪等瞬时情况下也会返回 false，回写会把好条目永久删掉。
+        // 与 macOS 的 `LocalProvider.restoreLibrary` 同策略。
+        songs = stored.compactMap { song -> Song? in
             guard let name = song.localFileURL?.lastPathComponent else { return nil }
             let url = dir.appendingPathComponent(name)
             guard FileManager.default.fileExists(atPath: url.path) else { return nil }
             var rebuilt = song
             rebuilt.localFileURL = url
             return rebuilt
-        }
-        songs = pruned
-        if pruned.count != stored.count {
-            PersistenceStore.shared.saveSetting(pruned, forKey: "mobileLocalSongs")
         }
     }
     func importFiles(_ urls: [URL]) async throws {
