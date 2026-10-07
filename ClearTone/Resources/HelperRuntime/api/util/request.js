@@ -3,6 +3,7 @@ const encrypt = require('./crypto')
 const CryptoJS = require('crypto-js')
 const { default: axios } = require('axios')
 const logger = require('./logger')
+const { redactForLog } = require('./log')
 const { PacProxyAgent } = require('pac-proxy-agent')
 const http = require('http')
 const https = require('https')
@@ -502,14 +503,14 @@ const createRequest = async (uri, data, options) => {
         if (answer.status === 200) {
           resolve(answer)
         } else {
-          console.log('[ERR]', answer)
+          console.log('[ERR]', redactForLog(answer))
           reject(answer)
         }
       })
       .catch((err) => {
         answer.status = 502
         answer.body = { code: 502, msg: err.message || err }
-        console.log('[ERR]', answer)
+        console.log('[ERR]', redactForLog(answer))
         reject(answer)
       })
   })

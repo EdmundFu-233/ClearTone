@@ -1,3 +1,5 @@
+const { redactForLog } = require('./log')
+
 // ANSI 颜色代码
 const colors = {
   reset: '\x1b[0m',
@@ -16,26 +18,30 @@ const colors = {
   bgYellow: '\x1b[43m',
 }
 
+// 所有参数一律先过脱敏。这里改一次，`server.js` 的 logger.error(…, {body})
+// 这类调用点就不可能把 Set-Cookie 原文漏进 helper.log —— 逐个调用点去防是防不住的。
+const safe = (args) => args.map((arg) => redactForLog(arg))
+
 const logger = {
   debug: (msg, ...args) =>
-    console.info(`${colors.cyan}[DEBUG]${colors.reset}`, msg, ...args),
+    console.info(`${colors.cyan}[DEBUG]${colors.reset}`, redactForLog(msg), ...safe(args)),
   info: (msg, ...args) =>
-    console.info(`${colors.green}[INFO]${colors.reset}`, msg, ...args),
+    console.info(`${colors.green}[INFO]${colors.reset}`, redactForLog(msg), ...safe(args)),
   warn: (msg, ...args) =>
-    console.info(`${colors.yellow}[WARN]${colors.reset}`, msg, ...args),
+    console.info(`${colors.yellow}[WARN]${colors.reset}`, redactForLog(msg), ...safe(args)),
   error: (msg, ...args) =>
-    console.error(`${colors.red}[ERROR]${colors.reset}`, msg, ...args),
+    console.error(`${colors.red}[ERROR]${colors.reset}`, redactForLog(msg), ...safe(args)),
   success: (msg, ...args) =>
     console.log(
       `${colors.bright}${colors.green}[SUCCESS]${colors.reset}`,
-      msg,
-      ...args,
+      redactForLog(msg),
+      ...safe(args),
     ),
   critical: (msg, ...args) =>
     console.error(
       `${colors.bright}${colors.bgRed}[CRITICAL]${colors.reset}`,
-      msg,
-      ...args,
+      redactForLog(msg),
+      ...safe(args),
     ),
 }
 
