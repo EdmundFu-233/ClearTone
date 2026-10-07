@@ -223,4 +223,52 @@ final class LyricsSessionTests: XCTestCase {
         XCTAssertFalse(session.isLoading, "取消后必须复位 loading")
         XCTAssertNil(session.errorMessage, "用户主动离开页面不是「加载失败」")
     }
+
+    /// `reset()` 必须**同步**清空，供视图在创建异步加载任务之前调用。
+    ///
+    /// 只在 `load` 的 async 函数体里清的话，`Task { await load(...) }` 与函数体执行
+    /// 之间还有一帧，那期间视图会拿上一首的词配这一首的进度。
+    func testResetClearsEverythingSynchronously() async {
+        let provider = StubProvider()
+        await provider.setResult(LyricResult(
+            lines: [line(0, "A 的词")], hasWordTiming: true, isPureMusic: true
+        ))
+        let session = makeSession(provider)
+        await session.load(for: song("A"))
+        XCTAssertFalse(session.lines.isEmpty)
+        XCTAssertTrue(session.isPureMusic)
+        XCTAssertTrue(session.hasWordTiming)
+
+        session.reset()
+
+        XCTAssertTrue(session.lines.isEmpty)
+        XCTAssertFalse(session.isPureMusic)
+        XCTAssertFalse(session.hasWordTiming)
+        XCTAssertFalse(session.isLoading)
+        XCTAssertNil(session.errorMessage)
+    }
+
+    /// 已被取消的加载不得再清空/改写状态。
+    ///
+    /// 取消不保证在 await 返回前生效：一个在 `reset()` 之前就被取消的任务，
+    /// 若仍执行函数体，会先清空面板再因 token 不符丢弃自己的结果 —— 留下空白。
+    func testAlreadyCancelledLoadDoesNotClearState() async {
+        let provider = StubProvider()
+        await provider.setResult(LyricResult(
+            lines: [line(0, "A 的词")], hasWordTiming: false, isPureMusic: false
+        ))
+        let session = makeSession(provider)
+        await session.load(for: song("A"))
+        XCTAssertEqual(session.lines.map(\.text), ["A 的词"])
+
+        // 在任务真正开始执行之前就取消它（同一个主线程，cancel 先于任务体）
+        let task = Task { await session.load(for: song("B")) }
+        task.cancel()
+        await task.value
+
+        XCTAssertEqual(
+            session.lines.map(\.text), ["A 的词"],
+            "被取消的加载不该清空已有歌词"
+        )
+    }
 }

@@ -92,6 +92,9 @@ struct IOSNowPlayingView: View {
             }
         }
         .onAppear { time = player.currentTime }
+        // 切歌同步清空歌词：`.task` 的函数体要等下一次调度才跑，不在这里清的话
+        // 新歌标题会短暂配上上一首的歌词。
+        .onChange(of: player.currentSong) { _, _ in lyrics.reset() }
         .onReceive(player.timePublisher) { value in if !dragging { time = min(max(0, value), max(1, player.duration)) } }
         .task(id: "\(player.currentSong?.id ?? "")-\(lyricRefreshID)") {
             time = player.currentTime

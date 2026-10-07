@@ -231,7 +231,27 @@ struct NowPlayingView: View {
                         .foregroundStyle(.white)
 
                         // 歌词列表
-                        if lyrics.isPureMusic {
+                        //
+                        // 先判 loading / error：`lines.isEmpty` 既表示「还在加载」也表示
+                        // 「加载失败」也表示「确实没有」。原实现把三种都显示成「暂无歌词」，
+                        // 网络/辅助进程出问题时用户看到的是「这首歌没词」且没有任何重试入口。
+                        if lyrics.isLoading {
+                            Spacer()
+                            ProgressView(L10n.Player.loadingLyrics)
+                                .tint(.white)
+                            Spacer()
+                        } else if let lyricError = lyrics.errorMessage {
+                            Spacer()
+                            VStack(spacing: CTSpacing.sm) {
+                                Text(lyricError)
+                                    .font(CTTypography.caption)
+                                    .foregroundStyle(.white.opacity(0.7))
+                                    .multilineTextAlignment(.center)
+                                Button(L10n.Common.retry) { loadLyrics() }
+                                    .buttonStyle(.borderless)
+                            }
+                            Spacer()
+                        } else if lyrics.isPureMusic {
                             Spacer()
                             Text(L10n.Player.pureMusic)
                                 .font(CTTypography.sectionTitle)
@@ -251,7 +271,10 @@ struct NowPlayingView: View {
                                 showTranslation: showTranslation,
                                 showRomanization: showRomanization,
                                 userScrolling: $userScrolling,
-                                onSeek: { time in player.seek(to: time) }
+                                // 高亮按 `播放位置 + 偏移` 计算，点某行要让它成为当前行，
+                                // 就得把播放位置 seek 到 `该行时间 - 偏移`。
+                                // 直接用行时间在偏移非零时会跳到错误的行。
+                                onSeek: { time in player.seek(to: max(0, time - lyricOffsetSeconds)) }
                             )
                         }
                     }
@@ -318,6 +341,9 @@ struct NowPlayingView: View {
     private func loadLyrics() {
         // 取消上一次歌词请求：快速切歌时旧响应用代次令牌丢弃（见 `LyricsSession`）
         lyricsTask?.cancel()
+        // 同步清空：`Task { await lyrics.load(...) }` 的函数体要等下一次主线程调度
+        // 才执行，不在这里清的话，切歌的那一帧还会拿上一首的歌词配这一首的进度。
+        lyrics.reset()
         currentLineIndex = nil
         // 传 nil（没有正在播放的歌）会清空 —— 原先这里 `guard let song else { return }`，
         // 停播后会把上一首的歌词留在页面上。

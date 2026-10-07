@@ -30,7 +30,7 @@ struct LyricOffsetControl: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(offset <= -Self.limit)
-                .help("歌词提前 0.1 秒")
+                .help("歌词延后 0.1 秒")
 
                 Text(displayText)
                     .font(.caption)
@@ -47,7 +47,7 @@ struct LyricOffsetControl: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(offset >= Self.limit)
-                .help("歌词延后 0.1 秒")
+                .help("歌词提前 0.1 秒")
 
                 if offset != 0 {
                     Button {

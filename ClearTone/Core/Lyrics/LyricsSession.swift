@@ -44,19 +44,33 @@ public final class LyricsSession: ObservableObject {
         LyricsSession { song in song.source == .netease ? NeteaseProvider.shared : nil }
     }
 
-    /// 加载某首歌的歌词。传 nil（没有正在播放的歌）会清空。
-    public func load(for song: Song?) async {
+    /// 同步清空当前歌词状态，并作废在途请求。
+    ///
+    /// 切歌时**必须**在创建异步加载任务之前调用：`load` 是 async，函数体要等到
+    /// 下一次主线程调度才执行；在那之前视图仍会渲染上一首的 `lines`，
+    /// 于是新歌标题会短暂配上旧歌歌词。`load` 内部也会先调用它，
+    /// 直接 `await load(...)` 的场景同样安全。
+    public func reset() {
         token = UUID()
-        let token = self.token
-        // 先同步清空：切歌的瞬间旧歌词必须先消失，否则会拿上一首的词配这一首的进度
         lines = []
+        isLoading = false
+        errorMessage = nil
         isPureMusic = false
         hasWordTiming = false
-        errorMessage = nil
+    }
+
+    /// 加载某首歌的歌词。传 nil（没有正在播放的歌）会清空。
+    public func load(for song: Song?) async {
+        // 已被取消的旧任务不得再动状态：它若恰好在新的加载写完之后才被调度，
+        // 会取一个新令牌、清空刚写好的歌词，再因 `Task.isCancelled` 丢弃自己的结果，
+        // 留下空白面板。取消不保证在 await 返回前生效，所以这里显式挡一道。
+        guard !Task.isCancelled else { return }
+        // 先同步清空：切歌的瞬间旧歌词必须先消失，否则会拿上一首的词配这一首的进度
+        reset()
+        let token = self.token
 
         guard let song, let provider = resolve(song) else {
-            // 没有歌 / 这首不取歌词：不留 loading，界面走空态
-            isLoading = false
+            // 没有歌 / 这首不取歌词：reset 后已是空态，不发请求
             return
         }
         isLoading = true

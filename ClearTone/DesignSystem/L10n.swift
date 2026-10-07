@@ -48,6 +48,7 @@ public enum L10n {
         public static let unavailable = "不可播放"
         public static let pureMusic = "纯音乐，请欣赏"
         public static let noLyrics = "暂无歌词"
+        public static let loadingLyrics = "正在获取歌词…"
         public static let backToCurrent = "回到当前歌词"
     }
 
