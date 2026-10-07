@@ -629,20 +629,28 @@ public final class PlayerController: ObservableObject {
             let cmTime = CMTime(seconds: target, preferredTimescale: 600)
             player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
                 Task { @MainActor in
-                    // 无条件清除 seek 标记：切歌后迟到的回调不得让标志位卡死（会冻结进度与持久化）
-                    self.isUserSeeking = false
+                    // 迟到的旧代次回调不得碰新代次的标志位与状态
+                    // （切歌/停止时 beginPlay/stopPlayback 自己已复位 isUserSeeking）。
                     guard generation == self.currentGeneration else { return }
-                    // seek 被中断（item 被替换/出错）时不改播放状态，交给状态监听器接管
-                    guard finished else { return }
-                    // 采用 seek 期间用户最新的播放意图（pause/resume 会同步 pendingAutoplay）
-                    if self.pendingAutoplay {
-                        self.player?.defaultRate = self.playbackRate
-                        self.player?.play()
-                        self.playbackState = .playing(songID: songID)
-                    } else {
-                        self.playbackState = .paused(songID: songID)
+                    self.isUserSeeking = false
+                    // `finished == false` 不一定是「item 坏了」：用户的 seek 会顶掉这次
+                    // 恢复 seek（`commitSeek` 不改 playbackState）。若在这里直接 return，
+                    // 状态会永久停在 `.loading`、一声不响，用户只能再点一次播放才脱困。
+                    // 所以只要还在「准备中」就把播放意图落定。
+                    if self.playbackState.isLoading {
+                        // 采用 seek 期间用户最新的播放意图（pause/resume 会同步 pendingAutoplay）
+                        if self.pendingAutoplay {
+                            self.player?.defaultRate = self.playbackRate
+                            self.player?.play()
+                            self.playbackState = .playing(songID: songID)
+                        } else {
+                            self.playbackState = .paused(songID: songID)
+                        }
                     }
-                    self.currentTime = restoreTime
+                    // 只有确实 seek 到位才写回恢复进度；被打断时保留用户拖到的新位置
+                    if finished {
+                        self.currentTime = restoreTime
+                    }
                     self.updateNowPlayingInfo()
                 }
             }
@@ -838,9 +846,15 @@ public final class PlayerController: ObservableObject {
         // 只能让旧回调自己发现"我不是最新的"而放弃写回
         seekToken &+= 1
         let token = seekToken
+        let generation = currentGeneration
         seekTask?.cancel()
         seekTask = Task { [weak self] in
             guard let self else { return }
+            // 必须在**提交 seek 之前**就放弃：`Task.cancel()` 撤不回已交给
+            // AVFoundation 的 seek。换歌（beginPlay 会 cancel seekTask 但会递增
+            // generation）后旧任务若还执行，会把新歌 seek 到旧歌的位置。
+            guard !Task.isCancelled, token == self.seekToken,
+                  generation == self.currentGeneration else { return }
             let cmTime = CMTime(seconds: time, preferredTimescale: 600)
             await self.player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
             // 只有最新一次 seek 才允许改状态
