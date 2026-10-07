@@ -92,7 +92,7 @@ enum NeteaseMobileRoute {
         // 这里只负责把 helper 的 query 交给它。早先这几条在本地另拼一份 payload，
         // 于是登记表写错了也没人发现（`/login/qr/key` 的 uri 与 crypto 都曾是错的）。
         case "/artist/detail", "/artist/songs", "/likelist", "/comment/new", "/playlist/name/update",
-             "/login/qr/key", "/login/qr/check", "/logout":
+             "/login/qr/key", "/login/qr/check", "/logout", "/search/hot", "/toplist":
             guard let payload = NeteaseEndpoint.orderedPayload(forRoute: route, query: query) else { throw MusicError.invalidResponse }
             return Request(path: path, crypto: crypto, payload: payload)
         case "/user/account", "/recommend/resource", "/recommend/songs", "/artist/top/song":

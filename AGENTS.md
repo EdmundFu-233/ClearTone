@@ -171,7 +171,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**50 个测试文件 / 507 项**，全部离线可跑且全绿）：
+当前覆盖（**51 个测试文件 / 513 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
@@ -181,6 +181,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | **会话失效判定** | **SessionExpiryGuardTests**（单次 301/403 不定罪、需 `/user/account` 旁证、探针在途不递归、复位） |
 | **歌手资料页** | **ArtistProfileSessionTests**（换歌手清空、offset 由已加载条数推导、翻页失败保留旧数据、迟到响应丢弃、followed 不被后续页抹掉）/ **ArtistProfileParsingTests**（`cover`/`avatar` 才是头像、MV 的 `artistName`/`imgurl16v9`、eapi 键序与重命名） |
 | 歌词 / 电台 / 每日推荐 | LRCParserTests / RadioParsingTests / RadioContractTests / DailyRecommendTests |
+| 榜单 | **TopListSessionTests**（榜单目录：失败**保留旧数据**但置错误、**迟到的旧响应不得覆盖新响应**、取消后 `isLoading` 必须复位）。macOS 的 `TopListStore` 在 `Features/` 里，一条断言都写不了 —— 这份逻辑就是为可测性抽到 `Core/Discover/` 的 |
 | 社区与资料库 | NeteaseSocialParsingTests（评论/通知/私信/榜单/等级/热搜的**字段名**逐个对着上游 `home.md` 核） |
 | 接口契约 | NeteaseEndpointTests（含 `testEveryRequestCallSiteIsMapped` 扫描调用点、**`testEveryKnownRouteHasAnUpstreamModuleFile`** 反查 `api/module/*.js` 是否存在、`testIOSReachableRoutesAreAdaptedByMobileRoute` 钉死 iOS 适配清单）/ NeteaseEapiTests（eapi 与 Node 逐字节对照，含 module 写死参数的 `constants` 登记、query 值恒为字符串） / `scripts/probes/endpoint-table.js`（拿打包 Node 打桩 module，逐条比对 uri / crypto / 上游是否存在）/ `scripts/probes/log-redaction.js`（**日志出口脱敏**：cookie/`MUSIC_U`/`NMTID` 不得出现在 logger 与 `request.js` 的 `[ERR]` 输出里） |
 | 加解密 | NeteaseCryptoTests / NeteaseEapiTests |
@@ -191,7 +192,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | 菜单命令 | PlaybackCommandTests（播放模式轮转、相对 seek 不越界）/ **SidebarShortcutsTests**（⌘1…⌘0 映射；**第 10 项不得 `Character("10")`**、越界返回 nil） |
 | 凭据与限流 | **NeteaseCookieNormalizerTests**（Set-Cookie 拼接串归一化：**134 段 → 5 段**、丢属性/空值/重名、值含 `=`、**幂等**、**`loadLoginCookie` 不得自我递归**）/ **LikeWriteThrottleTests**（405/524 算限流需冷却、其余错误不冷却、提示要劝阻连点）/ **KeychainStoreTests**（`delete` 必须**双后端都清**、**主动后端失败不继续删另一侧**、**双向迁移：先写目标成功才删源**、凭据文件落在 `storageRoot` 且 **0600**、`storageMode` 缺省 iOS=keychain / macOS=plaintextFile） |
 | 音质默认值 | SongQualityPolicyTests（**VIP→无损 / 非 VIP→极高**、「自动」哨兵值、**显式选择不因 VIP 变化而改动**）/ PlaybackFeaturesTests（缺键=自动、**老用户存下的显式值不被新默认覆盖**） |
-| iOS 直连与移动状态 | NeteaseMobileRouteTests（QR 的 uri/crypto 走登记表、`/search/suggest` 的 `s` 键、`/logout` 恒 eapi 空 body、plain 表单标量拼写）/ NeteaseXeapiTests（Node 逐字节对照、**deviceID 跨启动复用**、**Cookie 覆盖式合并**）/ MobileSessionsTests（取消登录、迟到账号、分页去重、失败重试与分页锁、**总数缺席仍能翻页**） |
+| iOS 直连与移动状态 | NeteaseMobileRouteTests（QR 的 uri/crypto 走登记表、`/search/suggest` 的 `s` 键、`/logout` 恒 eapi 空 body、**`/search/hot` 写死 `type=1111`**、**`/toplist` 空 body**、plain 表单标量拼写）/ NeteaseXeapiTests（Node 逐字节对照、**deviceID 跨启动复用**、**Cookie 覆盖式合并**）/ MobileSessionsTests（取消登录、迟到账号、分页去重、失败重试与分页锁、**总数缺席仍能翻页**） |
 | 其它 | ErrorSanitizationTests（**超时文案按平台分岔**：macOS=本地服务超时 / iOS=请求超时，均离线可测）/ LikedStateTests / DemoAudioGeneratorTests / PlayingSourceInfoTests / **AppStateLoginLoadTests**（`didLogin` 与 `restoreLoginState` 必须**各自**把喜欢的音乐 + 用户歌单拉起来；未登录不发请求；**会话失效后重新登录必须解除 `needsReLogin` 写禁用**、**退出/失效要清掉内存里的用户歌单**，否则下一个账号会看到上一个账号的歌单） |
 
 全部用桩 Provider / 录制器，不联网、不写真实用户状态（`PlayerControllerTests` 会把持久化

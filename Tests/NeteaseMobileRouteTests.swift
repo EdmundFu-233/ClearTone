@@ -79,6 +79,28 @@ final class NeteaseMobileRouteTests: XCTestCase {
         XCTAssertEqual(OrderedJSON.encode(request.payload), "{}")
     }
 
+    /// iOS 的热搜走 `/search/hot`。调用点（`NeteaseSocialProvider`）在设备直连上
+    /// 一直没有适配分支，`make` 抛「暂未适配」—— 与 `/search/suggest` 同样的坑，
+    /// 表现是搜索页的热搜永远空白且没有报错。
+    ///
+    /// atsearch_hot.js 写死 `data = { type: 1111 }`：`type` 是 constants，
+    /// 调用方不传也不该传（传了会被 `orderedPayload` 的未登记键校验拒掉）。
+    func testSearchHotUsesEapiWithFixedType() throws {
+        let request = try NeteaseMobileRoute.make("/search/hot", query: [:])
+        XCTAssertEqual(request.path, "/api/search/hot")
+        XCTAssertEqual(request.crypto, .eapi)
+        XCTAssertEqual(OrderedJSON.encode(request.payload), "{\"type\":1111}")
+    }
+
+    /// 榜单目录走 `/toplist`：toplist.js 是裸 `createOption()` → eapi，
+    /// 且 data 恒为 `{}`（不带任何参数）。
+    func testTopListUsesEapiWithEmptyBody() throws {
+        let request = try NeteaseMobileRoute.make("/toplist", query: [:])
+        XCTAssertEqual(request.path, "/api/toplist")
+        XCTAssertEqual(request.crypto, .eapi)
+        XCTAssertEqual(OrderedJSON.encode(request.payload), "{}")
+    }
+
     /// `.plain` 分支原先用 `String(describing:)` 把 JSON 值转成表单字符串：
     /// `JSONSerialization` 给回来的是 `NSNumber`，布尔会被描述成 `"1"`/`"0"`
     /// （Node 的 `querystring` 发的是 `"true"`/`"false"`），数组会变成

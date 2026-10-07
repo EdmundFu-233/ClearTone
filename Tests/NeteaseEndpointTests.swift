@@ -161,6 +161,10 @@ final class NeteaseEndpointTests: XCTestCase {
             "/login/qr/key", "/login/qr/check", "/user/account", "/logout",
             // 搜索（iOS 的联想就靠 /search/suggest）
             "/cloudsearch", "/search/suggest",
+            // 搜索页热搜
+            "/search/hot",
+            // 排行榜目录
+            "/toplist",
             // 首页推荐
             "/recommend/resource", "/recommend/songs", "/personalized",
             // 播放链路

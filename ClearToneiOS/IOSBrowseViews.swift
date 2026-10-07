@@ -3,6 +3,7 @@ import SwiftUI
 struct IOSDiscoverView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dynamicTypeSize) private var typeSize
+    @StateObject private var topLists = TopListSession()
     @State private var playlists: [Playlist] = []
     @State private var daily: [Song] = []
     @State private var error: String?
@@ -34,6 +35,7 @@ struct IOSDiscoverView: View {
                     }
                     if let dailyError { IOSFailure(message: dailyError) { refreshID = UUID() } }
                 }.frame(maxWidth: .infinity, alignment: .leading).iosCard()
+                topListSection
                 VStack(alignment: .leading, spacing: 16) {
                     IOSSectionHeading(title: "精选歌单", subtitle: "不同的声音，同样的好心情")
                     if loading, playlists.isEmpty { ProgressView("正在获取推荐…").frame(maxWidth: .infinity).padding(32) }
@@ -55,6 +57,47 @@ struct IOSDiscoverView: View {
         .navigationTitle("发现")
         .refreshable { await load() }
         .task(id: "\(appState.dataContextKey)-\(refreshID)") { await load(reset: true) }
+        .task { await topLists.load() }
+    }
+
+    /// 排行榜目录。榜单本身就是歌单，点进去复用 `IOSCollectionView`。
+    ///
+    /// 加载/失败/重试三态都要渲染：失败时保留旧目录（见 `TopListSession.load`），
+    /// 所以错误提示与列表可以同时出现。
+    @ViewBuilder
+    private var topListSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            IOSSectionHeading(title: "排行榜", subtitle: "此刻大家都在听")
+            if topLists.isLoading {
+                ProgressView("正在获取榜单…").frame(maxWidth: .infinity).padding(24)
+            }
+            if let error = topLists.errorMessage {
+                IOSFailure(message: error) { Task { await topLists.load() } }
+            }
+            LazyVStack(spacing: 0) {
+                ForEach(topLists.lists) { list in
+                    NavigationLink { IOSCollectionView(kind: .playlist(list.id)) } label: {
+                        HStack(spacing: 12) {
+                            IOSCover(url: list.coverURL, size: 56)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(list.name).lineLimit(2).foregroundStyle(.primary)
+                                Text(topListSubtitle(list)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }.padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func topListSubtitle(_ list: TopList) -> String {
+        let parts: [String?] = [
+            list.updateFrequency,
+            list.trackCount > 0 ? "\(list.trackCount) 首" : nil,
+        ]
+        return parts.compactMap { $0 }.joined(separator: " · ")
     }
     private func load(reset: Bool = false) async {
         let context = appState.dataContextKey
@@ -129,14 +172,21 @@ struct IOSSearchView: View {
                             Button { search(suggestion.title) } label: { Label(suggestion.title, systemImage: "magnifyingglass").foregroundStyle(.primary) }
                         }
                     }
-                } else if !assist.history.isEmpty, session.draftQuery.isEmpty {
-                    Section {
-                        ForEach(assist.history, id: \.self) { query in
-                            Button { search(query) } label: { Label(query, systemImage: "clock.arrow.circlepath").foregroundStyle(.primary) }
-                                .swipeActions { Button("删除", role: .destructive) { assist.removeHistory(query) } }
+                } else if session.draftQuery.isEmpty {
+                    if !assist.history.isEmpty {
+                        Section {
+                            ForEach(assist.history, id: \.self) { query in
+                                Button { search(query) } label: { Label(query, systemImage: "clock.arrow.circlepath").foregroundStyle(.primary) }
+                                    .swipeActions { Button("删除", role: .destructive) { assist.removeHistory(query) } }
+                            }
+                        } header: {
+                            HStack { Text("最近搜索"); Spacer(); Button("清除") { clearingHistory = true } }
                         }
-                    } header: {
-                        HStack { Text("最近搜索"); Spacer(); Button("清除") { clearingHistory = true } }
+                    }
+                    hotSearchSection
+                    if assist.history.isEmpty, assist.hotTerms.isEmpty,
+                       !assist.isLoadingHot, assist.hotError == nil {
+                        ContentUnavailableView("下一首喜欢，从这里开始", systemImage: "magnifyingglass", description: Text("输入歌曲、歌手、专辑或歌单名称，点击键盘上的搜索"))
                     }
                 } else {
                     ContentUnavailableView("下一首喜欢，从这里开始", systemImage: "magnifyingglass", description: Text("输入歌曲、歌手、专辑或歌单名称，点击键盘上的搜索"))
@@ -153,8 +203,34 @@ struct IOSSearchView: View {
         }
         .onChange(of: appState.dataContextKey) { _, _ in session.refreshDataContext(type: type) }
         .onDisappear { session.cancelInFlight(); assist.clearSuggestions() }
+        .task { await assist.loadHotTerms() }
         .confirmationDialog("清除最近搜索？", isPresented: $clearingHistory, titleVisibility: .visible) {
             Button("清除历史", role: .destructive) { assist.clearHistory() }
+        }
+    }
+
+    /// 热门搜索。`loadHotTerms()` 的三个状态都要渲染 ——
+    /// 只看 `hotTerms` 的话，加载中与失败都是「一片空白」，用户看不出区别，
+    /// 失败后也没有重试入口。没有内容时整块不显示，由下面的空态兜住。
+    @ViewBuilder
+    private var hotSearchSection: some View {
+        if assist.isLoadingHot || assist.hotError != nil || !assist.hotTerms.isEmpty {
+            Section {
+                if assist.isLoadingHot {
+                    ProgressView("正在获取热搜…")
+                } else if let error = assist.hotError {
+                    IOSFailure(message: error) { Task { await assist.loadHotTerms() } }
+                } else {
+                    ForEach(assist.hotTerms) { term in
+                        Button { search(term.keyword) } label: {
+                            HStack(spacing: 6) {
+                                if let icon = term.icon, !icon.isEmpty { Text(icon) }
+                                Text(term.keyword).foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                }
+            } header: { Text("热门搜索") }
         }
     }
     private func search(_ query: String) {

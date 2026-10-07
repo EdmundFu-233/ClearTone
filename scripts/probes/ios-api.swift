@@ -24,6 +24,11 @@ struct IOSAPIProbe {
         for type in ["1", "100", "10", "1000"] {
             _ = await probe("/cloudsearch", ["keywords": "周杰伦", "type": type, "limit": "5", "offset": "0"])
         }
+        // 搜索页的两条辅助路由：热搜（写死 type=1111）与联想（上游键名是 s）。
+        _ = await probe("/search/hot")
+        _ = await probe("/search/suggest", ["keywords": "周杰伦"])
+        // 发现页的排行榜目录（空 body）
+        _ = await probe("/toplist")
         _ = await probe("/song/detail", ["ids": "347230"])
         _ = await probe("/lyric/new", ["id": "347230"])
         _ = await probe("/album", ["id": "18918"])
