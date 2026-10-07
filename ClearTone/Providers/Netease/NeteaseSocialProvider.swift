@@ -423,8 +423,11 @@ extension NeteaseProvider: MusicSocialProvider {
     public func fetchSimilarArtists(artistID: String) async throws -> [Artist] {
         let data = try await request("/simi/artist", query: ["id": artistID], cacheTTL: 600)
         let json = try parseJSON(data)
-        // 实测：数组在 `data`（不是 `artists`）
-        guard let artists = json["data"] as? [[String: Any]] else { throw MusicError.invalidResponse }
+        // `/api/discovery/simiArtist` 的数组键是 `artists`（见本文件族头部说明）。
+        // 早期只读 `data`，读不到就 throw —— 而调用方 `loadHighlights` 用 `try?`
+        // 吞掉错误，于是「相似歌手」永远是空的。这里两个键都认，避免再赌一次。
+        guard let artists = (json["artists"] as? [[String: Any]])
+                ?? (json["data"] as? [[String: Any]]) else { throw MusicError.invalidResponse }
         return artists.map { Self.mapArtist($0) }
     }
 

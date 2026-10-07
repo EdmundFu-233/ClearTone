@@ -89,13 +89,13 @@ struct AlbumDetailView: View {
                     .disabled(tracks.isEmpty)
 
                     Button {
-                        // `play(songs:startAt:)` 内部已经 `queue.replace(with: tracks)`，
-                        // 队列此刻就等于全部曲目。再 append 一次等于把第 2..n 首各追加一遍
-                        // （12 首的专辑会得到 23 项队列，之后每首连播两遍）。
-                        // 「加入队列」的语义由「下一首播放」按钮承担。
-                        player.play(songs: tracks, startAt: 0)
+                        // 插到当前歌曲之后播放（不是「替换队列从头播」——那是左边那颗）。
+                        // 原实现误调 `play(songs:startAt:)`，与「播放全部」完全等价，
+                        // 于是页面上出现两个一模一样的按钮，而图标宣称的「下一首播放」
+                        // 根本不存在。
+                        player.insertNext(tracks)
                     } label: {
-                        Label("播放全部", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     .buttonStyle(.bordered)
                     .disabled(tracks.isEmpty)

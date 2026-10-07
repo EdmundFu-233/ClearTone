@@ -363,6 +363,10 @@ public final class PlayerController: ObservableObject {
         // detachCurrentItem 的说明）：每次换歌重建会重新协商解码器与输出路由，
         // 切歌处会出现中断、延迟与 CPU 尖峰。startPlayback 会在需要时新建实例。
         detachCurrentItem()
+        // 先撤销「正在播放的缓存曲目」保护：`loadAndPlay` 只有命中缓存才会重新登记。
+        // 否则从缓存歌切到在线歌后，上一首的缓存文件会被永久保护 —— 既不会过期
+        // 也不会被 LRU 淘汰，等于永久占着容量名额。
+        AudioCacheManager.shared.setCurrentCachedSong(nil)
 
         // 「不自动出声」的一路（重启恢复、暂停中切音质）状态直接给 .paused：
         // 拉流窗口里用户看到的必须是「▶ 播放」而不是「⏸ 暂停」——
@@ -1384,8 +1388,29 @@ struct PersistedQueue: Codable {
     var volume: Float
     var isMuted: Bool
     var requestedQuality: AudioQuality.QualityLevel
-    /// 倍速。带默认值是为了兼容旧版本写下的 queue.json（缺字段时按 1.0 读）
+    /// 倍速
     var playbackRate: Float = 1.0
+}
+
+extension PersistedQueue {
+    /// 容错解码：`playbackRate` 是后加字段，旧 `queue.json` 里没有。
+    ///
+    /// 上面属性声明里的 `= 1.0` **不能**兼容旧文件 —— 合成 `init(from:)` 仍会
+    /// 调 `decode` 要求 key 存在，缺了就抛 `keyNotFound`，整份队列连同当前歌曲、
+    /// 进度、音量、音质一起被丢弃。（与 `Artist.alias` 同一个坑。）
+    ///
+    /// 放在扩展里：这样 memberwise init 仍然可用（`makeSnapshot` 依赖它）。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = try c.decode([QueueItem].self, forKey: .items)
+        currentIndex = try c.decode(Int.self, forKey: .currentIndex)
+        mode = try c.decode(PlayMode.self, forKey: .mode)
+        currentTime = try c.decode(TimeInterval.self, forKey: .currentTime)
+        volume = try c.decode(Float.self, forKey: .volume)
+        isMuted = try c.decode(Bool.self, forKey: .isMuted)
+        requestedQuality = try c.decode(AudioQuality.QualityLevel.self, forKey: .requestedQuality)
+        playbackRate = try c.decodeIfPresent(Float.self, forKey: .playbackRate) ?? 1.0
+    }
 }
 
 /// MPRemoteCommand target 的持有者。

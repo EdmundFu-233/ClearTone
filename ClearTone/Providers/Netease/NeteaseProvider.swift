@@ -551,7 +551,15 @@ public actor NeteaseProvider: MusicProvider {
     public func fetchUserPlaylists() async throws -> [Playlist] {
         guard let cookie = try Self.loadLoginCookie() else { throw MusicError.notLoggedIn }
         guard let userID = try KeychainStore.shared.load(for: .neteaseUserID) else { throw MusicError.notLoggedIn }
-        let data = try await request("/user/playlist", query: ["uid": userID], cookie: cookie, cacheTTL: 120)
+        // 必须显式给 limit：上游 `user_playlist.js` 默认 `limit || 30`，
+        // 不传就只返回前 30 个歌单 —— 超过 30 个的用户永远看不到后面的
+        // （侧栏、我的音乐、添加到歌单全部少一截），且没有任何提示。
+        let data = try await request(
+            "/user/playlist",
+            query: ["uid": userID, "limit": "1000"],
+            cookie: cookie,
+            cacheTTL: 120
+        )
         let json = try parseJSON(data)
         guard let playlists = json["playlist"] as? [[String: Any]] else { throw MusicError.invalidResponse }
         return playlists.map { Self.mapPlaylist($0) }

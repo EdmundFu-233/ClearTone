@@ -150,8 +150,10 @@ extension NeteaseProvider: ArtistProfileProviding {
         // 时长是毫秒。这个接口实测给 Int，但 `number()` 的存在本身就是为了
         // 兜住 JSONSerialization 把整数解成 NSNumber 的情况。
         let durationMs = int64(dict["duration"]) ?? 0
+        // `publishTime` 是**毫秒**时间戳（与 `mapRadioProgram.createTime` 同一约定）。
+        // 直接按秒解会得到公元 48000 年之类的日期。
         let publishTime = int64(dict["publishTime"]).map {
-            Date(timeIntervalSince1970: TimeInterval($0))
+            Date(timeIntervalSince1970: TimeInterval($0) / 1000)
         }
         return ArtistMV(
             id: String(describing: id),

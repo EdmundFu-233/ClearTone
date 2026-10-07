@@ -182,7 +182,8 @@ final class ArtistProfileParsingTests: XCTestCase {
             "imgurl": "https://p1.music.126.net/wide.jpg",
             "duration": 265000,
             "playCount": 104583,
-            "publishTime": 1_465_000_000,
+            // 毫秒时间戳（与真实接口一致）
+            "publishTime": 1_465_000_000_000,
         ]
         let mv = try XCTUnwrap(NeteaseProvider.mapArtistMV(dict))
         XCTAssertEqual(mv.id, "22695250")
@@ -191,7 +192,10 @@ final class ArtistProfileParsingTests: XCTestCase {
         XCTAssertEqual(mv.coverURL?.absoluteString, "https://p1.music.126.net/16v9.jpg")
         XCTAssertEqual(mv.duration, 265, accuracy: 0.001)
         XCTAssertEqual(mv.playCount, 104583)
-        XCTAssertNotNil(mv.publishDate)
+        // 按毫秒换算：2016-06-02 前后；按秒解会跑到公元 48000 年
+        let publishYear = Calendar(identifier: .gregorian)
+            .component(.year, from: try XCTUnwrap(mv.publishDate))
+        XCTAssertEqual(publishYear, 2016, "publishTime 是毫秒，必须除以 1000")
     }
 
     /// 没有 id 的条目必须丢掉（列表的 `Identifiable` 会因为重复 id 崩）

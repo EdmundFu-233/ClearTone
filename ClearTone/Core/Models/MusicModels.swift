@@ -53,6 +53,24 @@ public struct Artist: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+extension Artist {
+    /// 容错解码：`alias` / `avatarURL` 是**后加的字段**，旧版本持久化的
+    /// `queue.json` / `recentSongs` / `cachedLikedSongs` 里的歌手只有 id + name。
+    ///
+    /// 关键陷阱：Swift 合成的 `init(from:)` 对「有默认值的**非可选**属性」
+    /// （`alias`）照样调用 `decode` 并要求 key 存在，属性声明上的 `= []`
+    /// 只在 memberwise init 里生效。于是升级后任意一首老歌都会
+    /// `keyNotFound`，而 `PersistedQueue` 是整份解码的 —— 队列、最近播放、
+    /// 收藏缓存全部静默清空。
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        avatarURL = try c.decodeIfPresent(URL.self, forKey: .avatarURL)
+        alias = try c.decodeIfPresent([String].self, forKey: .alias) ?? []
+    }
+}
+
 public struct Album: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public var name: String

@@ -85,9 +85,11 @@ struct AppCommands: Commands {
             Button("迷你播放器") { AppWindowController.openMiniPlayer() }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
 
-            // Cmd+Q 是系统退出，队列用 Cmd+0
+            // Cmd+Q 是系统退出。队列用 ⇧⌘0：侧栏第 10 个栏目（消息）占用了 ⌘0，
+            // 两个菜单项抢同一个 key equivalent 时只有先出现的那条生效，
+            // 「显示/隐藏队列」会永远按不出来。
             Button("显示/隐藏队列") { appState?.showQueue.toggle() }
-                .keyboardShortcut("0", modifiers: .command)
+                .keyboardShortcut("0", modifiers: [.command, .shift])
         }
 
         // 帮助菜单

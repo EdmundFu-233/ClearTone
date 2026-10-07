@@ -30,7 +30,12 @@ struct CoverImage<Placeholder: View>: View {
             }
         }
         .task(id: taskKey) {
-            image = await CoverLoader.shared.load(url: url, pointSize: size)
+            let loaded = await CoverLoader.shared.load(url: url, pointSize: size)
+            // 切歌 / 改尺寸时 SwiftUI 会取消旧 task，但 `CoverLoader.load` 不认取消，
+            // 旧请求可能在新请求**之后**才返回。写回前必须确认自己没被取消，
+            // 否则上一首（慢 CDN）的封面会覆盖当前（命中缓存、快）的封面。
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 
