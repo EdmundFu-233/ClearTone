@@ -16,6 +16,8 @@ param(
     [ValidateSet('x64', 'arm64', 'all')][string]$Arch = 'x64',
     [string]$QtRoot = '',
     [string]$VlcRoot = '',
+    [string]$Generator = 'Visual Studio 17 2022',
+    [ValidateSet('Debug', 'Release')][string]$BuildType = 'Release',
     [switch]$SkipNode
 )
 
@@ -65,24 +67,30 @@ function Build-One {
     $nodeExe = Fetch-Node -TargetArch $TargetArch
 
     $vsArch = if ($TargetArch -eq 'arm64') { 'ARM64' } else { 'x64' }
+    $isNinja = $Generator -like 'Ninja*'
 
-    Write-Host "=== [$TargetArch] 2/5 CMake 配置（Qt: $resolvedQt）==="
-    $configureArgs = @(
-        '-S', $WindowsDir, '-B', $buildDir,
-        '-G', 'Visual Studio 17 2022', '-A', $vsArch,
+    Write-Host "=== [$TargetArch] 2/5 CMake 配置（$Generator，Qt: $resolvedQt）==="
+    $configureArgs = @('-S', $WindowsDir, '-B', $buildDir, '-G', $Generator)
+    if (-not $isNinja) { $configureArgs += @('-A', $vsArch) }
+    $configureArgs += @(
         "-DCMAKE_PREFIX_PATH=$resolvedQt",
         '-DCT_BUILD_TESTS=OFF'
     )
+    if ($isNinja) { $configureArgs += "-DCMAKE_BUILD_TYPE=$BuildType" }
     if ($VlcRoot) { $configureArgs += "-DCT_VLC_ROOT=$VlcRoot" }
     & cmake @configureArgs
 
     Write-Host "=== [$TargetArch] 3/5 构建 ==="
-    & cmake --build $buildDir --config Release -j
+    & cmake --build $buildDir --config $BuildType -j
 
     Write-Host "=== [$TargetArch] 4/5 windeployqt 与辅助进程 ==="
     if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
     New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
-    $exe = Join-Path $buildDir 'Release\ClearTone.exe'
+    $exe = if ($isNinja) {
+        Join-Path $buildDir 'ClearTone.exe'
+    } else {
+        Join-Path $buildDir "$BuildType\ClearTone.exe"
+    }
     if (-not (Test-Path $exe)) { throw "缺少产物：$exe" }
     Copy-Item $exe $publishDir -Force
 

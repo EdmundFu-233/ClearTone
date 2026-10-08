@@ -38,17 +38,23 @@ jobs:
           if (-not $kit) { throw '未找到 Qt kit' }
           "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # windows-latest 的 VS 版本会变，固定 "Visual Studio 17 2022" 生成器不可靠；
+      # 用 msvc-dev-cmd 激活工具链 + Ninja，避免绑定具体 VS 实例。
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: CMake 配置
         shell: pwsh
         run: >
-          cmake -S windows -B windows/build-ci -G "Visual Studio 17 2022" -A x64
+          cmake -S windows -B windows/build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
           "-DCMAKE_PREFIX_PATH=$env:QT_ROOT"
 
       - name: 构建（Release）
-        run: cmake --build windows/build-ci --config Release -j
+        run: cmake --build windows/build-ci -j
 
       - name: 离线单测
-        run: ctest --test-dir windows/build-ci -C Release --output-on-failure
+        run: ctest --test-dir windows/build-ci --output-on-failure
 
   # 发布包：tag 推送或手动触发时，构建 win-x64 / win-arm64 的 zip
   package:
@@ -85,11 +91,15 @@ jobs:
           if (-not $kit) { throw '未找到 Qt kit' }
           "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
+
       - name: 打包（win-${{ matrix.arch }}）
         shell: pwsh
         run: >
           powershell -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
-          -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT"
+          -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT" -Generator Ninja
 
       - name: 上传产物
         uses: actions/upload-artifact@v4

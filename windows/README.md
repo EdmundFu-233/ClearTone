@@ -73,6 +73,7 @@ cd windows
 | `-Run` | `--run` | 构建后运行应用 |
 | `-Package` | — | 走 `scripts\build-app.ps1` 打 Release 发布 zip |
 | `-VlcRoot PATH` | `--vlc-root PATH` | 可选：libVLC SDK 根（含 `include\` / `lib\`）；缺省用 Qt Multimedia |
+| `-Generator NAME` | — | 构建生成器（默认 `Visual Studio 17 2022`；ARM64 交叉或 CI 环境可用 `Ninja`，需先进入 VS 开发者环境） |
 | `-Clean` | `--clean` | 先清空构建目录 |
 | `-BuildDir PATH` | `--dir PATH` | 构建目录 |
 | `-SkipHelper` | `--skip-helper` | 跳过辅助进程准备 |

@@ -21,6 +21,7 @@ param(
     [ValidateSet('x64', 'arm64')][string]$Arch = '',
     [string]$QtRoot = '',
     [string]$VlcRoot = '',
+    [string]$Generator = 'Visual Studio 17 2022',
     [switch]$Release,
     [switch]$Tests,
     [switch]$Run,
@@ -84,24 +85,25 @@ function Invoke-Build {
     $QtRoot = Resolve-QtRoot -Explicit $QtRoot -TargetArch $Arch
     Write-Host "=== [2/4] CMake 配置（Qt: $QtRoot，$Arch / $Config）===" -ForegroundColor Cyan
     if ($Clean -and (Test-Path $BuildDir)) { Remove-Item -Recurse -Force $BuildDir }
-    $cmakeArgs = @(
-        '-S', $ScriptDir, '-B', $BuildDir,
-        '-G', 'Visual Studio 17 2022', '-A', $vsArch,
-        "-DCMAKE_PREFIX_PATH=$QtRoot"
-    )
+    $isNinja = $Generator -like 'Ninja*'
+    $cmakeArgs = @('-S', $ScriptDir, '-B', $BuildDir, '-G', $Generator)
+    if (-not $isNinja) { $cmakeArgs += @('-A', $vsArch) }
+    $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtRoot"
+    if ($isNinja) { $cmakeArgs += "-DCMAKE_BUILD_TYPE=$Config" }
     if ($VlcRoot) { $cmakeArgs += "-DCT_VLC_ROOT=$VlcRoot" }
     & cmake @cmakeArgs | Out-Host
 
     Write-Host '=== [3/4] 构建 ===' -ForegroundColor Cyan
     & cmake --build $BuildDir --config $Config -j | Out-Host
-    return (Join-Path $BuildDir "$Config\ClearTone.exe")
+    return $(if ($isNinja) { Join-Path $BuildDir 'ClearTone.exe' } else { Join-Path $BuildDir "$Config\ClearTone.exe" })
 }
 
 # ---------------- 主流程 ----------------
 
 if ($Package) {
     if (-not $Release) { Write-Host '提示：打包固定使用 Release 配置。' }
-    & (Join-Path $ScriptDir 'scripts\build-app.ps1') -Arch $Arch -QtRoot $QtRoot -VlcRoot $VlcRoot -SkipNode
+    & (Join-Path $ScriptDir 'scripts\build-app.ps1') -Arch $Arch -QtRoot $QtRoot -VlcRoot $VlcRoot `
+        -Generator $Generator -SkipNode
     return
 }
 
