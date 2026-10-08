@@ -112,11 +112,11 @@ iOS target 已补齐登录、设置与详情页。构建与免费账号签名见
 
 ```bash
 cd windows
-./scripts/fetch-node-win.sh                      # 下载 win-x64 node.exe
+./scripts/fetch-node-win.sh                      # 下载 win-x64 node.exe（arm64 传参 arm64）
 dotnet build src/ClearTone/ClearTone.csproj      # 双目标：net8.0 + net8.0-windows10.0.19041.0
 dotnet run --project src/ClearTone/ClearTone.csproj -f net8.0   # macOS 上跑 UI 用 net8.0
 dotnet test tests/ClearTone.Tests/ClearTone.Tests.csproj   # 离线单测（xUnit，跑 net8.0）
-./scripts/build-app.sh                           # win-x64 自包含发布 + zip（Windows 上用 build-app.ps1）
+./scripts/build-app.sh all                       # x64+arm64 自包含发布 + zip（Windows 上用 build-app.ps1 -Arch all）
 ```
 
 `net8.0-windows10.0.19041.0` 目标承载 SMTC 系统媒体控制（`App/MediaSessionIntegration.cs`，

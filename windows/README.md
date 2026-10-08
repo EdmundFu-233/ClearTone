@@ -28,8 +28,9 @@ ClearTone 的 Windows 桌面版，使用 **.NET 8 + Avalonia** 构建，与 macO
 Windows 只额外需要 `node.exe`：
 
 ```bash
-# 下载 win-x64 Node.js v22.14.0 到 windows/runtime/node.exe
-./scripts/fetch-node-win.sh
+# 下载 Node.js v22.14.0 到 windows/runtime/win-<arch>/node.exe（默认 x64）
+./scripts/fetch-node-win.sh x64
+./scripts/fetch-node-win.sh arm64
 
 # 运行（开发；工程为 net8.0 + net8.0-windows10.0.19041.0 双目标）
 dotnet run --project src/ClearTone/ClearTone.csproj -f net8.0
@@ -44,16 +45,17 @@ dotnet test tests/ClearTone.Tests/ClearTone.Tests.csproj
 ## 发布打包
 
 ```powershell
-# 在 Windows 上
-powershell -ExecutionPolicy Bypass -File scripts/build-app.ps1
+# 在 Windows 上（-Arch x64|arm64|all，默认 x64）
+powershell -ExecutionPolicy Bypass -File scripts/build-app.ps1 -Arch all
 ```
 
 ```bash
 # 在 macOS/Linux 上交叉发布
-./scripts/build-app.sh
+./scripts/build-app.sh all
 ```
 
-产物：`publish/win-x64/`（自包含，目标机无需安装 .NET）与 `publish/ClearTone-win-x64.zip`。
+产物：`publish/win-<arch>/`（自包含，目标机无需安装 .NET）与
+`publish/ClearTone-win-<arch>.zip`（x64 / arm64）。
 
 ## 本地数据
 

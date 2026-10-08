@@ -44,7 +44,8 @@
   <!-- 辅助进程：复用 macOS 端同一份 api/ 业务代码（纯 JS，平台无关），加上 win-x64 的 node.exe -->
   <PropertyGroup>
     <HelperApiSource>$(MSBuildThisFileDirectory)..\..\..\ClearTone\Resources\HelperRuntime\api\</HelperApiSource>
-    <HelperNodeSource>$(MSBuildThisFileDirectory)..\..\runtime\node.exe</HelperNodeSource>
+    <HelperNodeSource Condition="'$(RuntimeIdentifier)' == 'win-arm64'">$(MSBuildThisFileDirectory)..\..\runtime\win-arm64\node.exe</HelperNodeSource>
+    <HelperNodeSource Condition="'$(HelperNodeSource)' == ''">$(MSBuildThisFileDirectory)..\..\runtime\win-x64\node.exe</HelperNodeSource>
   </PropertyGroup>
 
   <ItemGroup>
