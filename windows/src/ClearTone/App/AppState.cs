@@ -284,6 +284,12 @@ public class AppState : ObservableObject
 
     public string DataContextKey => $"{IsLoggedIn}-{Account?.UserID ?? "guest"}-{_accountGeneration}";
 
+    private void NotifyDataContextChanged()
+    {
+        OnPropertyChanged(nameof(DataContextKey));
+        OnPropertyChanged(nameof(CurrentAccountGeneration));
+    }
+
     public bool CanPerformWrite => IsLoggedIn && !NeedsReLogin;
 
     public int CurrentAccountGeneration => _accountGeneration;
@@ -378,6 +384,7 @@ public class AppState : ObservableObject
         IsLoggedIn = true;
         _accountGeneration += 1;
         NeedsReLogin = false;
+        NotifyDataContextChanged();
         PlayerController.Shared.SetAccountIsVIP(info.IsVIP);
         if (!string.IsNullOrEmpty(info.UserID))
         {
@@ -403,6 +410,7 @@ public class AppState : ObservableObject
         _userPlaylistsToken = Guid.NewGuid();
         _userPlaylists = new List<Playlist>();
         IsLoadingUserPlaylists = false;
+        NotifyDataContextChanged();
         PersistenceStore.Shared.ClearCachedAccount();
         if (clearLikedCache)
         {

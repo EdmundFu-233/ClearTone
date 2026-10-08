@@ -243,4 +243,29 @@ public class AppStateLoginLoadTests : IDisposable
         Assert.False(state.IsLoggedIn);
         Assert.Empty(state.UserPlaylists);
     }
+
+    [Fact]
+    public void DataContextKeyChangeIsBroadcastOnLoginAndLogout()
+    {
+        var provider = new StubMusicProvider();
+        var state = new AppState(provider);
+        var raised = new List<string?>();
+        state.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        var before = state.DataContextKey;
+        state.ApplyAccount(new AccountInfo { UserID = "42", Nickname = "tester" });
+
+        Assert.Contains(nameof(AppState.DataContextKey), raised);
+        Assert.Contains(nameof(AppState.CurrentAccountGeneration), raised);
+        Assert.NotEqual(before, state.DataContextKey);
+
+        raised.Clear();
+        var afterLogin = state.DataContextKey;
+        state.PerformLogoutAsync().GetAwaiter().GetResult();
+
+        Assert.Contains(nameof(AppState.DataContextKey), raised);
+        Assert.NotEqual(afterLogin, state.DataContextKey);
+        Assert.False(state.IsLoggedIn);
+    }
+
 }
