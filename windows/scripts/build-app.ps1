@@ -58,6 +58,54 @@ function Fetch-Node {
     return & (Join-Path $ScriptDir 'fetch-node-win.ps1') -Arch $TargetArch
 }
 
+# 交叉编译（x64 主机 → arm64 目标）时的运行库部署。
+# 清单与 x64 上 windeployqt 的输出保持一致（见 CI 的“列出产物内容”）。
+function Deploy-CrossRuntime {
+    param([string]$TargetQt, [string]$Destination)
+
+    $targetBin = Join-Path $TargetQt 'bin'
+    $runtimeDlls = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Network.dll', 'Qt6Svg.dll')
+    if (Test-Path (Join-Path $targetBin 'Qt6Multimedia.dll')) {
+        $runtimeDlls += 'Qt6Multimedia.dll'
+    }
+    foreach ($name in $runtimeDlls) {
+        $source = Join-Path $targetBin $name
+        if (-not (Test-Path $source)) { throw "缺少目标 Qt 运行库：$source" }
+        Copy-Item $source $Destination -Force
+    }
+    foreach ($pattern in @('dxcompiler.dll', 'dxil.dll', 'av*.dll', 'sw*.dll')) {
+        Get-ChildItem $targetBin -Filter $pattern -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $Destination -Force
+    }
+    foreach ($category in @('platforms', 'styles', 'imageformats', 'iconengines',
+                            'networkinformation', 'tls', 'generic', 'multimedia')) {
+        $source = Join-Path $TargetQt "plugins\$category"
+        if (Test-Path $source) {
+            Copy-Item $source (Join-Path $Destination $category) -Recurse -Force
+        }
+    }
+    if (-not (Test-Path (Join-Path $Destination 'platforms\qwindows.dll'))) {
+        throw '交叉部署缺少 platforms\qwindows.dll'
+    }
+
+    # MSVC ARM64 运行库（避免要求目标机预装 VC++ Redistributable）
+    $vsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vsWhere) {
+        $vsRoot = & $vsWhere -latest -property installationPath | Select-Object -First 1
+        if ($vsRoot) {
+            $crt = Get-ChildItem (Join-Path $vsRoot 'VC\Redist\MSVC') -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                ForEach-Object { Join-Path $_.FullName 'arm64\Microsoft.VC143.CRT' } |
+                Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($crt) {
+                Copy-Item (Join-Path $crt '*.dll') -Destination $Destination -Force
+            } else {
+                Write-Warning '未找到 ARM64 MSVC 运行库，目标机需要安装 VC++ Redistributable (ARM64)。'
+            }
+        }
+    }
+}
+
 function Build-One {
     param([string]$TargetArch)
 
@@ -97,17 +145,16 @@ function Build-One {
     if (-not (Test-Path $exe)) { throw "缺少产物：$exe" }
     Copy-Item $exe $publishDir -Force
 
-    # 交叉编译时必须用主机（x64）的 windeployqt，并用 --qtpaths 指向目标 Qt。
-    $windeployqt = if ($QtHostPath) {
-        Join-Path $QtHostPath 'bin\windeployqt.exe'
+    if ($QtHostPath) {
+        # 交叉包没有可在 x64 主机运行的 qtpaths，主机 windeployqt 无法解析目标 Qt；
+        # 按 x64 windeployqt 的部署清单手动部署目标运行库与插件。
+        Deploy-CrossRuntime -TargetQt $resolvedQt -Destination $publishDir
     } else {
-        Join-Path $resolvedQt 'bin\windeployqt.exe'
+        $windeployqt = Join-Path $resolvedQt 'bin\windeployqt.exe'
+        if (-not (Test-Path $windeployqt)) { throw "缺少 $windeployqt" }
+        & $windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw `
+            (Join-Path $publishDir 'ClearTone.exe')
     }
-    if (-not (Test-Path $windeployqt)) { throw "缺少 $windeployqt" }
-    $deployArgs = @('--release', '--no-translations', '--no-system-d3d-compiler', '--no-opengl-sw')
-    if ($QtHostPath) { $deployArgs += @('--qtpaths', (Join-Path $resolvedQt 'bin\qtpaths.exe')) }
-    $deployArgs += (Join-Path $publishDir 'ClearTone.exe')
-    & $windeployqt @deployArgs
 
     $helperBin = Join-Path $publishDir 'helper\bin'
     $helperApi = Join-Path $publishDir 'helper\api'

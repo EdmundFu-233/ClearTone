@@ -33,7 +33,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip aqtinstall
-          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --outputdir C:\Qt
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --outputdir C:\Qt -m qtmultimedia qtshadertools
           $kit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory | Where-Object { $_.Name -match 'msvc\d+_64$' } | Select-Object -First 1
           if (-not $kit) { throw '未找到 Qt kit' }
           "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -86,7 +86,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip aqtinstall
-          python -m aqt install-qt windows desktop $env:QT_VERSION ${{ matrix.qt_arch }} --outputdir C:\Qt
+          python -m aqt install-qt windows desktop $env:QT_VERSION ${{ matrix.qt_arch }} --outputdir C:\Qt -m qtmultimedia qtshadertools
           $pattern = if ('${{ matrix.arch }}' -eq 'arm64') { 'arm64' } else { 'msvc\d+_64$' }
           $kit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory |
             Where-Object { $_.Name -match $pattern } | Select-Object -First 1

@@ -25,9 +25,10 @@ Windows 侧只额外携带 win-x64 / win-arm64 的 `node.exe`。
   “MSVC v143 - VS 2022 C++ ARM64 生成工具”）；
 - **CMake ≥ 3.24**（VS 自带即可）；
 - **Qt 6.5+**（Qt Online Installer 勾选 `MSVC 2022 64-bit`，做 ARM64 包则同时勾选
-  `MSVC 2022 ARM64`）；也可以用 `aqtinstall`：
-  `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64`、
-  `aqt install-qt windows desktop 6.8.3 win64_msvc2022_arm64_cross_compiled`；
+  `MSVC 2022 ARM64`；**并勾选 Qt Multimedia / Qt Shader Tools**，否则没有音频后端）；
+  也可以用 `aqtinstall`：
+  `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtmultimedia qtshadertools`、
+  `aqt install-qt windows desktop 6.8.3 win64_msvc2022_arm64_cross_compiled -m qtmultimedia qtshadertools`；
 - **Node.js**（仅开发机需要，用于 `npm ci` 装辅助进程依赖；应用运行不依赖系统 Node）。
 
 ```powershell
