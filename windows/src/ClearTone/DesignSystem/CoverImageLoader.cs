@@ -12,10 +12,14 @@ public sealed class CoverImageLoader
 
     private readonly HttpClient _client;
     private readonly object _gate = new();
-    private readonly Dictionary<string, Bitmap> _memory = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (Bitmap Bitmap, long Bytes)> _memory = new(StringComparer.Ordinal);
     private readonly LinkedList<string> _lru = new();
     private readonly Dictionary<string, Task<Bitmap?>> _inFlight = new(StringComparer.Ordinal);
-    private const int MemoryLimit = 200;
+    private long _memoryBytes;
+    private const int MemoryEntryLimit = 400;
+    private const long MemoryByteLimit = 64L * 1024 * 1024;
+    private const long DiskByteLimit = 300L * 1024 * 1024;
+    private static readonly TimeSpan DiskMaxAge = TimeSpan.FromDays(60);
 
     public CoverImageLoader()
     {
@@ -29,6 +33,39 @@ public sealed class CoverImageLoader
         _client.DefaultRequestHeaders.TryAddWithoutValidation(
             "User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36");
+        _ = Task.Run(PruneDiskCache);
+    }
+
+    private static void PruneDiskCache()
+    {
+        try
+        {
+            var root = Path.Combine(StoragePaths.Root, "CoverCache");
+            if (!Directory.Exists(root)) return;
+            var files = new DirectoryInfo(root)
+                .EnumerateFiles("*", SearchOption.AllDirectories)
+                .Select(file => (File: file, LastUsed: file.LastAccessTimeUtc > file.LastWriteTimeUtc ? file.LastAccessTimeUtc : file.LastWriteTimeUtc))
+                .OrderBy(entry => entry.LastUsed)
+                .ToList();
+            long total = files.Sum(entry => entry.File.Length);
+            var now = DateTime.UtcNow;
+            foreach (var (file, lastUsed) in files)
+            {
+                var expired = now - lastUsed > DiskMaxAge;
+                if (!expired && total <= DiskByteLimit) break;
+                total -= file.Length;
+                try
+                {
+                    file.Delete();
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
     }
 
     public Task<Bitmap?> LoadAsync(string url, int decodeWidth = 0, CancellationToken ct = default)
@@ -42,7 +79,7 @@ public sealed class CoverImageLoader
             {
                 _lru.Remove(key);
                 _lru.AddFirst(key);
-                return Task.FromResult<Bitmap?>(cached);
+                return Task.FromResult<Bitmap?>(cached.Bitmap);
             }
             if (_inFlight.TryGetValue(key, out var pending)) return pending;
         }
@@ -70,17 +107,25 @@ public sealed class CoverImageLoader
             if (bytes is null || bytes.Length == 0) return null;
             var bitmap = Decode(bytes, decodeWidth);
             if (bitmap is null) return null;
+            var pixelBytes = (long)bitmap.PixelSize.Width * bitmap.PixelSize.Height * 4;
             lock (_gate)
             {
-                _memory[key] = bitmap;
+                if (_memory.TryGetValue(key, out var existing))
+                {
+                    _memoryBytes -= existing.Bytes;
+                    _lru.Remove(key);
+                }
+                _memory[key] = (bitmap, pixelBytes);
+                _memoryBytes += pixelBytes;
                 _lru.AddFirst(key);
-                while (_lru.Count > MemoryLimit)
+                while (_lru.Count > MemoryEntryLimit || _memoryBytes > MemoryByteLimit)
                 {
                     var oldest = _lru.Last;
                     if (oldest is null) break;
                     _lru.RemoveLast();
-                    _memory.Remove(oldest.Value);
+                    if (_memory.Remove(oldest.Value, out var evicted)) _memoryBytes -= evicted.Bytes;
                 }
+                if (_memoryBytes < 0) _memoryBytes = 0;
             }
             return bitmap;
         }

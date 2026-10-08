@@ -1,10 +1,12 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
+using Avalonia.Data;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using ClearTone.Core.Models;
+using CommunityToolkit.Mvvm.ComponentModel;
 using ClearTone.DesignSystem;
 using ClearTone.Playback;
 using ClearTone.Shell;
@@ -284,79 +286,256 @@ public static class UIComponents
     }
 }
 
+public sealed class SongRowModel : ObservableObject
+{
+    private static readonly IBrush PrimaryBrush = new SolidColorBrush(CTColors.TextPrimary);
+    private static readonly IBrush SecondaryBrush = new SolidColorBrush(CTColors.TextSecondary);
+    private static readonly IBrush AccentBrush = new SolidColorBrush(CTColors.Accent);
+
+    private bool _isLiked;
+    private bool _isPlaying;
+
+    public SongRowModel(Song song, int index, bool isLiked)
+    {
+        Song = song;
+        Index = index;
+        _isLiked = isLiked;
+    }
+
+    public Song Song { get; }
+    public int Index { get; }
+    public string IndexText => (Index + 1).ToString();
+    public string Title => Song.Title;
+    public string ArtistNames => Song.ArtistNames;
+    public string DurationText => CTFormatting.Time(Song.Duration);
+    public string? CoverUrl => Song.CoverURL;
+    public bool IsPlayable => Song.IsPlayable;
+    public bool HasUnavailableReason => !string.IsNullOrEmpty(Song.UnavailableReason);
+    public string? UnavailableReason => Song.UnavailableReason;
+    public IBrush TitleBrush => Song.IsPlayable ? PrimaryBrush : SecondaryBrush;
+
+    public bool IsLiked
+    {
+        get => _isLiked;
+        set => SetProperty(ref _isLiked, value);
+    }
+
+    public bool IsPlaying
+    {
+        get => _isPlaying;
+        set
+        {
+            if (!SetProperty(ref _isPlaying, value)) return;
+            OnPropertyChanged(nameof(NotPlaying));
+            OnPropertyChanged(nameof(IndexBrush));
+        }
+    }
+
+    public bool NotPlaying => !_isPlaying;
+
+    public IBrush IndexBrush => _isPlaying ? AccentBrush : SecondaryBrush;
+}
+
 public sealed class SongListView : UserControl
 {
+    private static readonly FontFamily IconFont = new("Segoe MDL2 Assets, Segoe Fluent Icons");
+
     private readonly ListBox _list = new();
     private IReadOnlyList<Song> _songs = Array.Empty<Song>();
+    private List<SongRowModel> _rows = new();
+    private SongRowModel? _playingRow;
     private AppState App => AppState.Shared;
 
     public SongListView()
     {
         _list.Background = Brushes.Transparent;
         _list.BorderThickness = new Thickness(0);
-        _list.ItemTemplate = new FuncDataTemplate<Song>((song, _) =>
-        {
-            if (song is null) return new Control();
-            var index = _songs.ToList().FindIndex(item => item.Id == song.Id);
-            var isLiked = App.IsLiked(song.Id);
-            var isPlaying = PlayerController.Shared.CurrentSong?.Id == song.Id;
-            var content = UIComponents.SongRowContent(song, Math.Max(0, index), isLiked, isPlaying);
-            content.ContextMenu = BuildContextMenu(song);
-            return content;
-        });
+        _list.ItemTemplate = new FuncDataTemplate<SongRowModel>((row, _) =>
+            row is null ? new Control() : BuildRow(row));
         _list.DoubleTapped += (_, _) =>
         {
-            if (_list.SelectedItem is Song song)
+            if (_list.SelectedItem is SongRowModel row && _songs.Count > 0)
             {
-                var index = _songs.ToList().FindIndex(item => item.Id == song.Id);
-                PlayerController.Shared.PlaySongs(_songs, Math.Max(0, index));
+                PlayerController.Shared.PlaySongs(_songs, Math.Clamp(row.Index, 0, _songs.Count - 1));
             }
         };
         App.PropertyChanged += (_, args) =>
         {
-            if (args.PropertyName is nameof(AppState.LikesVersion)) RefreshItems();
+            if (args.PropertyName is nameof(AppState.LikesVersion)) RefreshLikes();
         };
         PlayerController.Shared.PropertyChanged += (_, args) =>
         {
-            if (args.PropertyName is nameof(PlayerController.CurrentSong)) RefreshItems();
+            if (args.PropertyName is nameof(PlayerController.CurrentSong)) RefreshPlaying();
         };
         Content = _list;
     }
 
-    private void RefreshItems() => _list.ItemsSource = _songs.ToList();
-
     public void SetSongs(IReadOnlyList<Song> songs)
     {
         _songs = songs;
-        _list.ItemsSource = songs.ToList();
+        _rows = songs.Select((song, index) => new SongRowModel(song, index, App.IsLiked(song.Id))).ToList();
+        _playingRow = null;
+        _list.ItemsSource = _rows;
+        RefreshPlaying();
     }
 
-    private ContextMenu BuildContextMenu(Song song)
+    private void RefreshLikes()
     {
+        foreach (var row in _rows)
+        {
+            row.IsLiked = App.IsLiked(row.Song.Id);
+        }
+    }
+
+    private void RefreshPlaying()
+    {
+        var songID = PlayerController.Shared.CurrentSong?.Id;
+        if (_playingRow is not null && _playingRow.Song.Id != songID)
+        {
+            _playingRow.IsPlaying = false;
+            _playingRow = null;
+        }
+        if (songID is null || _playingRow is not null) return;
+        _playingRow = _rows.FirstOrDefault(row => row.Song.Id == songID);
+        if (_playingRow is not null) _playingRow.IsPlaying = true;
+    }
+
+    private static Control BuildRow(SongRowModel row)
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("30,44,*,2*,Auto"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var indexText = new TextBlock
+        {
+            Text = row.IndexText,
+            Foreground = row.IndexBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        indexText.Bind(IsVisibleProperty, new Binding(nameof(SongRowModel.NotPlaying)));
+        indexText.Bind(TextBlock.ForegroundProperty, new Binding(nameof(SongRowModel.IndexBrush)));
+        var playingGlyph = new TextBlock
+        {
+            Text = "\uE768",
+            FontFamily = IconFont,
+            FontSize = 13,
+            Foreground = row.IndexBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        playingGlyph.Bind(IsVisibleProperty, new Binding(nameof(SongRowModel.IsPlaying)));
+        var indexPanel = new Panel();
+        indexPanel.Children.Add(indexText);
+        indexPanel.Children.Add(playingGlyph);
+        grid.Children.Add(indexPanel);
+
+        var cover = new Controls.CoverImage
+        {
+            Width = 36,
+            Height = 36,
+            CornerRadius = new CornerRadius(4),
+            DecodeWidth = 72,
+            CoverUrl = row.CoverUrl,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(cover, 1);
+        grid.Children.Add(cover);
+
+        var title = new TextBlock
+        {
+            Text = row.Title,
+            Foreground = row.TitleBrush,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(CTSpacing.Sm, 0, 0, 0),
+        };
+        Grid.SetColumn(title, 2);
+        grid.Children.Add(title);
+
+        var artist = new TextBlock
+        {
+            Text = row.ArtistNames,
+            Classes = { "secondary" },
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(CTSpacing.Sm, 0),
+        };
+        Grid.SetColumn(artist, 3);
+        grid.Children.Add(artist);
+
+        var right = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = CTSpacing.Sm,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var likeIcon = new TextBlock
+        {
+            Text = "\uEB52",
+            FontFamily = IconFont,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(CTColors.Accent),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        likeIcon.Bind(IsVisibleProperty, new Binding(nameof(SongRowModel.IsLiked)));
+        right.Children.Add(likeIcon);
+        if (row.HasUnavailableReason)
+        {
+            right.Children.Add(new TextBlock
+            {
+                Text = row.UnavailableReason,
+                Classes = { "secondary" },
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+        right.Children.Add(new TextBlock
+        {
+            Text = row.DurationText,
+            Classes = { "secondary" },
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        Grid.SetColumn(right, 4);
+        grid.Children.Add(right);
+
+        var container = new Border
+        {
+            Padding = new Thickness(6, 4),
+            Child = grid,
+        };
+        container.ContextMenu = BuildContextMenu(row.Song);
+        return container;
+    }
+
+    private static ContextMenu BuildContextMenu(Song song)
+    {
+        var app = AppState.Shared;
         var menu = new ContextMenu();
         menu.Items.Add(MenuItem("立即播放", () => PlayerController.Shared.PlaySong(song)));
         menu.Items.Add(MenuItem("下一首播放", () => PlayerController.Shared.InsertNext(song)));
         menu.Items.Add(MenuItem("添加到队列", () => PlayerController.Shared.AppendToQueue(song)));
-        menu.Items.Add(MenuItem("喜欢/取消喜欢", async () => await App.ToggleLikeAsync(song)));
-        if (App.IsLoggedIn && App.UserPlaylists.Count > 0)
+        menu.Items.Add(MenuItem("喜欢/取消喜欢", async () => await app.ToggleLikeAsync(song)));
+        if (app.IsLoggedIn && app.UserPlaylists.Count > 0)
         {
             var addTo = new MenuItem { Header = "添加到歌单" };
-            foreach (var playlist in App.UserPlaylists.Take(50))
+            foreach (var playlist in app.UserPlaylists.Take(50))
             {
                 var captured = playlist;
                 var item = new MenuItem { Header = captured.Name };
-                item.Click += async (_, _) => await App.ModifyPlaylistAsync(captured, new[] { song.Id }, true);
+                item.Click += async (_, _) => await app.ModifyPlaylistAsync(captured, new[] { song.Id }, true);
                 addTo.Items.Add(item);
             }
             menu.Items.Add(addTo);
         }
         if (!string.IsNullOrEmpty(song.Album?.Id))
         {
-            menu.Items.Add(MenuItem("打开专辑", () => App.OpenAlbum(song.Album!.Id)));
+            menu.Items.Add(MenuItem("打开专辑", () => app.OpenAlbum(song.Album!.Id)));
         }
         if (song.Artists.Count > 0)
         {
-            menu.Items.Add(MenuItem("打开歌手", () => App.OpenArtist(song.Artists[0].Id)));
+            menu.Items.Add(MenuItem("打开歌手", () => app.OpenArtist(song.Artists[0].Id)));
         }
         return menu;
     }

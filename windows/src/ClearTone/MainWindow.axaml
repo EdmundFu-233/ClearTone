@@ -74,10 +74,14 @@
               <controls:CoverImage x:Name="BarCover" Width="46" Height="46" CornerRadius="8"
                                    DecodeWidth="92" CoverUrl="{Binding Bar.CoverUrl}" />
             </Button>
-            <StackPanel VerticalAlignment="Center" Spacing="2" MaxWidth="220">
-              <TextBlock Text="{Binding Bar.Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-              <TextBlock Text="{Binding Bar.Artist}" Classes="secondary" TextTrimming="CharacterEllipsis" />
-            </StackPanel>
+            <Button x:Name="TitleButton" Click="OnTitleClick" Background="Transparent"
+                    BorderThickness="0" Padding="4" HorizontalContentAlignment="Left"
+                    ToolTip.Tip="打开正在播放">
+              <StackPanel VerticalAlignment="Center" Spacing="2" MaxWidth="220">
+                <TextBlock Text="{Binding Bar.Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding Bar.Artist}" Classes="secondary" TextTrimming="CharacterEllipsis" />
+              </StackPanel>
+            </Button>
             <Button x:Name="LikeButton" Click="OnLikeClick" Classes="toolbar"
                     FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons" FontSize="16"
                     Content="{Binding Bar.LikeGlyph}" Foreground="{Binding Bar.LikeForeground}"

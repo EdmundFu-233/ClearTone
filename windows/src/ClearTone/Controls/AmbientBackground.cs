@@ -18,10 +18,10 @@ public class AmbientBackground : Control
     public AmbientBackground()
     {
         ClipToBounds = true;
-        _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+        _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _timer.Tick += (_, _) =>
         {
-            _t += 0.016;
+            _t += 0.02;
             InvalidateVisual();
         };
         PropertyChanged += (_, args) =>

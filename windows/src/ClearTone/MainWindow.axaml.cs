@@ -1,10 +1,14 @@
 using System.ComponentModel;
+using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Styling;
+using Avalonia.Threading;
 using ClearTone.Core.Models;
 using ClearTone.Core.Persistence;
 using ClearTone.DesignSystem;
@@ -23,6 +27,8 @@ public partial class MainWindow : Window
     private bool _syncingSidebar;
     private bool _progressDragging;
     private bool _syncingVolume;
+    private readonly Dictionary<string, Button> _playlistButtons = new(StringComparer.Ordinal);
+    private string _lastProgressTip = "";
     private bool _startupCompleted;
 
     public MainWindow()
@@ -41,6 +47,16 @@ public partial class MainWindow : Window
         ProgressSlider.AddHandler(PointerReleasedEvent, OnProgressPointerReleased, RoutingStrategies.Tunnel);
         ProgressSlider.PropertyChanged += OnProgressPropertyChanged;
         VolumeSlider.PropertyChanged += OnVolumePropertyChanged;
+        Player.TimeUpdated += _ => UpdateProgressTooltip();
+        UpdateProgressTooltip();
+        MainContent.Transitions = new Transitions
+        {
+            new DoubleTransition
+            {
+                Property = Visual.OpacityProperty,
+                Duration = TimeSpan.FromMilliseconds(150),
+            },
+        };
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
 
         App.PropertyChanged += OnAppPropertyChanged;
@@ -121,6 +137,7 @@ public partial class MainWindow : Window
     private void BuildPlaylists()
     {
         PlaylistPanel.Children.Clear();
+        _playlistButtons.Clear();
         foreach (var playlist in App.UserPlaylists.Take(200))
         {
             var button = new Button
@@ -138,8 +155,27 @@ public partial class MainWindow : Window
             };
             var id = playlist.Id;
             button.Click += (_, _) => App.OpenPlaylist(id);
+            _playlistButtons[id] = button;
             PlaylistPanel.Children.Add(button);
         }
+        UpdatePlaylistHighlight();
+    }
+
+    private void UpdatePlaylistHighlight()
+    {
+        var selected = App.CurrentPage == Page.PlaylistDetail ? App.SelectedPlaylistID : null;
+        foreach (var (id, button) in _playlistButtons)
+        {
+            button.Background = id == selected ? CTColors.OverlayBrush : Brushes.Transparent;
+        }
+    }
+
+    private void UpdateProgressTooltip()
+    {
+        var tip = $"{CTFormatting.Time(Player.CurrentTime)} / {CTFormatting.Time(Player.Duration)}";
+        if (tip == _lastProgressTip) return;
+        _lastProgressTip = tip;
+        ToolTip.SetTip(ProgressSlider, tip);
     }
 
     private void ShowPage(Page page)
@@ -147,6 +183,8 @@ public partial class MainWindow : Window
         PageTitleText.Text = page.DisplayName();
         MainContent.Content = PageFactory.Resolve(page);
         BackButton.IsVisible = App.CanGoBack;
+        MainContent.Opacity = 0;
+        Dispatcher.UIThread.Post(() => MainContent.Opacity = 1, DispatcherPriority.Background);
     }
 
     private void SyncSidebarSelection()
@@ -189,12 +227,16 @@ public partial class MainWindow : Window
             case nameof(AppState.CurrentPage):
                 ShowPage(App.CurrentPage);
                 SyncSidebarSelection();
+                UpdatePlaylistHighlight();
                 break;
             case nameof(AppState.CanGoBack):
                 BackButton.IsVisible = App.CanGoBack;
                 break;
             case nameof(AppState.UserPlaylists):
                 BuildPlaylists();
+                break;
+            case nameof(AppState.SelectedPlaylistID):
+                UpdatePlaylistHighlight();
                 break;
             case nameof(AppState.Account):
             case nameof(AppState.IsLoggedIn):
@@ -473,6 +515,8 @@ public partial class MainWindow : Window
     }
 
     private void OnExpandClick(object? sender, RoutedEventArgs e) => App.IsNowPlayingExpanded = true;
+
+    private void OnTitleClick(object? sender, RoutedEventArgs e) => App.IsNowPlayingExpanded = true;
 
     private void OnCollapseClick(object? sender, RoutedEventArgs e) => App.IsNowPlayingExpanded = false;
 
