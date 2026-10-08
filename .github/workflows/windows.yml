@@ -37,6 +37,11 @@ jobs:
           $kit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory | Where-Object { $_.Name -match 'msvc\d+_64$' } | Select-Object -First 1
           if (-not $kit) { throw '未找到 Qt kit' }
           "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # 测试可执行文件运行时需要能找到 Qt DLL，否则 Windows 弹缺库对话框并卡死
+          "$($kit.FullName)\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          if (-not (Test-Path (Join-Path $kit.FullName 'lib\cmake\Qt6Test'))) {
+            throw '缺少 Qt Test 模块，无法注册离线测试'
+          }
 
       # windows-latest 的 VS 版本会变，固定 "Visual Studio 17 2022" 生成器不可靠；
       # 用 msvc-dev-cmd 激活工具链 + Ninja，避免绑定具体 VS 实例。
@@ -54,7 +59,13 @@ jobs:
         run: cmake --build windows/build-ci -j
 
       - name: 离线单测
-        run: ctest --test-dir windows/build-ci --output-on-failure
+        shell: pwsh
+        run: |
+          $listed = ctest --test-dir windows/build-ci -N
+          if (-not ($listed | Select-String 'Test  #1:')) {
+            throw '没有注册任何测试（Qt Test 未找到或 tests 未加入构建）'
+          }
+          ctest --test-dir windows/build-ci --output-on-failure
 
   # 发布包：tag 推送或手动触发时，构建 win-x64 / win-arm64 的 zip
   package:
