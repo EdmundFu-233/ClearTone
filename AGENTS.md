@@ -103,30 +103,35 @@ iOS target 已补齐登录、设置与详情页。构建与免费账号签名见
 
 ## Windows 版（windows/）
 
-`windows/` 是基于 **.NET 8 + Avalonia** 的桌面移植，功能与 macOS 对齐。
+`windows/` 是 **Qt 6 Widgets + C++20（CMake）** 的桌面移植，功能与 macOS 对齐
+（2026-10 起替换旧的 .NET 8 + Avalonia 实现，旧实现见 git 历史）。
 与 macOS **共用同一份** Node 辅助进程业务代码（`ClearTone/Resources/HelperRuntime/api`，
-纯 JS，平台无关），Windows 侧只额外携带 win-x64 的 `node.exe`（`scripts/fetch-node-win.sh`
-下载，不入库）。差异：音频输出用 libVLC（`LibVLCSharp`），凭据用 DPAPI
-（`Core/Security/CredentialStore.cs`），音频缓存不转码（无 `afconvert`），
-系统媒体控制（SMTC）未接入。
+纯 JS，平台无关），Windows 侧只额外携带 win-x64 / win-arm64 的 `node.exe`
+（`scripts/fetch-node-win.sh` 下载，不入库）。差异：音频输出默认 libVLC
+（C API；无 SDK 时回退 Qt Multimedia），凭据用 DPAPI
+（`Core/Security/CredentialStore.cpp`），音频缓存不转码（无 `afconvert`），
+系统媒体控制（SMTC）只留接入点未接线。
 
 ```bash
-cd windows
-./scripts/fetch-node-win.sh                      # 下载 win-x64 node.exe（arm64 传参 arm64）
-dotnet build src/ClearTone/ClearTone.csproj      # 双目标：net8.0 + net8.0-windows10.0.19041.0
-dotnet run --project src/ClearTone/ClearTone.csproj -f net8.0   # macOS 上跑 UI 用 net8.0
-dotnet test tests/ClearTone.Tests/ClearTone.Tests.csproj   # 离线单测（xUnit，跑 net8.0）
-./scripts/build-app.sh all                       # x64+arm64 自包含发布 + zip（Windows 上用 build-app.ps1 -Arch all）
+# 开发（macOS 也可直接构建运行，同一份源码；音频走 Qt Multimedia）
+cmake -S windows -B windows/build-dev -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
+cmake --build windows/build-dev -j8
+./windows/build-dev/ClearTone
+
+# 全部离线单测（Qt Test，必须走脚本或 ctest，逐用例隔离持久化）
+./windows/scripts/run-tests.sh
+
+# Windows 发布（在 Windows 上；Qt 不能从 macOS 交叉发布）
+powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch all -QtRoot C:\Qt\6.8.0\msvc2022_64
 ```
 
-`net8.0-windows10.0.19041.0` 目标承载 SMTC 系统媒体控制（`App/MediaSessionIntegration.cs`，
-`#if WINDOWS` 隔离，失败静默降级）；`net8.0` 目标供 macOS 开发与全部离线单测使用
-（`EnableWindowsTargeting` 让 Windows 目标也能在 macOS 上交叉编译）。
-
-约定：`Features/**` 的页面用**纯 C#** 搭 UI（不写新的 .axaml），页面类加
-`[PageView(Page.X)]` / `[OverlayView(OverlayKind.X)]` 由 `Features/Shared/PageFactory.cs`
-反射注册；有状态机的逻辑放 `Core/`（与 macOS 同一约定，便于离线单测）。
-`windows/runtime/`、`bin/`、`obj/`、`publish/` 均不入库。
+约定：`Features/**` 的页面用**纯 C++** 搭 UI（QWidget 子类 + 代码布局），
+文件里用 `CT_REGISTER_PAGE(Page::X, XView)` / `CT_REGISTER_OVERLAY(OverlayKind::X, View)`
+注册（`Features/Shared/PageFactory.h`；`cleartone_lib` 是 OBJECT 库，保证静态注册
+不被链接器丢弃）；有状态机的逻辑放 `Core/`（与 macOS 同一约定，便于离线单测）。
+异步统一 `ct::Task<T>`（`Core/Async.h`）+ `co_await`，事件用 `ct::Event<>`
+（`Core/Event.h`）多播；C# → C++ 的逐条映射见 `windows/CONVENTIONS.md`。
+`windows/runtime/`、`build*/`、`publish/`、`vendor/` 均不入库。
 
 ## 架构决策
 

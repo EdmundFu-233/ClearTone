@@ -1,0 +1,124 @@
+name: Windows (Qt/C++)
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: '6.8.3'
+
+jobs:
+  # 编译 + 全部离线单测（win-x64）
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装辅助进程依赖
+        shell: pwsh
+        run: npm ci --omit=dev --ignore-scripts --prefix ClearTone/Resources/HelperRuntime/api
+
+      - name: 安装 Qt（${{ env.QT_VERSION }} msvc2022_64）
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip aqtinstall
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --outputdir C:\Qt
+          $kit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory | Where-Object { $_.Name -match 'msvc\d+_64$' } | Select-Object -First 1
+          if (-not $kit) { throw '未找到 Qt kit' }
+          "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: CMake 配置
+        shell: pwsh
+        run: >
+          cmake -S windows -B windows/build-ci -G "Visual Studio 17 2022" -A x64
+          "-DCMAKE_PREFIX_PATH=$env:QT_ROOT"
+
+      - name: 构建（Release）
+        run: cmake --build windows/build-ci --config Release -j
+
+      - name: 离线单测
+        run: ctest --test-dir windows/build-ci -C Release --output-on-failure
+
+  # 发布包：tag 推送或手动触发时，构建 win-x64 / win-arm64 的 zip
+  package:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            qt_arch: win64_msvc2022_64
+          - arch: arm64
+            qt_arch: win64_msvc2022_arm64_cross_compiled
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装辅助进程依赖
+        shell: pwsh
+        run: npm ci --omit=dev --ignore-scripts --prefix ClearTone/Resources/HelperRuntime/api
+
+      - name: 安装 Qt（${{ env.QT_VERSION }} ${{ matrix.qt_arch }}）
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip aqtinstall
+          python -m aqt install-qt windows desktop $env:QT_VERSION ${{ matrix.qt_arch }} --outputdir C:\Qt
+          $pattern = if ('${{ matrix.arch }}' -eq 'arm64') { 'arm64' } else { 'msvc\d+_64$' }
+          $kit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory |
+            Where-Object { $_.Name -match $pattern } | Select-Object -First 1
+          if (-not $kit) { throw '未找到 Qt kit' }
+          "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 打包（win-${{ matrix.arch }}）
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
+          -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClearTone-win-${{ matrix.arch }}
+          path: windows/publish/ClearTone-win-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  # tag 推送时汇总产物并创建 GitHub Release
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 创建/更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la artifacts
+          if ! gh release view "$TAG"; then
+            gh release create "$TAG" --title "澄音 ClearTone ${TAG#v}" --generate-notes
+          fi
+          gh release upload "$TAG" artifacts/*.zip --clobber

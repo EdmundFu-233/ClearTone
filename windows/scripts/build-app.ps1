@@ -1,66 +1,128 @@
-# 构建 Windows 发布包（在 Windows 上运行）
-# 用法：powershell -File scripts/build-app.ps1 [-Arch x64|arm64|all]
-# 产物：windows\publish\win-<arch>\ 与 windows\publish\ClearTone-win-<arch>.zip
-param([string]$Arch = "x64")
-$ErrorActionPreference = "Stop"
-if ($Arch -notin @("x64", "arm64", "all")) { throw "用法：build-app.ps1 [-Arch x64|arm64|all]" }
+<#
+.SYNOPSIS
+  在 Windows 上构建并打包 ClearTone（Qt Widgets / C++）。
+.PARAMETER Arch
+  x64 | arm64 | all（默认 x64）。
+.PARAMETER QtRoot
+  Qt 安装前缀（其下含 lib\cmake\Qt6 与 bin\windeployqt.exe）。留空时按
+  PATH 上的 qmake/windeployqt 自动探测。
+.PARAMETER VlcRoot
+  可选：libVLC SDK 根目录（含 include\ 与 lib\）。留空则使用 Qt Multimedia
+  音频后端（Windows Media Foundation 解码）。
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch all -QtRoot C:\Qt\6.8.0\msvc2022_64
+#>
+param(
+    [ValidateSet('x64', 'arm64', 'all')][string]$Arch = 'x64',
+    [string]$QtRoot = '',
+    [string]$VlcRoot = '',
+    [switch]$SkipNode
+)
+
+$ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $WindowsDir = Split-Path -Parent $ScriptDir
 
-function Build-Arch([string]$TargetArch) {
-    $PublishDir = Join-Path $WindowsDir "publish\win-$TargetArch"
-    $RuntimeDir = Join-Path $WindowsDir "runtime\win-$TargetArch"
-    $NodeExe = Join-Path $RuntimeDir "node.exe"
-
-    Write-Host "=== [$TargetArch] 1/3 准备辅助进程运行时（win-$TargetArch node.exe） ==="
-    New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
-    if (-not (Test-Path $NodeExe)) {
-        $Url = "https://nodejs.org/dist/v22.14.0/win-$TargetArch/node.exe"
-        Write-Host "下载 $Url"
-        Invoke-WebRequest -Uri $Url -OutFile $NodeExe
-    } else {
-        Write-Host "node.exe 已存在，跳过下载"
+function Resolve-QtRoot {
+    param([string]$Explicit, [string]$TargetArch)
+    if ($Explicit) { return $Explicit }
+    $windeployqt = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
+    if ($windeployqt) { return (Split-Path -Parent $windeployqt.Source) }
+    $kitPattern = if ($TargetArch -eq 'arm64') { 'arm64' } else { 'msvc\d+_64$' }
+    $candidates = Get-ChildItem 'C:\Qt' -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d+\.\d+' } |
+        Sort-Object Name -Descending
+    foreach ($version in $candidates) {
+        $kits = Get-ChildItem $version.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match $kitPattern } |
+            Sort-Object Name -Descending
+        foreach ($kit in $kits) {
+            if (Test-Path (Join-Path $kit.FullName 'bin\windeployqt.exe')) { return $kit.FullName }
+        }
     }
+    throw "未找到 Qt（$TargetArch）：请用 -QtRoot 指定（含 bin\windeployqt.exe）。"
+}
 
-    Write-Host "=== [$TargetArch] 2/3 dotnet publish (win-$TargetArch) ==="
-    if (Test-Path $PublishDir) { Remove-Item -Recurse -Force $PublishDir }
-    $vlcProps = @("-p:VlcWindowsX86Enabled=false")
-    if ($TargetArch -eq "x64") {
-        $vlcProps += "-p:VlcWindowsArm64Enabled=false"
-    } else {
-        $vlcProps += "-p:VlcWindowsX64Enabled=false"
+function Fetch-Node {
+    param([string]$TargetArch)
+    if ($SkipNode) {
+        $nodeExe = Join-Path $WindowsDir "runtime\win-$TargetArch\node.exe"
+        if (-not (Test-Path $nodeExe)) { throw "缺少 $nodeExe，且指定了 -SkipNode" }
+        return $nodeExe
     }
-    dotnet publish (Join-Path $WindowsDir "src\ClearTone\ClearTone.csproj") `
-        -c Release -f net8.0-windows10.0.19041.0 -r "win-$TargetArch" --self-contained true `
-        -p:PublishSingleFile=false @vlcProps `
-        -o $PublishDir
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败" }
+    return & (Join-Path $ScriptDir 'fetch-node-win.ps1') -Arch $TargetArch
+}
 
-    Write-Host "=== [$TargetArch] 3/3 校验与打包 ==="
-    $Required = @(
-        "ClearTone.exe",
-        "helper\bin\node.exe",
-        "helper\api\app.js",
-        "helper\api\server.js",
-        "libvlc\win-$TargetArch\libvlc.dll"
+function Build-One {
+    param([string]$TargetArch)
+
+    $buildDir = Join-Path $WindowsDir "build\win-$TargetArch"
+    $publishDir = Join-Path $WindowsDir "publish\win-$TargetArch"
+    $resolvedQt = Resolve-QtRoot -Explicit $QtRoot -TargetArch $TargetArch
+
+    Write-Host "=== [$TargetArch] 1/5 准备辅助进程运行时 ==="
+    $nodeExe = Fetch-Node -TargetArch $TargetArch
+
+    $vsArch = if ($TargetArch -eq 'arm64') { 'ARM64' } else { 'x64' }
+
+    Write-Host "=== [$TargetArch] 2/5 CMake 配置（Qt: $resolvedQt）==="
+    $configureArgs = @(
+        '-S', $WindowsDir, '-B', $buildDir,
+        '-G', 'Visual Studio 17 2022', '-A', $vsArch,
+        "-DCMAKE_PREFIX_PATH=$resolvedQt",
+        '-DCT_BUILD_TESTS=OFF'
     )
-    foreach ($item in $Required) {
-        $path = Join-Path $PublishDir $item
-        if (-not (Test-Path $path)) {
-            throw "缺少产物: $path"
+    if ($VlcRoot) { $configureArgs += "-DCT_VLC_ROOT=$VlcRoot" }
+    & cmake @configureArgs
+
+    Write-Host "=== [$TargetArch] 3/5 构建 ==="
+    & cmake --build $buildDir --config Release -j
+
+    Write-Host "=== [$TargetArch] 4/5 windeployqt 与辅助进程 ==="
+    if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
+    New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+    $exe = Join-Path $buildDir 'Release\ClearTone.exe'
+    if (-not (Test-Path $exe)) { throw "缺少产物：$exe" }
+    Copy-Item $exe $publishDir -Force
+
+    $windeployqt = Join-Path $resolvedQt 'bin\windeployqt.exe'
+    if (-not (Test-Path $windeployqt)) { throw "缺少 $windeployqt" }
+    & $windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw `
+        (Join-Path $publishDir 'ClearTone.exe')
+
+    $helperBin = Join-Path $publishDir 'helper\bin'
+    $helperApi = Join-Path $publishDir 'helper\api'
+    New-Item -ItemType Directory -Force -Path $helperBin | Out-Null
+    Copy-Item $nodeExe (Join-Path $helperBin 'node.exe') -Force
+    $apiSource = Join-Path (Split-Path -Parent $WindowsDir) 'ClearTone\Resources\HelperRuntime\api'
+    if (-not (Test-Path (Join-Path $apiSource 'app.js'))) {
+        throw "缺少辅助进程业务代码：$apiSource"
+    }
+    if (-not (Test-Path (Join-Path $apiSource 'node_modules'))) {
+        throw "缺少 $apiSource\node_modules，请先在 ClearTone\Resources\HelperRuntime\api 下执行 npm ci --omit=dev --ignore-scripts"
+    }
+    Copy-Item $apiSource $helperApi -Recurse -Force
+
+    if ($VlcRoot) {
+        $vlcOut = Join-Path $publishDir 'libvlc'
+        New-Item -ItemType Directory -Force -Path $vlcOut | Out-Null
+        Get-ChildItem (Join-Path $VlcRoot 'lib') -Filter '*.dll' | Copy-Item -Destination $vlcOut
+        if (Test-Path (Join-Path $VlcRoot 'plugins')) {
+            Copy-Item (Join-Path $VlcRoot 'plugins') (Join-Path $vlcOut 'plugins') -Recurse -Force
         }
     }
 
-    $ZipPath = Join-Path $WindowsDir "publish\ClearTone-win-$TargetArch.zip"
-    if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
-    Compress-Archive -Path (Join-Path $PublishDir "*") -DestinationPath $ZipPath
-    Write-Host "完成：$ZipPath"
+    Write-Host "=== [$TargetArch] 5/5 打包 ==="
+    $zipPath = Join-Path $WindowsDir "publish\ClearTone-win-$TargetArch.zip"
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath
+    Write-Host "完成：$zipPath"
 }
 
-if ($Arch -eq "all") {
-    Build-Arch "x64"
-    Build-Arch "arm64"
+if ($Arch -eq 'all') {
+    Build-One -TargetArch 'x64'
+    Build-One -TargetArch 'arm64'
 } else {
-    Build-Arch $Arch
+    Build-One -TargetArch $Arch
 }

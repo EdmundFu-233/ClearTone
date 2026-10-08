@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>Assets/appicon.png</file>
+        <file>Assets/trayicon.png</file>
+    </qresource>
+</RCC>

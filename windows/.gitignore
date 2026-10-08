@@ -2,4 +2,9 @@ bin/
 obj/
 runtime/
 publish/
+build/
+build-*/
+dist/
+vendor/
 *.user
+.DS_Store
