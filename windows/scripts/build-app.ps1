@@ -81,7 +81,15 @@ function Deploy-CrossRuntime {
                             'networkinformation', 'tls', 'generic', 'multimedia')) {
         $source = Join-Path $TargetQt "plugins\$category"
         if (Test-Path $source) {
-            Copy-Item $source (Join-Path $Destination $category) -Recurse -Force
+            $target = Join-Path $Destination $category
+            Copy-Item $source $target -Recurse -Force
+            # 目标包同时带 debug 插件（qxxxd.dll），发布包只留 release
+            foreach ($file in Get-ChildItem $target -Filter '*.dll' -File -ErrorAction SilentlyContinue) {
+                $releaseName = $file.Name -replace 'd\.dll$', '.dll'
+                if ($releaseName -ne $file.Name -and (Test-Path (Join-Path $target $releaseName))) {
+                    Remove-Item $file.FullName -Force
+                }
+            }
         }
     }
     if (-not (Test-Path (Join-Path $Destination 'platforms\qwindows.dll'))) {
@@ -93,14 +101,23 @@ function Deploy-CrossRuntime {
     if (Test-Path $vsWhere) {
         $vsRoot = & $vsWhere -latest -property installationPath | Select-Object -First 1
         if ($vsRoot) {
-            $crt = Get-ChildItem (Join-Path $vsRoot 'VC\Redist\MSVC') -Directory -ErrorAction SilentlyContinue |
+            $redistRoot = Join-Path $vsRoot 'VC\Redist\MSVC'
+            $crt = Get-ChildItem $redistRoot -Directory -ErrorAction SilentlyContinue |
                 Sort-Object Name -Descending |
-                ForEach-Object { Join-Path $_.FullName 'arm64\Microsoft.VC143.CRT' } |
-                Where-Object { Test-Path $_ } | Select-Object -First 1
+                ForEach-Object {
+                    Get-ChildItem (Join-Path $_.FullName 'arm64') -Directory -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -like 'Microsoft.VC*.CRT' }
+                } | Select-Object -First 1
             if ($crt) {
-                Copy-Item (Join-Path $crt '*.dll') -Destination $Destination -Force
+                Copy-Item (Join-Path $crt.FullName '*.dll') -Destination $Destination -Force
             } else {
-                Write-Warning '未找到 ARM64 MSVC 运行库，目标机需要安装 VC++ Redistributable (ARM64)。'
+                $redistExe = Get-ChildItem $redistRoot -Recurse -Filter 'vc_redist.arm64.exe' -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($redistExe) {
+                    Copy-Item $redistExe.FullName $Destination -Force
+                } else {
+                    Write-Warning '未找到 ARM64 MSVC 运行库，目标机需要安装 VC++ Redistributable (ARM64)。'
+                }
             }
         }
     }
