@@ -20,6 +20,7 @@
 param(
     [ValidateSet('x64', 'arm64')][string]$Arch = '',
     [string]$QtRoot = '',
+    [string]$QtHostPath = '',
     [string]$VlcRoot = '',
     [string]$Generator = 'Visual Studio 17 2022',
     [switch]$Release,
@@ -83,6 +84,20 @@ function Prepare-Helper {
 
 function Invoke-Build {
     $QtRoot = Resolve-QtRoot -Explicit $QtRoot -TargetArch $Arch
+    # ARM64 交叉编译需要一份 x64 主机 Qt（moc/rcc/windeployqt）
+    if ($Arch -eq 'arm64' -and -not $QtHostPath) {
+        $hostKit = Get-ChildItem 'C:\Qt' -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.\d+' } | Sort-Object Name -Descending |
+            ForEach-Object {
+                Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match 'msvc\d+_64$' } | Sort-Object Name -Descending
+            } | Where-Object { Test-Path (Join-Path $_.FullName 'bin\windeployqt.exe') } |
+            Select-Object -First 1
+        if ($hostKit) {
+            $QtHostPath = $hostKit.FullName
+            Write-Host "ARM64 交叉编译：使用主机 Qt $QtHostPath" -ForegroundColor Yellow
+        }
+    }
     Write-Host "=== [2/4] CMake 配置（Qt: $QtRoot，$Arch / $Config）===" -ForegroundColor Cyan
     if ($Clean -and (Test-Path $BuildDir)) { Remove-Item -Recurse -Force $BuildDir }
     $isNinja = $Generator -like 'Ninja*'
@@ -90,6 +105,7 @@ function Invoke-Build {
     if (-not $isNinja) { $cmakeArgs += @('-A', $vsArch) }
     $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtRoot"
     if ($isNinja) { $cmakeArgs += "-DCMAKE_BUILD_TYPE=$Config" }
+    if ($QtHostPath) { $cmakeArgs += "-DQT_HOST_PATH=$QtHostPath" }
     if ($VlcRoot) { $cmakeArgs += "-DCT_VLC_ROOT=$VlcRoot" }
     & cmake @cmakeArgs | Out-Host
 
@@ -102,8 +118,8 @@ function Invoke-Build {
 
 if ($Package) {
     if (-not $Release) { Write-Host '提示：打包固定使用 Release 配置。' }
-    & (Join-Path $ScriptDir 'scripts\build-app.ps1') -Arch $Arch -QtRoot $QtRoot -VlcRoot $VlcRoot `
-        -Generator $Generator -SkipNode
+    & (Join-Path $ScriptDir 'scripts\build-app.ps1') -Arch $Arch -QtRoot $QtRoot -QtHostPath $QtHostPath `
+        -VlcRoot $VlcRoot -Generator $Generator -SkipNode
     return
 }
 

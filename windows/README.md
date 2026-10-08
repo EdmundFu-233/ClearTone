@@ -40,8 +40,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Run
 powershell -ExecutionPolicy Bypass -File build.ps1 -Tests
 
 # win-arm64 Release 发布包（zip，含 Qt 运行库与 helper）
+# 在 ARM64 Windows 上直接构建；在 x64 Windows 上交叉编译需同时提供主机 Qt
 powershell -ExecutionPolicy Bypass -File build.ps1 -Arch arm64 -Release -Package `
-  -QtRoot C:\Qt\6.8.3\msvc2022_arm64
+  -QtRoot C:\Qt\6.8.3\msvc2022_arm64 -QtHostPath C:\Qt\6.8.3\msvc2022_64
 ```
 
 脚本会自动：准备 `runtime\win-<arch>\node.exe` → 缺 `api\node_modules` 时执行
@@ -68,6 +69,7 @@ cd windows
 | --- | --- | --- |
 | `-Arch x64\|arm64` | — | 目标架构（默认取本机；arm64 交叉编译需对应 Qt 包与 VS ARM64 工具链） |
 | `-QtRoot PATH` | `--qt PATH` | Qt 安装前缀（默认自动探测 `C:\Qt\*` / `brew --prefix qt`） |
+| `-QtHostPath PATH` | — | ARM64 交叉编译时指向 x64 主机 Qt（提供 moc/rcc/windeployqt；默认自动探测） |
 | `-Release` | `--release` | Release 构建（默认 Debug） |
 | `-Tests` | `--tests` | 构建后运行全部离线单测（ctest） |
 | `-Run` | `--run` | 构建后运行应用 |

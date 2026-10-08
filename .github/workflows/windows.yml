@@ -67,8 +67,10 @@ jobs:
         include:
           - arch: x64
             qt_arch: win64_msvc2022_64
+            qt_host_arch: ''
           - arch: arm64
             qt_arch: win64_msvc2022_arm64_cross_compiled
+            qt_host_arch: win64_msvc2022_64
     steps:
       - uses: actions/checkout@v4
 
@@ -91,6 +93,15 @@ jobs:
           if (-not $kit) { throw '未找到 Qt kit' }
           "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+          # 交叉编译 arm64 需要一份 x64 主机 Qt（提供 moc/rcc/windeployqt）
+          if ('${{ matrix.qt_host_arch }}') {
+            python -m aqt install-qt windows desktop $env:QT_VERSION ${{ matrix.qt_host_arch }} --outputdir C:\Qt
+            $hostKit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory |
+              Where-Object { $_.Name -match 'msvc\d+_64$' } | Select-Object -First 1
+            if (-not $hostKit) { throw '未找到主机 Qt kit' }
+            "QT_HOST_ROOT=$($hostKit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
@@ -99,7 +110,13 @@ jobs:
         shell: pwsh
         run: >
           pwsh -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
-          -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT" -Generator Ninja
+          -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT" -QtHostPath "$env:QT_HOST_ROOT" -Generator Ninja
+
+      - name: 列出产物内容
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse "windows/publish/win-${{ matrix.arch }}" |
+            Select-Object -ExpandProperty FullName | ForEach-Object { Write-Host $_ }
 
       - name: 上传产物
         uses: actions/upload-artifact@v4

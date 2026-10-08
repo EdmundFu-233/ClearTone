@@ -15,6 +15,8 @@
 param(
     [ValidateSet('x64', 'arm64', 'all')][string]$Arch = 'x64',
     [string]$QtRoot = '',
+    # 交叉编译（x64 主机出 arm64 产物）时指向主机 Qt（x64）安装目录
+    [string]$QtHostPath = '',
     [string]$VlcRoot = '',
     [string]$Generator = 'Visual Studio 17 2022',
     [ValidateSet('Debug', 'Release')][string]$BuildType = 'Release',
@@ -77,6 +79,7 @@ function Build-One {
         '-DCT_BUILD_TESTS=OFF'
     )
     if ($isNinja) { $configureArgs += "-DCMAKE_BUILD_TYPE=$BuildType" }
+    if ($QtHostPath) { $configureArgs += "-DQT_HOST_PATH=$QtHostPath" }
     if ($VlcRoot) { $configureArgs += "-DCT_VLC_ROOT=$VlcRoot" }
     & cmake @configureArgs
 
@@ -94,10 +97,17 @@ function Build-One {
     if (-not (Test-Path $exe)) { throw "缺少产物：$exe" }
     Copy-Item $exe $publishDir -Force
 
-    $windeployqt = Join-Path $resolvedQt 'bin\windeployqt.exe'
+    # 交叉编译时必须用主机（x64）的 windeployqt，并用 --qtpaths 指向目标 Qt。
+    $windeployqt = if ($QtHostPath) {
+        Join-Path $QtHostPath 'bin\windeployqt.exe'
+    } else {
+        Join-Path $resolvedQt 'bin\windeployqt.exe'
+    }
     if (-not (Test-Path $windeployqt)) { throw "缺少 $windeployqt" }
-    & $windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw `
-        (Join-Path $publishDir 'ClearTone.exe')
+    $deployArgs = @('--release', '--no-translations', '--no-system-d3d-compiler', '--no-opengl-sw')
+    if ($QtHostPath) { $deployArgs += @('--qtpaths', (Join-Path $resolvedQt 'bin\qtpaths.exe')) }
+    $deployArgs += (Join-Path $publishDir 'ClearTone.exe')
+    & $windeployqt @deployArgs
 
     $helperBin = Join-Path $publishDir 'helper\bin'
     $helperApi = Join-Path $publishDir 'helper\api'
