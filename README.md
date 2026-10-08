@@ -2,7 +2,7 @@
 
 一款使用 **SwiftUI、AVFoundation 和 Metal** 构建的 macOS / iOS 原生第三方网易云音乐播放器。将在线音乐、本地曲库、同步歌词和桌面播放控制放在同一个应用里。
 
-目前处于开发阶段，提供 macOS 14+ 与 iOS 17+ target。macOS 辅助进程安装脚本面向 **Apple Silicon**；iOS 原生直连，不依赖 Node。iPhone / iPad 构建及免费账号签名见 [iOS 开发说明](docs/ios/README.md)。不提供 Windows 或 Linux 构建流程。
+目前处于开发阶段，提供 macOS 14+ 与 iOS 17+ target。macOS 辅助进程安装脚本面向 **Apple Silicon**；iOS 原生直连，不依赖 Node。iPhone / iPad 构建及免费账号签名见 [iOS 开发说明](docs/ios/README.md)。另有基于 .NET 8 + Avalonia 的 **Windows 版**（与 macOS 功能对齐），构建与打包见 [windows/README.md](windows/README.md)；不提供 Linux 构建流程。
 
 ## 功能
 

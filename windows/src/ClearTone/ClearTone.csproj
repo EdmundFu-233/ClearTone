@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFrameworks>net8.0;net8.0-windows10.0.19041.0</TargetFrameworks>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseRidGraph>true</UseRidGraph>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ClearTone</AssemblyName>
+    <RootNamespace>ClearTone</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <Version>0.1.0</Version>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.5" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.5" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.5" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.2.5" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.2.5" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="TagLibSharp" Version="2.3.0" />
+  </ItemGroup>
+
+  <!-- libvlc 原生库：Windows 发布走 Windows 包，本机开发 macOS 走 Mac 包 -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('win'))">
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">
+    <PackageReference Include="VideoLAN.LibVLC.Mac" Version="3.1.2" />
+  </ItemGroup>
+
+  <!-- 辅助进程：复用 macOS 端同一份 api/ 业务代码（纯 JS，平台无关），加上 win-x64 的 node.exe -->
+  <PropertyGroup>
+    <HelperApiSource>$(MSBuildThisFileDirectory)..\..\..\ClearTone\Resources\HelperRuntime\api\</HelperApiSource>
+    <HelperNodeSource>$(MSBuildThisFileDirectory)..\..\runtime\node.exe</HelperNodeSource>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(HelperApiSource)**\*"
+          Exclude="$(HelperApiSource)test\**;$(HelperApiSource)examples\**;$(HelperApiSource)module_example\**;$(HelperApiSource)**\*.test.js;$(HelperApiSource)Dockerfile;$(HelperApiSource)vercel.json;$(HelperApiSource)scf_bootstrap;$(HelperApiSource)pnpm-lock.yaml;$(HelperApiSource)pnpm-workspace.yaml"
+          Link="helper\api\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(HelperNodeSource)" Condition="Exists('$(HelperNodeSource)')"
+          Link="helper\bin\node.exe"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ClearTone.Tests" />
+  </ItemGroup>
+
+</Project>
