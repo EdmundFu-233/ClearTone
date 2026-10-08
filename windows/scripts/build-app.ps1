@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   在 Windows 上构建并打包 ClearTone（Qt Widgets / C++）。
 .PARAMETER Arch

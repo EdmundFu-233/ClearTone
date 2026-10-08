@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   ClearTone（Windows / Qt）一键编译脚本：准备辅助进程 → CMake 配置 → 构建 →（可选）测试/运行/打包。
 .EXAMPLE

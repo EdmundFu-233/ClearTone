@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   下载 Node.js v22.14.0（win-x64 / win-arm64）到 windows\runtime\win-<arch>\node.exe。
   已存在时直接复用。

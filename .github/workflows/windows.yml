@@ -98,7 +98,7 @@ jobs:
       - name: 打包（win-${{ matrix.arch }}）
         shell: pwsh
         run: >
-          powershell -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
           -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT" -Generator Ninja
 
       - name: 上传产物

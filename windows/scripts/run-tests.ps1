@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   在 Windows 上构建并运行全部离线单测（Qt Test）。
 #>
