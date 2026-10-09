@@ -314,6 +314,8 @@ struct IOSSongListView: View {
     let title: String
     let songs: [Song]
     @EnvironmentObject private var player: PlayerController
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
         List {
             if songs.isEmpty { ContentUnavailableView("暂无歌曲", systemImage: "music.note") }
@@ -327,5 +329,11 @@ struct IOSSongListView: View {
                 ForEach(Array(songs.enumerated()), id: \.offset) { index, song in IOSSongRow(song: song) { player.play(songs: songs, startAt: index) } }
             }
         }.navigationTitle(title)
+        // 本页持有的是**推入那一刻**的歌曲快照（如「喜欢的音乐」的 `likedSongs`）。
+        // 账号切换（登录 / 退出 / 换号 / 会话失效）后不能再挂着上一个账号的数据，
+        // 上下文一变就退出。这条原先由每个 tab 的 NavigationStack `.id(dataContextKey)`
+        // 承担，但那个 `.id` 会让 TabView 在 iOS 26/27 上选中态与内容错位 ——
+        // 「资料库」点不开正是它造成的，所以改成由快照页自己退出。
+        .onChange(of: appState.dataContextKey) { _, _ in dismiss() }
     }
 }

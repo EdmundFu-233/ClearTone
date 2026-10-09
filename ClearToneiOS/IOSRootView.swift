@@ -19,11 +19,14 @@ struct IOSRootView: View {
     }
 
     private func tab<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        // **不要**给这里的 NavigationStack 加 `.id(appState.dataContextKey)`。
+        //
+        // 曾用它做「换号后重建导航栈」，但在 iOS 26.4 / 27.0 上，只要
+        // dataContextKey 在某个 tab 首次显示之前变过（冷启动恢复登录态就会），
+        // 之后再点那个 tab 会失败：要么没反应，要么落到「发现」，
+        // 而其它 tab 正常 —— 实测「资料库点不开」就是它。
+        // 账号快照的清理改由快照页自己负责（见 `IOSSongListView` 的 onChange）。
         NavigationStack { content() }
-            // 账号切换（登录 / 退出 / 换号）时重建整个导航栈：否则 pushed 的
-            // 详情页还持着上一个账号的快照（如「喜欢的音乐」列表的 `let songs`），
-            // 换号后仍显示/播放 A 账号的歌曲。
-            .id(appState.dataContextKey)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if player.currentSong != nil {
                     IOSMiniPlayer { showPlayer = true }.padding(.horizontal, 12).padding(.bottom, 6)
