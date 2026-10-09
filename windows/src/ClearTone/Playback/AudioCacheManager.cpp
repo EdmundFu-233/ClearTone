@@ -18,6 +18,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStorageInfo>
+#include <QThread>
 #include <QTimer>
 #include <QUuid>
 
@@ -84,7 +85,12 @@ bool writeAtomicFile(const QString& path, const QByteArray& data)
     }
     file.close();
     QFile::remove(path);
-    return QFile::rename(temporary, path);
+    // Windows 上杀毒/索引器可能短暂持有目标文件，rename 偶发失败，重试几次。
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        if (QFile::rename(temporary, path)) return true;
+        QThread::msleep(40);
+    }
+    return false;
 }
 
 } // namespace
