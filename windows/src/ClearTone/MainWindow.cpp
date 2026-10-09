@@ -479,6 +479,9 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     m_titleButton->setFlat(true);
     m_titleButton->setCursor(Qt::PointingHandCursor);
     m_titleButton->setToolTip(QStringLiteral("打开正在播放"));
+    // QPushButton 的 sizeHint 来自样式而不是内部布局，ElidedLabel 的
+    // minimumSizeHint 又是 0，不给最小宽度按钮会缩到只剩“未…”。
+    m_titleButton->setMinimumWidth(220);
     m_titleButton->setMaximumWidth(360);
     m_titleButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; text-align: left; padding: 4px; }"));
