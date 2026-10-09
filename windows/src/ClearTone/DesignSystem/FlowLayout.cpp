@@ -39,6 +39,11 @@ void FlowLayout::setGeometry(const QRect& rect)
 }
 int FlowLayout::arrange(const QRect& rect, bool measure) const
 {
+    // 首次测量可能发生在子控件 polish 之前（样式表字体还没生效），
+    // 高度会偏小、最后一行被裁掉；先强制 polish 再算。
+    for (auto* item : m_items) {
+        if (auto* widget = item->widget()) widget->ensurePolished();
+    }
     const auto margins = contentsMargins();
     const QRect area = rect.marginsRemoved(margins);
     bool fluid = !m_items.isEmpty();
