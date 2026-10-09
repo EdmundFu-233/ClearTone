@@ -36,6 +36,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QSlider>
@@ -168,8 +169,16 @@ MainWindow::MainWindow(QWidget* parent)
     applyTheme();
 
     setWindowTitle(QStringLiteral("澄音 ClearTone"));
-    setMinimumSize(980, 640);
-    resize(1200, 780);
+    setMinimumSize(900, 560);
+    // 默认尺寸不能超过屏幕可用区域：1080p + 125%/150% 缩放下逻辑高度只有
+    // 864/720，写死 780 会把底部播放条挤出屏幕。
+    if (const QScreen* targetScreen = QGuiApplication::primaryScreen()) {
+        const QRect available = targetScreen->availableGeometry();
+        resize(qBound(900, available.width() - 60, 1200),
+            qBound(560, available.height() - 60, 780));
+    } else {
+        resize(1200, 780);
+    }
     setWindowIcon(TrayIconManager::applicationIcon());
 
     auto* central = new QWidget(this);
