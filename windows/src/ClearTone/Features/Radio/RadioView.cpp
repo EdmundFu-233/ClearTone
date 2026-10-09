@@ -273,7 +273,7 @@ QWidget* RadioView::buildRadioCard(const RadioStation& radio)
     cover->setCoverURL(radio.coverURL, 320);
     layout->addWidget(cover, 0, Qt::AlignHCenter);
 
-    auto* name = ui::titleLabel(radio.name, CTTypography::Body, true);
+    auto* name = ui::titleElidedLabel(radio.name, CTTypography::Body, true);
     name->setMaximumWidth(160);
     layout->addWidget(name);
 
@@ -282,7 +282,8 @@ QWidget* RadioView::buildRadioCard(const RadioStation& radio)
         parts.append(*radio.creatorName);
     }
     if (radio.programCount > 0) parts.append(QStringLiteral("%1 期").arg(radio.programCount));
-    auto* meta = ui::secondaryLabel(parts.isEmpty() ? QStringLiteral("电台") : parts.join(QStringLiteral(" · ")));
+    auto* meta = ui::secondaryElidedLabel(
+        parts.isEmpty() ? QStringLiteral("电台") : parts.join(QStringLiteral(" · ")));
     meta->setMaximumWidth(160);
     layout->addWidget(meta);
 

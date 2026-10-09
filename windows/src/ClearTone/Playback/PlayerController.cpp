@@ -6,6 +6,7 @@
 #include "Core/Persistence/AppSettings.h"
 #include "Core/Persistence/PersistenceStore.h"
 #include "Playback/AudioCacheManager.h"
+#include "Providers/Netease/NeteaseProvider.h"
 
 #include <QFileInfo>
 #include <QJsonArray>
@@ -83,6 +84,9 @@ float PlayerController::resolveRestoredPlaybackRate(float value)
 
 PlayerController::PlayerController()
 {
+    // 默认接入网易云（与 C# 版 `_provider = NeteaseProvider.Shared` 一致）；
+    // AppState 构造时会用注入的 provider 覆盖。
+    m_provider = &NeteaseProvider::shared();
     m_recentlyPlayed = PersistenceStore::shared().loadRecentSongs();
     m_songQualityOverrides = loadSongQualityOverrides();
     const bool restored = loadPersistedState();

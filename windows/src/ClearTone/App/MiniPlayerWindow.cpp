@@ -54,11 +54,6 @@ QPushButton* makeGlyphButton(const QString& glyph, const QString& tip, double si
     return button;
 }
 
-void setElidedText(QLabel* label, const QString& text, int width)
-{
-    label->setText(label->fontMetrics().elidedText(text, Qt::ElideRight, width));
-}
-
 } // namespace
 
 MiniPlayerWindow* MiniPlayerWindow::s_instance = nullptr;
@@ -168,8 +163,12 @@ void MiniPlayerWindow::buildUi()
     auto* textLayout = new QVBoxLayout(text);
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
-    m_title = ui::titleLabel(QStringLiteral("未在播放"), CTTypography::Body, true);
-    m_artist = ui::secondaryLabel(QString());
+    m_title = new ui::ElidedLabel(QStringLiteral("未在播放"), text);
+    m_title->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                               .arg(CTColors::textPrimary().name())
+                               .arg(CTTypography::Body));
+    m_artist = new ui::ElidedLabel(QString(), text);
+    m_artist->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::textSecondary().name()));
     textLayout->addWidget(m_title);
     textLayout->addWidget(m_artist);
     infoLayout->addWidget(text, 0, 1);
@@ -217,8 +216,8 @@ void MiniPlayerWindow::buildUi()
 void MiniPlayerWindow::refresh()
 {
     const auto& song = m_player->currentSong();
-    setElidedText(m_title, song ? song->title : QStringLiteral("未在播放"), 170);
-    setElidedText(m_artist, song ? song->artistNames() : QString(), 170);
+    m_title->setFullText(song ? song->title : QStringLiteral("未在播放"));
+    m_artist->setFullText(song ? song->artistNames() : QString());
     m_cover->setCoverURL(song ? song->coverURL : std::optional<QString>(), 96);
     m_playPause->setText(
         m_player->playbackState().isPlayIntentActive() ? QStringLiteral("\uE769")

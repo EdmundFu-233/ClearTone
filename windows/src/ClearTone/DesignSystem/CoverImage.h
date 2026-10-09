@@ -3,6 +3,7 @@
 #include "Core/Async.h"
 
 #include <QPixmap>
+#include <QPointer>
 #include <QWidget>
 
 #include <memory>
@@ -33,6 +34,11 @@ protected:
 private:
     void refresh();
     void applyImage(const QImage& image, int generation);
+
+    // 协程参数会复制进协程帧，闭包捕获不会（lambda 协程的临时闭包在调用方
+    // 返回后即销毁），因此这里必须用命名协程 + 显式参数，不能写成协程 lambda。
+    static Task<void> loadCover(QPointer<CoverImage> self, QString url, int width, int generation,
+        CancellationToken token);
 
     QString m_url;
     QPixmap m_pixmap;

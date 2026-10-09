@@ -124,6 +124,7 @@ AppState::AppState(IMusicProvider* provider, IMusicSocialProvider* social)
     , m_sessionOwner(&NeteaseProvider::shared())
 {
     m_sessionOwner->sessionExpired = [this] { handleSessionExpired(); };
+    PlayerController::shared().setProvider(m_provider);
 }
 
 void AppState::notifyChanged()

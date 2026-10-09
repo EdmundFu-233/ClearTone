@@ -109,15 +109,17 @@ Awaitable<HTTPResponse> HTTPClient::send(HTTPRequest request, CancellationToken 
                 });
 
             if (ct.canBeCancelled()) {
-                state->cancelId = ct.registerCallback([reply, state] {
+                state->cancelId = ct.registerCallback([reply, state, callback] {
                     if (state->completed) return;
                     state->completed = true;
                     state->ct.unregisterCallback(state->cancelId);
                     reply->abort();
                     reply->deleteLater();
+                    // 必须回调，否则等待方永远挂起（loadCoreImage / m_pendingImages 泄漏）。
+                    callback(Result<HTTPResponse>::failure(MusicException(MusicErrorKind::Cancelled)));
                 });
                 if (state->completed) {
-                    // 注册时发现已取消：cancelCallback 已同步执行并清理。
+                    // 注册时发现已取消：上面的 cancelCallback 已同步执行并回调。
                     return;
                 }
             }

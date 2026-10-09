@@ -16,6 +16,10 @@
 
 - C# `Task<T>` → `ct::Task<T>`（C++20 协程，惰性，`co_await`/`co_return`）。
 - C# `Task` → `ct::Task<void>`，结束用 `co_return;`。
+- **禁止协程 lambda**：`detach([...]() -> Task<void> { co_await ... }())` 的闭包捕获不会被
+  复制进协程帧，仍指向调用方栈上的临时闭包；调用方返回后协程恢复会读到被覆写的内存，
+  表现为随机闪退（封面、辅助进程监控等处都踩过）。顶层协程一律写成命名函数/成员函数，
+  需要捕获的内容作为显式参数传入（参数会复制进协程帧）。
 - **禁止阻塞**（不调用 `wait()`/`processEvents()`）；延迟一律 `co_await ct::Delay(ms, ct)`。
 - 取消：方法接收 `ct::CancellationToken ct`，网络层传入；`ct.isCancellationRequested()` 判断。
 - `throw MusicException(...)` / `catch (const MusicException&)` 与 C# 的 throw/catch 一一对应；

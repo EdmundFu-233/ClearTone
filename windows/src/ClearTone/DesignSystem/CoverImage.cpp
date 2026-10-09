@@ -59,12 +59,16 @@ void CoverImage::refresh()
     const int width = m_decodeWidth;
     QPointer<CoverImage> self(this);
     const auto token = source->token();
-    detach([self, url, width, generation, token]() -> Task<void> {
-        const auto image = co_await CoverImageLoader::shared().load(url, width, token);
-        if (!self) co_return;
-        if (!image) co_return;
-        self->applyImage(*image, generation);
-    }());
+    detach(loadCover(self, url, width, generation, token));
+}
+
+Task<void> CoverImage::loadCover(
+    QPointer<CoverImage> self, QString url, int width, int generation, CancellationToken token)
+{
+    const auto image = co_await CoverImageLoader::shared().load(url, width, token);
+    if (!self) co_return;
+    if (!image) co_return;
+    self->applyImage(*image, generation);
 }
 
 void CoverImage::applyImage(const QImage& image, int generation)

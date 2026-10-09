@@ -121,6 +121,10 @@ cmake --build windows/build-dev -j8
 # 全部离线单测（Qt Test，必须走脚本或 ctest，逐用例隔离持久化）
 ./windows/scripts/run-tests.sh
 
+# 启动冒烟（起辅助进程 + 事件循环，20 秒后自动退出；崩溃会以非 0 退出码暴露）
+# CI 会在单测后跑构建产物，并在 x64 发布包上再跑一次
+./windows/build-dev/ClearTone --smoke-test 20
+
 # Windows 发布（在 Windows 上；Qt 不能从 macOS 交叉发布）
 powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch all -QtRoot C:\Qt\6.8.0\msvc2022_64
 ```
@@ -130,8 +134,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch all -QtRoot
 注册（`Features/Shared/PageFactory.h`；`cleartone_lib` 是 OBJECT 库，保证静态注册
 不被链接器丢弃）；有状态机的逻辑放 `Core/`（与 macOS 同一约定，便于离线单测）。
 异步统一 `ct::Task<T>`（`Core/Async.h`）+ `co_await`，事件用 `ct::Event<>`
-（`Core/Event.h`）多播；C# → C++ 的逐条映射见 `windows/CONVENTIONS.md`。
-`windows/runtime/`、`build*/`、`publish/`、`vendor/` 均不入库。
+（`Core/Event.h`）多播；**顶层协程必须写命名函数，禁止协程 lambda**
+（lambda 的捕获留在栈上、不进协程帧，恢复时读到被覆写的内存会随机闪退，
+详见 `windows/CONVENTIONS.md` 的「异步」）；C# → C++ 的逐条映射见
+`windows/CONVENTIONS.md`。`windows/runtime/`、`build*/`、`publish/`、`vendor/` 均不入库。
 
 ## 架构决策
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Features/Shared/UIComponents.h"
+
 #include <QWidget>
 
 class QLabel;
@@ -42,8 +44,8 @@ private:
 
     PlayerController* m_player;
     CoverImage* m_cover = nullptr;
-    QLabel* m_title = nullptr;
-    QLabel* m_artist = nullptr;
+    ui::ElidedLabel* m_title = nullptr;
+    ui::ElidedLabel* m_artist = nullptr;
     QSlider* m_progress = nullptr;
     QPushButton* m_previous = nullptr;
     QPushButton* m_playPause = nullptr;

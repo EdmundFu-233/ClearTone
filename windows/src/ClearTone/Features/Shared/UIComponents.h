@@ -4,6 +4,7 @@
 #include "DesignSystem/CTTheme.h"
 
 #include <QFrame>
+#include <QLabel>
 #include <QList>
 #include <QPushButton>
 #include <QString>
@@ -11,7 +12,6 @@
 
 #include <functional>
 
-class QLabel;
 class QListWidget;
 class QListWidgetItem;
 class QVBoxLayout;
@@ -21,8 +21,34 @@ namespace ct {
 
 namespace ui {
 
+// 按当前宽度自动省略的 QLabel。普通 QLabel 宽度不足时会直接把文字裁掉，
+// 中文长标题尤其明显；卡片、列表、播放条统一用它。
+class ElidedLabel : public QLabel {
+    Q_OBJECT
+
+public:
+    explicit ElidedLabel(const QString& text = QString(), QWidget* parent = nullptr);
+
+    void setFullText(const QString& text);
+    QString fullText() const { return m_fullText; }
+
+    void setText(const QString& text) { setFullText(text); }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override;
+
+private:
+    void updateElided();
+
+    QString m_fullText;
+};
+
 QLabel* titleLabel(const QString& text, double size = CTTypography::Body, bool bold = false);
 QLabel* secondaryLabel(const QString& text);
+ElidedLabel* titleElidedLabel(const QString& text, double size = CTTypography::Body,
+    bool bold = false);
+ElidedLabel* secondaryElidedLabel(const QString& text);
 QWidget* headerRow(const QString& title, QWidget* trailing = nullptr);
 QPushButton* linkButton(const QString& text, std::function<void()> action);
 QPushButton* accentButton(const QString& text);
@@ -73,8 +99,8 @@ private:
         QWidget* widget = nullptr;
         QLabel* index = nullptr;
         QLabel* like = nullptr;
-        QLabel* title = nullptr;
-        QLabel* artist = nullptr;
+        ui::ElidedLabel* title = nullptr;
+        ui::ElidedLabel* artist = nullptr;
         QLabel* reason = nullptr;
         QLabel* duration = nullptr;
     };

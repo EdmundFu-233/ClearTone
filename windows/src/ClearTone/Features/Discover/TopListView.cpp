@@ -76,7 +76,7 @@ QWidget* buildListRow(const TopList& list)
     auto* textLayout = new QVBoxLayout(text);
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
-    auto* name = ui::titleLabel(list.name, CTTypography::Body, true);
+    auto* name = ui::titleElidedLabel(list.name, CTTypography::Body, true);
     name->setMaximumWidth(150);
     textLayout->addWidget(name);
     if (list.updateFrequency.has_value() && !list.updateFrequency->isEmpty()) {

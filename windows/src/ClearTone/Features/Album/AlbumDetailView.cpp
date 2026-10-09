@@ -302,13 +302,18 @@ QWidget* AlbumDetailView::buildHeader()
 
     if (detail.playlist.creatorName.has_value() && !detail.playlist.creatorName->isEmpty()) {
         const QString artistName = *detail.playlist.creatorName;
+        const QString label = QStringLiteral("歌手：%1").arg(artistName);
         if (detail.artistID.has_value() && !detail.artistID->isEmpty()) {
             const QString artistID = *detail.artistID;
-            infoLayout->addWidget(ui::linkButton(QStringLiteral("歌手：%1").arg(artistName),
-                [artistID] { AppState::shared().openArtist(artistID); }), 0, Qt::AlignLeft);
+            auto* link = ui::linkButton(QString(),
+                [artistID] { AppState::shared().openArtist(artistID); });
+            link->setText(link->fontMetrics().elidedText(label, Qt::ElideRight, 520));
+            link->setToolTip(label);
+            infoLayout->addWidget(link, 0, Qt::AlignLeft);
         } else {
-            infoLayout->addWidget(
-                ui::secondaryLabel(QStringLiteral("歌手：%1").arg(artistName)), 0, Qt::AlignLeft);
+            auto* text = ui::secondaryElidedLabel(label);
+            text->setMaximumWidth(520);
+            infoLayout->addWidget(text, 0, Qt::AlignLeft);
         }
     }
 

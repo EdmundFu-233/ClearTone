@@ -141,7 +141,7 @@ QWidget* buildRadioCard(const RadioStation& radio)
     cover->setCoverURL(radio.coverURL, 320);
     layout->addWidget(cover, 0, Qt::AlignHCenter);
 
-    auto* name = ui::titleLabel(radio.name, CTTypography::Body, true);
+    auto* name = ui::titleElidedLabel(radio.name, CTTypography::Body, true);
     name->setMaximumWidth(160);
     layout->addWidget(name);
 
@@ -150,8 +150,10 @@ QWidget* buildRadioCard(const RadioStation& radio)
         parts.append(*radio.creatorName);
     }
     if (radio.programCount > 0) parts.append(QStringLiteral("%1 期").arg(radio.programCount));
-    layout->addWidget(ui::secondaryLabel(
-        parts.isEmpty() ? QStringLiteral("电台") : parts.join(QStringLiteral(" · "))));
+    auto* meta = ui::secondaryElidedLabel(
+        parts.isEmpty() ? QStringLiteral("电台") : parts.join(QStringLiteral(" · ")));
+    meta->setMaximumWidth(160);
+    layout->addWidget(meta);
 
     const QString id = radio.id;
     card->onClicked = [id] { AppState::shared().openRadio(id); };
@@ -672,7 +674,7 @@ QWidget* DiscoverView::buildSongStrip(const QList<Song>& songs, bool allowDislik
         cover->setCoverURL(song.coverURL, 300);
         cardLayout->addWidget(cover, 0, Qt::AlignHCenter);
 
-        auto* title = ui::titleLabel(song.title, CTTypography::Body, true);
+        auto* title = ui::titleElidedLabel(song.title, CTTypography::Body, true);
         title->setMaximumWidth(150);
         cardLayout->addWidget(title);
 

@@ -2,6 +2,7 @@
 
 #include "App/AppState.h"
 #include "App/PlayerBarModel.h"
+#include "Features/Shared/UIComponents.h"
 
 #include <QHash>
 #include <QMainWindow>
@@ -97,7 +98,7 @@ private:
 
     QPushButton* m_accountButton = nullptr;
     QLabel* m_accountGlyph = nullptr;
-    QLabel* m_accountName = nullptr;
+    ui::ElidedLabel* m_accountName = nullptr;
     QLabel* m_accountHint = nullptr;
 
     QPushButton* m_backButton = nullptr;
@@ -106,8 +107,8 @@ private:
     QStackedWidget* m_content = nullptr;
 
     CoverImage* m_barCover = nullptr;
-    QLabel* m_barTitle = nullptr;
-    QLabel* m_barArtist = nullptr;
+    ui::ElidedLabel* m_barTitle = nullptr;
+    ui::ElidedLabel* m_barArtist = nullptr;
     QPushButton* m_expandButton = nullptr;
     QPushButton* m_titleButton = nullptr;
     QPushButton* m_likeButton = nullptr;
@@ -128,7 +129,7 @@ private:
     QFrame* m_nowPlayingOverlay = nullptr;
     QFrame* m_queueOverlay = nullptr;
     QFrame* m_loginOverlay = nullptr;
-    QLabel* m_nowPlayingTitle = nullptr;
+    ui::ElidedLabel* m_nowPlayingTitle = nullptr;
 };
 
 } // namespace ct

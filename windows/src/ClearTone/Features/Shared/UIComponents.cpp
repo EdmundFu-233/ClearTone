@@ -12,6 +12,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QProgressBar>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QStyle>
 #include <QTimer>
@@ -28,6 +29,45 @@ QString secondaryStyle()
 
 } // namespace
 
+ElidedLabel::ElidedLabel(const QString& text, QWidget* parent)
+    : QLabel(parent)
+{
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    setFullText(text);
+}
+
+void ElidedLabel::setFullText(const QString& text)
+{
+    m_fullText = text;
+    setToolTip(text);
+    updateElided();
+}
+
+void ElidedLabel::resizeEvent(QResizeEvent* event)
+{
+    QLabel::resizeEvent(event);
+    updateElided();
+}
+
+void ElidedLabel::changeEvent(QEvent* event)
+{
+    QLabel::changeEvent(event);
+    if (event->type() == QEvent::FontChange || event->type() == QEvent::ApplicationFontChange
+        || event->type() == QEvent::StyleChange) {
+        updateElided();
+    }
+}
+
+void ElidedLabel::updateElided()
+{
+    const int available = contentsRect().width();
+    if (available <= 0 || m_fullText.isEmpty()) {
+        QLabel::setText(m_fullText);
+        return;
+    }
+    QLabel::setText(fontMetrics().elidedText(m_fullText, Qt::ElideRight, available));
+}
+
 QLabel* titleLabel(const QString& text, double size, bool bold)
 {
     auto* label = new QLabel(text);
@@ -42,6 +82,24 @@ QLabel* titleLabel(const QString& text, double size, bool bold)
 QLabel* secondaryLabel(const QString& text)
 {
     auto* label = new QLabel(text);
+    label->setStyleSheet(secondaryStyle());
+    return label;
+}
+
+ElidedLabel* titleElidedLabel(const QString& text, double size, bool bold)
+{
+    auto* label = new ElidedLabel(text);
+    QString style = QStringLiteral("color: %1; font-size: %2px;")
+                        .arg(CTColors::textPrimary().name())
+                        .arg(size);
+    if (bold) style += QStringLiteral("font-weight: 600;");
+    label->setStyleSheet(style);
+    return label;
+}
+
+ElidedLabel* secondaryElidedLabel(const QString& text)
+{
+    auto* label = new ElidedLabel(text);
     label->setStyleSheet(secondaryStyle());
     return label;
 }
@@ -205,13 +263,16 @@ QWidget* makeCard(const QString& coverURL, double coverSize, double radius, cons
     cover->setCoverURL(coverURL, static_cast<int>(coverSize) * 2);
     layout->addWidget(cover, 0, Qt::AlignHCenter);
 
-    auto* titleLabel = ct::ui::titleLabel(title, CTTypography::Body, true);
+    auto* titleLabel = new ElidedLabel(title, card);
     titleLabel->setAlignment(Qt::AlignHCenter);
-    titleLabel->setWordWrap(false);
+    titleLabel->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                                  .arg(CTColors::textPrimary().name())
+                                  .arg(CTTypography::Body));
     layout->addWidget(titleLabel);
 
-    auto* subtitleLabel = secondaryLabel(subtitle);
+    auto* subtitleLabel = new ElidedLabel(subtitle, card);
     subtitleLabel->setAlignment(Qt::AlignHCenter);
+    subtitleLabel->setStyleSheet(secondaryStyle());
     layout->addWidget(subtitleLabel);
 
     card->onClicked = std::move(onClick);
@@ -364,12 +425,14 @@ void SongListView::rebuild()
         auto* textLayout = new QVBoxLayout(textColumn);
         textLayout->setContentsMargins(0, 0, 0, 0);
         textLayout->setSpacing(2);
-        row.title = ui::titleLabel(song.title, CTTypography::Body,
-            song.isPlayable);
-        row.title->setStyleSheet(QStringLiteral("color: %1;").arg(
-            song.isPlayable ? CTColors::textPrimary().name() : CTColors::textSecondary().name()));
+        row.title = new ui::ElidedLabel(song.title, widget);
+        row.title->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: %3;")
+                                     .arg(song.isPlayable ? CTColors::textPrimary().name()
+                                                          : CTColors::textSecondary().name())
+                                     .arg(CTTypography::Body)
+                                     .arg(song.isPlayable ? 600 : 400));
         textLayout->addWidget(row.title);
-        row.artist = ui::secondaryLabel(song.artistNames());
+        row.artist = ui::secondaryElidedLabel(song.artistNames());
         textLayout->addWidget(row.artist);
         layout->addWidget(textColumn, 1);
 

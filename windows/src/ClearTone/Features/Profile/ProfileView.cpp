@@ -112,10 +112,10 @@ QWidget* makeRadioCard(const RadioStation& radio)
     cover->setCoverURL(radio.coverURL, 320);
     layout->addWidget(cover, 0, Qt::AlignHCenter);
 
-    auto* name = ui::titleLabel(radio.name, CTTypography::Body, true);
+    auto* name = ui::titleElidedLabel(radio.name, CTTypography::Body, true);
     name->setMaximumWidth(160);
     layout->addWidget(name);
-    layout->addWidget(ui::secondaryLabel(QStringLiteral("%1 节目").arg(radio.programCount)));
+    layout->addWidget(ui::secondaryElidedLabel(QStringLiteral("%1 节目").arg(radio.programCount)));
 
     const QString id = radio.id;
     card->onClicked = [id] { AppState::shared().openRadio(id); };
@@ -552,8 +552,8 @@ QWidget* ProfileView::buildAccountCard()
     auto* nameLayout = new QHBoxLayout(nameRow);
     nameLayout->setContentsMargins(0, 0, 0, 0);
     nameLayout->setSpacing(CTSpacing::Sm);
-    auto* name = ui::titleLabel(account && !account->nickname.isEmpty() ? account->nickname
-                                                                       : QStringLiteral("已登录"),
+    auto* name = ui::titleElidedLabel(account && !account->nickname.isEmpty() ? account->nickname
+                                                                              : QStringLiteral("已登录"),
         CTTypography::Body, true);
     nameLayout->addWidget(name);
     if (account && account->isVIP) {

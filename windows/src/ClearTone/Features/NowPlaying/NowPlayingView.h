@@ -3,6 +3,7 @@
 #include "Core/Async.h"
 #include "Core/Lyrics/LyricsSession.h"
 #include "Core/Models/MusicModels.h"
+#include "Features/Shared/UIComponents.h"
 
 #include <QDateTime>
 #include <QHash>
@@ -82,7 +83,7 @@ private:
     AmbientBackground* m_background = nullptr;
     QWidget* m_root = nullptr;
     CoverImage* m_cover = nullptr;
-    QLabel* m_titleText = nullptr;
+    ui::ElidedLabel* m_titleText = nullptr;
     QPushButton* m_likeButton = nullptr;
     QPushButton* m_artistButton = nullptr;
     QLabel* m_sourceText = nullptr;

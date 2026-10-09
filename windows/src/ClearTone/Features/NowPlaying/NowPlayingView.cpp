@@ -104,7 +104,10 @@ QString wordRowHtml(const QList<LyricWord>& words, bool currentLine, int wordInd
 
 NowPlayingView::NowPlayingView(QWidget* parent)
     : QWidget(parent)
-    , m_lyrics([](const Song&) { return AppState::shared().provider(); })
+    , m_lyrics([](const Song& song) -> IMusicProvider* {
+        if (song.source != SongSource::Netease) return nullptr;
+        return AppState::shared().provider();
+    })
 {
     setObjectName(QStringLiteral("ctNowPlayingView"));
     buildUi();
@@ -286,10 +289,11 @@ QWidget* NowPlayingView::buildLeftColumn()
     auto* titleLayout = new QHBoxLayout(titleRow);
     titleLayout->setContentsMargins(0, 0, 0, 0);
     titleLayout->setSpacing(CTSpacing::Sm);
-    m_titleText = new QLabel(QStringLiteral("未在播放"), titleRow);
+    m_titleText = new ui::ElidedLabel(QStringLiteral("未在播放"), titleRow);
     m_titleText->setStyleSheet(QStringLiteral("color: %1; font-size: 26px; font-weight: 600;")
                                    .arg(primaryText().name()));
     m_titleText->setMaximumWidth(360);
+    m_titleText->setAlignment(Qt::AlignCenter);
     titleLayout->addWidget(m_titleText);
     m_likeButton = makeGlyphButton(QStringLiteral("\uEB51"), secondaryText(), 20, titleRow);
     m_likeButton->setToolTip(QStringLiteral("收藏到喜欢的音乐"));
@@ -629,9 +633,11 @@ void NowPlayingView::refresh()
     PlayerController& player = PlayerController::shared();
     const std::optional<Song> song = player.currentSong();
 
-    m_titleText->setText(song.has_value() ? song->title : QStringLiteral("未在播放"));
+    m_titleText->setFullText(song.has_value() ? song->title : QStringLiteral("未在播放"));
     const bool hasArtist = song.has_value() && !song->artists.isEmpty();
-    m_artistButton->setText(hasArtist ? song->artistNames() : QStringLiteral("未知艺术家"));
+    const QString artistText = hasArtist ? song->artistNames() : QStringLiteral("未知艺术家");
+    m_artistButton->setText(m_artistButton->fontMetrics().elidedText(artistText, Qt::ElideRight, 380));
+    m_artistButton->setToolTip(artistText);
     m_artistButton->setEnabled(hasArtist);
     m_cover->setCoverURL(song.has_value() ? song->coverURL : std::nullopt, 600);
 

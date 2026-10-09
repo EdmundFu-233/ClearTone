@@ -67,6 +67,20 @@ jobs:
           }
           ctest --test-dir windows/build-ci --output-on-failure
 
+      # 启动冒烟：起辅助进程、跑事件循环、加载封面，捕捉“启动即闪退”类问题。
+      - name: 启动冒烟（构建产物）
+        shell: pwsh
+        run: |
+          $nodeExe = & ./windows/scripts/fetch-node-win.ps1 -Arch x64
+          $helper = Join-Path $env:RUNNER_TEMP 'ct-smoke-helper'
+          New-Item -ItemType Directory -Force -Path (Join-Path $helper 'bin') | Out-Null
+          Copy-Item $nodeExe (Join-Path $helper 'bin\node.exe') -Force
+          Copy-Item 'ClearTone/Resources/HelperRuntime/api' (Join-Path $helper 'api') -Recurse -Force
+          $env:CLEARTONE_HELPER_ROOT = $helper
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & windows/build-ci/ClearTone.exe --smoke-test 20
+          if ($LASTEXITCODE -ne 0) { throw "冒烟测试失败：退出码 $LASTEXITCODE" }
+
   # 发布包：tag 推送或手动触发时，构建 win-x64 / win-arm64 的 zip
   package:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -122,6 +136,14 @@ jobs:
         run: >
           pwsh -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
           -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT" -QtHostPath "$env:QT_HOST_ROOT" -Generator Ninja
+
+      # arm64 产物无法在 x64 runner 上运行，只能对 x64 包做启动冒烟。
+      - name: 启动冒烟（win-x64 发布包）
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          & "windows/publish/win-x64/ClearTone.exe" --smoke-test 20
+          if ($LASTEXITCODE -ne 0) { throw "发布包冒烟失败：退出码 $LASTEXITCODE" }
 
       - name: 列出产物内容
         shell: pwsh

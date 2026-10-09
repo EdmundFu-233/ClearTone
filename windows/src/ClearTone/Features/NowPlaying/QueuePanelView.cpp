@@ -159,11 +159,17 @@ void QueuePanelView::refresh()
         auto* infoLayout = new QVBoxLayout(info);
         infoLayout->setContentsMargins(0, 0, 0, 0);
         infoLayout->setSpacing(2);
-        auto* title = ui::titleLabel(item.song.title, CTTypography::Body, isCurrent);
-        title->setStyleSheet(QStringLiteral("color: %1;").arg(
-            isCurrent ? CTColors::accent().name() : CTColors::textPrimary().name()));
+        auto* title = new ui::ElidedLabel(item.song.title, widget);
+        title->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: %3;")
+                                 .arg(isCurrent ? CTColors::accent().name()
+                                                : CTColors::textPrimary().name())
+                                 .arg(CTTypography::Body)
+                                 .arg(isCurrent ? 600 : 400));
         infoLayout->addWidget(title);
-        infoLayout->addWidget(ui::secondaryLabel(item.song.artistNames()));
+        auto* artist = new ui::ElidedLabel(item.song.artistNames(), widget);
+        artist->setStyleSheet(
+            QStringLiteral("color: %1;").arg(CTColors::textSecondary().name()));
+        infoLayout->addWidget(artist);
         layout->addWidget(info, 1);
 
         auto* duration = ui::secondaryLabel(CTFormatting::time(item.song.duration));

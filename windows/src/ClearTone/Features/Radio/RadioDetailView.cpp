@@ -294,7 +294,6 @@ void RadioDetailView::renderHeader()
         auto* description = ui::secondaryLabel(*station.descriptionText);
         description->setWordWrap(true);
         description->setMaximumWidth(520);
-        description->setMaximumHeight(80);
         infoLayout->addWidget(description);
     }
 

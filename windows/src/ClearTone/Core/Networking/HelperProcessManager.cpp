@@ -43,36 +43,41 @@ HelperProcessManager::HelperProcessManager(QObject* parent)
     connect(m_monitorTimer, &QTimer::timeout, this, [this] {
         if (m_stopping) return;
         const bool alive = isProcessAlive();
-        detach([this, alive]() -> Task<void> {
-            const bool healthy = co_await checkHealth();
-            if (m_stopping) co_return;
-            if (!alive || !healthy) {
-                CTLog::helper().warn(
-                    QStringLiteral("辅助进程异常 (alive=%1, healthy=%2)，尝试重启").arg(alive).arg(healthy));
-                m_monitoring = false;
-                m_monitorTimer->stop();
-                setState({HelperState::Kind::Failed, 0, QStringLiteral("辅助进程异常退出")});
-                stopProcess();
-                scheduleRestart(500, true);
-            }
-        }());
+        detach(monitorHelper(alive));
     });
 
     m_restartTimer = new QTimer(this);
     m_restartTimer->setSingleShot(true);
     connect(m_restartTimer, &QTimer::timeout, this, [this] {
-        const bool resumeMonitoring = m_resumeMonitoringOnFailure;
-        detach([this, resumeMonitoring]() -> Task<void> {
-            try {
-                co_await start(CancellationToken::none());
-            } catch (const MusicException& error) {
-                CTLog::helper().error(
-                    QStringLiteral("健康检查自动重启失败: %1").arg(error.userFacingMessage()));
-                setState({HelperState::Kind::Failed, 0, QStringLiteral("辅助进程异常退出")});
-                if (resumeMonitoring) startHealthMonitoring();
-            }
-        }());
+        detach(restartAfterFailure(m_resumeMonitoringOnFailure));
     });
+}
+
+Task<void> HelperProcessManager::monitorHelper(bool alive)
+{
+    const bool healthy = co_await checkHealth();
+    if (m_stopping) co_return;
+    if (!alive || !healthy) {
+        CTLog::helper().warn(
+            QStringLiteral("辅助进程异常 (alive=%1, healthy=%2)，尝试重启").arg(alive).arg(healthy));
+        m_monitoring = false;
+        m_monitorTimer->stop();
+        setState({HelperState::Kind::Failed, 0, QStringLiteral("辅助进程异常退出")});
+        stopProcess();
+        scheduleRestart(500, true);
+    }
+}
+
+Task<void> HelperProcessManager::restartAfterFailure(bool resumeMonitoring)
+{
+    try {
+        co_await start(CancellationToken::none());
+    } catch (const MusicException& error) {
+        CTLog::helper().error(
+            QStringLiteral("健康检查自动重启失败: %1").arg(error.userFacingMessage()));
+        setState({HelperState::Kind::Failed, 0, QStringLiteral("辅助进程异常退出")});
+        if (resumeMonitoring) startHealthMonitoring();
+    }
 }
 
 QString HelperProcessManager::runtimeRoot()

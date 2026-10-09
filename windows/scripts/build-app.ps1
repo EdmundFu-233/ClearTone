@@ -121,6 +121,21 @@ function Deploy-CrossRuntime {
             }
         }
     }
+
+    # 交叉部署最容易出错的是把主机（x64）DLL 混进来：PE 机器类型不符的
+    # DLL 在 arm64 进程里加载即失败（表现为启动闪退）。逐个校验并剔除。
+    foreach ($file in Get-ChildItem $Destination -Filter '*.dll' -File -ErrorAction SilentlyContinue) {
+        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        if ($bytes.Length -lt 0x40) { continue }
+        $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+        if ($peOffset -le 0 -or ($peOffset + 6) -gt $bytes.Length) { continue }
+        if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) { continue }
+        $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+        if ($machine -ne 0xAA64) {
+            Write-Warning ("移除架构不匹配的 DLL：{0} (machine=0x{1:X4})" -f $file.Name, $machine)
+            Remove-Item $file.FullName -Force
+        }
+    }
 }
 
 function Build-One {

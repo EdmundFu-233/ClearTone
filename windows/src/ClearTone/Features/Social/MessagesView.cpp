@@ -131,11 +131,16 @@ QWidget* buildConversationRow(const PrivateConversation& conversation, std::func
     auto* infoLayout = new QVBoxLayout(info);
     infoLayout->setContentsMargins(0, 0, 0, 0);
     infoLayout->setSpacing(2);
-    infoLayout->addWidget(ui::titleLabel(conversation.nickname, CTTypography::Body, true));
+    auto* nickname = new ui::ElidedLabel(conversation.nickname, info);
+    nickname->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                                .arg(CTColors::textPrimary().name())
+                                .arg(CTTypography::Body));
+    infoLayout->addWidget(nickname);
     if (conversation.lastMessage.has_value() && !conversation.lastMessage->isEmpty()) {
-        const QString elided = QFontMetrics(QFont()).elidedText(
-            *conversation.lastMessage, Qt::ElideRight, 520);
-        infoLayout->addWidget(ui::secondaryLabel(elided));
+        auto* lastMessage = new ui::ElidedLabel(*conversation.lastMessage, info);
+        lastMessage->setStyleSheet(
+            QStringLiteral("color: %1;").arg(CTColors::textSecondary().name()));
+        infoLayout->addWidget(lastMessage);
     }
     layout->addWidget(info, 1);
 

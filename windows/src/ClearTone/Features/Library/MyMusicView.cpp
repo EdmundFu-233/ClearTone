@@ -646,10 +646,7 @@ QWidget* MyMusicView::buildSubscriptionsSection()
         layout->addWidget(cardGrid(cards, 4));
     }
     if (!m_subRadios.isEmpty()) {
-        auto* radios = new QWidget();
-        auto* radiosLayout = new QHBoxLayout(radios);
-        radiosLayout->setContentsMargins(0, 0, 0, 0);
-        radiosLayout->setSpacing(CTSpacing::Lg);
+        QList<QWidget*> radioCards;
         for (const RadioStation& radio : std::as_const(m_subRadios)) {
             auto* card = new ui::CardButton();
             card->setFixedWidth(160);
@@ -661,15 +658,16 @@ QWidget* MyMusicView::buildSubscriptionsSection()
             cover->setCornerRadius(CTRadius::Medium);
             cover->setCoverURL(radio.coverURL, 320);
             cardLayout->addWidget(cover, 0, Qt::AlignHCenter);
-            cardLayout->addWidget(ui::titleLabel(radio.name, CTTypography::Body, true));
-            cardLayout->addWidget(ui::secondaryLabel(
+            auto* radioName = ui::titleElidedLabel(radio.name, CTTypography::Body, true);
+            radioName->setMaximumWidth(160);
+            cardLayout->addWidget(radioName);
+            cardLayout->addWidget(ui::secondaryElidedLabel(
                 QStringLiteral("%1 期").arg(radio.programCount)));
             const QString id = radio.id;
             card->onClicked = [id] { AppState::shared().openRadio(id); };
-            radiosLayout->addWidget(card, 0, Qt::AlignTop);
+            radioCards.append(card);
         }
-        radiosLayout->addStretch(1);
-        layout->addWidget(radios);
+        layout->addWidget(cardGrid(radioCards, 4));
     }
     if (m_subscriptionsError.has_value()) {
         auto* error = ui::secondaryLabel(*m_subscriptionsError);

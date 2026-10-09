@@ -443,8 +443,10 @@ QWidget* PlaylistDetailView::buildHeader()
     infoLayout->addWidget(name);
 
     if (playlist.creatorName.has_value() && !playlist.creatorName->isEmpty()) {
-        infoLayout->addWidget(
-            ui::secondaryLabel(QStringLiteral("创建者：%1").arg(*playlist.creatorName)));
+        auto* creator = ui::secondaryElidedLabel(
+            QStringLiteral("创建者：%1").arg(*playlist.creatorName));
+        creator->setMaximumWidth(520);
+        infoLayout->addWidget(creator);
     }
     if (playlist.descriptionText.has_value() && !playlist.descriptionText->isEmpty()) {
         auto* description = ui::secondaryLabel(*playlist.descriptionText);

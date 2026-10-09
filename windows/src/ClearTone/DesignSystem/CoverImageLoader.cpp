@@ -138,6 +138,11 @@ Task<void> CoverImageLoader::loadCoreImage(
     } catch (const MusicException& error) {
         CTLog::general().debug(
             QStringLiteral("封面加载失败 %1: %2").arg(url, CTLog::sanitize(error.message())));
+    } catch (const std::exception& error) {
+        CTLog::general().debug(
+            QStringLiteral("封面加载异常 %1: %2").arg(url, QString::fromUtf8(error.what())));
+    } catch (...) {
+        CTLog::general().debug(QStringLiteral("封面加载未知异常 %1").arg(url));
     }
 
     const QList<Callback<std::optional<QImage>>> callbacks = m_pendingImages.take(key);

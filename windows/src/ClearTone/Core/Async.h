@@ -454,7 +454,11 @@ private:
     {
         if (state->finished) return;
         state->finished = true;
-        if (state->timer) state->timer->stop();
+        if (state->timer) {
+            state->timer->stop();
+            // 断开连接以打破 state -> timer -> lambda -> state 的引用环。
+            state->timer->disconnect();
+        }
         state->token.unregisterCallback(state->cancelId);
         detail::resumeOnLoop(state->handle);
     }
@@ -485,6 +489,8 @@ struct Awaitable {
         auto* self = this;
         auto starter = this->starter;
         starter([self, handle](Result<T> outcome) {
+            // 防御重复回调：第二次 resume 会踩到已释放的协程帧。
+            if (self->result) return;
             self->result.emplace(std::move(outcome));
             detail::resumeOnLoop(handle);
         });

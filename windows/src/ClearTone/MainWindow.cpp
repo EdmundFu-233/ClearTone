@@ -89,6 +89,26 @@ void applyPalette(bool dark)
     QApplication::setPalette(palette);
 }
 
+QString glyphButtonStyle(double size)
+{
+    return QStringLiteral(
+        "QPushButton { background: transparent; border: none; color: %1; font-size: %2px;"
+        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+        "QPushButton:hover { background: %3; border-radius: 6px; }")
+        .arg(CTColors::textPrimary().name())
+        .arg(size)
+        .arg(CTColors::overlay().name());
+}
+
+QString plainTextButtonStyle()
+{
+    return QStringLiteral(
+        "QPushButton { background: transparent; border: none; color: %1; font-size: 13px;"
+        " padding: 0 6px; }"
+        "QPushButton:hover { background: %2; border-radius: 6px; }")
+        .arg(CTColors::accent().name(), CTColors::overlay().name());
+}
+
 QPushButton* makeGlyphButton(const QString& glyph, const QString& tip, double size, QWidget* parent)
 {
     auto* button = new QPushButton(glyph, parent);
@@ -96,13 +116,7 @@ QPushButton* makeGlyphButton(const QString& glyph, const QString& tip, double si
     button->setCursor(Qt::PointingHandCursor);
     button->setToolTip(tip);
     button->setFixedSize(32, 32);
-    button->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: none; color: %1; font-size: %2px;"
-        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
-        "QPushButton:hover { background: %3; border-radius: 6px; }")
-                              .arg(CTColors::textPrimary().name())
-                              .arg(size)
-                              .arg(CTColors::overlay().name()));
+    button->setStyleSheet(glyphButtonStyle(size));
     return button;
 }
 
@@ -137,11 +151,6 @@ QString playlistButtonStyle(bool active)
         "QPushButton:hover { background: %3; }")
         .arg(active ? CTColors::overlay().name() : QStringLiteral("transparent"),
             CTColors::textPrimary().name(), CTColors::overlay().name());
-}
-
-void setElidedText(QLabel* label, const QString& text, int width)
-{
-    label->setText(label->fontMetrics().elidedText(text, Qt::ElideRight, width));
 }
 
 template <typename Event, typename Handler>
@@ -363,7 +372,10 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     auto* accountTextLayout = new QVBoxLayout(accountText);
     accountTextLayout->setContentsMargins(0, 0, 0, 0);
     accountTextLayout->setSpacing(1);
-    m_accountName = ui::titleLabel(QStringLiteral("未登录"), CTTypography::Body, true);
+    m_accountName = new ui::ElidedLabel(QStringLiteral("未登录"), accountText);
+    m_accountName->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                                     .arg(CTColors::textPrimary().name())
+                                     .arg(CTTypography::Body));
     m_accountHint = ui::secondaryLabel(QStringLiteral("点击扫码登录"));
     accountTextLayout->addWidget(m_accountName);
     accountTextLayout->addWidget(m_accountHint);
@@ -450,14 +462,18 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     m_titleButton->setFlat(true);
     m_titleButton->setCursor(Qt::PointingHandCursor);
     m_titleButton->setToolTip(QStringLiteral("打开正在播放"));
-    m_titleButton->setMaximumWidth(240);
+    m_titleButton->setMaximumWidth(360);
     m_titleButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; text-align: left; padding: 4px; }"));
     auto* titleLayout = new QVBoxLayout(m_titleButton);
     titleLayout->setContentsMargins(0, 0, 0, 0);
     titleLayout->setSpacing(2);
-    m_barTitle = ui::titleLabel(QStringLiteral("未在播放"), CTTypography::Body, true);
-    m_barArtist = ui::secondaryLabel(QString());
+    m_barTitle = new ui::ElidedLabel(QStringLiteral("未在播放"), m_titleButton);
+    m_barTitle->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                                  .arg(CTColors::textPrimary().name())
+                                  .arg(CTTypography::Body));
+    m_barArtist = new ui::ElidedLabel(QString(), m_titleButton);
+    m_barArtist->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::textSecondary().name()));
     titleLayout->addWidget(m_barTitle);
     titleLayout->addWidget(m_barArtist);
     QObject::connect(m_titleButton, &QPushButton::clicked, this,
@@ -593,7 +609,11 @@ void MainWindow::buildOverlays()
     auto* collapse = makeGlyphButton(QStringLiteral("\uE70D"), QStringLiteral("收起"), 16, nowPlayingHeader);
     QObject::connect(collapse, &QPushButton::clicked, this,
         [] { AppState::shared().setIsNowPlayingExpanded(false); });
-    m_nowPlayingTitle = ui::titleLabel(QString(), CTTypography::Body, true);
+    m_nowPlayingTitle = new ui::ElidedLabel(QString(), nowPlayingHeader);
+    m_nowPlayingTitle->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                                         .arg(CTColors::textPrimary().name())
+                                         .arg(CTTypography::Body));
+    m_nowPlayingTitle->setMaximumWidth(420);
     auto* nowPlayingHint = ui::secondaryLabel(QStringLiteral("正在播放"));
     nowPlayingHeaderLayout->addWidget(collapse);
     nowPlayingHeaderLayout->addStretch(1);
@@ -932,10 +952,12 @@ void MainWindow::syncPlaylists()
 
     for (int i = 0; i < limit; ++i) {
         const Playlist& playlist = playlists.at(i);
-        auto* button = new QPushButton(playlist.name, m_playlistPanel);
+        auto* button = new QPushButton(m_playlistPanel);
         button->setFlat(true);
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(playlistButtonStyle(false));
+        button->setText(button->fontMetrics().elidedText(playlist.name, Qt::ElideRight, 192));
+        button->setToolTip(playlist.name);
         connect(button, &QPushButton::clicked, this,
             [id = playlist.id] { AppState::shared().openPlaylist(id); });
         m_playlistButtons.insert(playlist.id, button);
@@ -957,7 +979,7 @@ void MainWindow::updatePlaylistHighlight()
 void MainWindow::updateAccountArea()
 {
     const std::optional<AccountInfo> account = AppState::shared().account();
-    m_accountName->setText(account ? account->nickname : L10n::Common::NotLoggedIn);
+    m_accountName->setFullText(account ? account->nickname : L10n::Common::NotLoggedIn);
     m_accountHint->setText(!account ? QStringLiteral("点击扫码登录")
                                     : (account->isVIP ? QStringLiteral("VIP 会员")
                                                       : QStringLiteral("已登录")));
@@ -989,8 +1011,8 @@ void MainWindow::updateOverlayGeometry()
 void MainWindow::updateBarSong()
 {
     m_barCover->setCoverURL(m_bar.coverUrl(), 92);
-    setElidedText(m_barTitle, m_bar.title(), 200);
-    setElidedText(m_barArtist, m_bar.artist(), 200);
+    m_barTitle->setFullText(m_bar.title());
+    m_barArtist->setFullText(m_bar.artist());
     m_likeButton->setText(m_bar.likeGlyph());
     m_likeButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: 16px;"
@@ -999,7 +1021,7 @@ void MainWindow::updateBarSong()
                                     .arg(m_bar.likeForeground().name(),
                                         CTColors::overlay().name()));
     m_qualityButton->setText(m_bar.qualityLabel());
-    if (m_nowPlayingTitle != nullptr) m_nowPlayingTitle->setText(m_bar.title());
+    if (m_nowPlayingTitle != nullptr) m_nowPlayingTitle->setFullText(m_bar.title());
 }
 
 void MainWindow::updateBarTransport()
@@ -1043,9 +1065,17 @@ void MainWindow::updateBarRate()
 void MainWindow::updateSleepButton()
 {
     const double remaining = PlayerController::shared().sleepTimerRemaining();
-    m_sleepButton->setText(remaining > 0
-            ? QStringLiteral("%1 分钟").arg(qMax(1, static_cast<int>(std::ceil(remaining / 60.0))))
-            : QStringLiteral("\uE916"));
+    if (remaining > 0) {
+        const QString text = QStringLiteral("%1 分钟")
+                                 .arg(qMax(1, static_cast<int>(std::ceil(remaining / 60.0))));
+        m_sleepButton->setText(text);
+        m_sleepButton->setStyleSheet(plainTextButtonStyle());
+        m_sleepButton->setFixedSize(m_sleepButton->fontMetrics().horizontalAdvance(text) + 16, 32);
+    } else {
+        m_sleepButton->setText(QStringLiteral("\uE916"));
+        m_sleepButton->setStyleSheet(glyphButtonStyle(15));
+        m_sleepButton->setFixedSize(32, 32);
+    }
 }
 
 void MainWindow::updateMuteGlyph()

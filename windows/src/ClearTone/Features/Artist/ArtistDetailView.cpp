@@ -815,7 +815,7 @@ void ArtistDetailView::renderAbout()
         grid->setHorizontalSpacing(CTSpacing::Lg);
         grid->setVerticalSpacing(CTSpacing::Lg);
         const QList<Artist> similar = m_session.similarArtists();
-        const int columns = 6;
+        const int columns = gridColumns(140);
         for (int index = 0; index < similar.size(); ++index) {
             auto* card = ui::artistCard(similar.at(index),
                 [](const Artist& artist) { AppState::shared().openArtist(artist.id); });
@@ -911,7 +911,10 @@ QWidget* ArtistDetailView::buildMvCard(const ArtistMV& mv)
     cover->setCoverURL(mv.coverURL, 400);
     layout->addWidget(cover);
 
-    auto* name = ui::titleLabel(mv.name, CTTypography::Body, true);
+    auto* name = new ui::ElidedLabel(mv.name, card);
+    name->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
+                            .arg(CTColors::textPrimary().name())
+                            .arg(CTTypography::Body));
     name->setMaximumWidth(200);
     layout->addWidget(name);
 
@@ -919,7 +922,8 @@ QWidget* ArtistDetailView::buildMvCard(const ArtistMV& mv)
     if (mv.artistName.has_value() && !mv.artistName->isEmpty()) parts.append(*mv.artistName);
     if (mv.playCount > 0) parts.append(QStringLiteral("播放 %1").arg(CTFormatting::count(mv.playCount)));
     if (mv.duration > 0) parts.append(CTFormatting::time(mv.duration));
-    auto* sub = ui::secondaryLabel(parts.join(QStringLiteral(" · ")));
+    auto* sub = new ui::ElidedLabel(parts.join(QStringLiteral(" · ")), card);
+    sub->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::textSecondary().name()));
     sub->setMaximumWidth(200);
     layout->addWidget(sub);
     return card;
