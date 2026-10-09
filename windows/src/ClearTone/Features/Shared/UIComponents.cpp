@@ -32,7 +32,7 @@ QString secondaryStyle()
 ElidedLabel::ElidedLabel(const QString& text, QWidget* parent)
     : QLabel(parent)
 {
-    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     setFullText(text);
 }
 
@@ -41,6 +41,18 @@ void ElidedLabel::setFullText(const QString& text)
     m_fullText = text;
     setToolTip(text);
     updateElided();
+    updateGeometry();
+}
+
+QSize ElidedLabel::sizeHint() const
+{
+    const QFontMetrics metrics(font());
+    return QSize(metrics.horizontalAdvance(m_fullText), metrics.height());
+}
+
+QSize ElidedLabel::minimumSizeHint() const
+{
+    return QSize(0, QLabel::minimumSizeHint().height());
 }
 
 void ElidedLabel::resizeEvent(QResizeEvent* event)
@@ -55,6 +67,7 @@ void ElidedLabel::changeEvent(QEvent* event)
     if (event->type() == QEvent::FontChange || event->type() == QEvent::ApplicationFontChange
         || event->type() == QEvent::StyleChange) {
         updateElided();
+        updateGeometry();
     }
 }
 

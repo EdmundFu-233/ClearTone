@@ -34,6 +34,9 @@ public:
 
     void setText(const QString& text) { setFullText(text); }
 
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void changeEvent(QEvent* event) override;
