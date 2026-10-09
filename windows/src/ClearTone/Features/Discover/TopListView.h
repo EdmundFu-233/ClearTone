@@ -21,6 +21,8 @@ class QVBoxLayout;
 namespace ct {
 
 class SongListView;
+class FlowLayout;
+namespace ui { class ElidedLabel; }
 
 class TopListView : public QWidget {
     Q_OBJECT
@@ -31,6 +33,7 @@ public:
 
 protected:
     void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
     void renderLists();
@@ -49,11 +52,11 @@ private:
     QListWidget* m_listBox = nullptr;
     QString m_listsSignature;
 
-    QLabel* m_trackTitle = nullptr;
+    ui::ElidedLabel* m_trackTitle = nullptr;
     QLabel* m_trackCount = nullptr;
     QPushButton* m_playAll = nullptr;
     QWidget* m_areaRow = nullptr;
-    QHBoxLayout* m_areaLayout = nullptr;
+    FlowLayout* m_areaLayout = nullptr;
     QWidget* m_trackHost = nullptr;
     QVBoxLayout* m_trackLayout = nullptr;
     SongListView* m_songList = nullptr;

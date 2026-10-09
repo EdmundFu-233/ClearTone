@@ -43,17 +43,18 @@ QColor accentText() { return CTColors::DarkAccent; }
 QString glyphStyle(const QColor& color, double size)
 {
     return QStringLiteral("QPushButton { background: transparent; border: none; color: %1;"
-                          " font-size: %2px; font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+                          " font-size: %2px; font-family: 'lucide'; }"
                           "QPushButton:hover { background: %3; border-radius: 6px; }")
         .arg(color.name())
         .arg(size)
-        .arg(CTColors::overlay().name());
+        .arg(CTColors::DarkOverlay.name());
 }
 
 QPushButton* makeGlyphButton(const QString& glyph, const QColor& color, double size, QWidget* parent)
 {
     auto* button = new QPushButton(glyph, parent);
     button->setFlat(true);
+    button->setMinimumSize(32, 32);
     button->setCursor(Qt::PointingHandCursor);
     button->setStyleSheet(glyphStyle(color, size));
     return button;
@@ -66,18 +67,18 @@ QString sliderStyle()
         "QSlider::groove:horizontal { height: 4px; background: %1; border-radius: 2px; }"
         "QSlider::sub-page:horizontal { background: %2; border-radius: 2px; }"
         "QSlider::handle:horizontal { width: 10px; margin: -4px 0; background: %2; border-radius: 5px; }")
-        .arg(CTColors::overlay().name(), CTColors::accent().name());
+        .arg(CTColors::DarkOverlay.name(), CTColors::DarkAccent.name());
 }
 
 QString modeGlyph(PlayMode mode)
 {
     switch (mode) {
     case PlayMode::LoopOne:
-        return QStringLiteral("\uE8ED");
+        return QStringLiteral("\uE1FC");
     case PlayMode::Shuffle:
-        return QStringLiteral("\uE8B1");
+        return QStringLiteral("\uE161");
     default:
-        return QStringLiteral("\uE8EE");
+        return QStringLiteral("\uE149");
     }
 }
 
@@ -208,7 +209,7 @@ void NowPlayingView::buildUi()
         " padding: 3px 10px; font-size: 12px; }"
         "QPushButton:checked { background: %2; color: %3; }")
                                     .arg(secondaryText().name())
-                                    .arg(CTColors::overlay().name())
+                                    .arg(CTColors::DarkOverlay.name())
                                     .arg(primaryText().name());
     m_translationToggle = new QPushButton(QStringLiteral("翻译"), toolbar);
     m_translationToggle->setCheckable(true);
@@ -228,7 +229,7 @@ void NowPlayingView::buildUi()
         " padding: 3px 8px; border-radius: 6px; }"
         "QPushButton:hover { background: %2; }"
         "QPushButton:disabled { color: %3; }")
-                                         .arg(primaryText().name(), CTColors::overlay().name(),
+                                         .arg(primaryText().name(), CTColors::DarkOverlay.name(),
                                              faintText().name());
     m_offsetDecrease = new QPushButton(QStringLiteral("-"), toolbar);
     m_offsetIncrease = new QPushButton(QStringLiteral("+"), toolbar);
@@ -252,7 +253,7 @@ void NowPlayingView::buildUi()
     columns->addWidget(right, 1);
     grid->addWidget(content, 0, 0);
 
-    m_closeButton = makeGlyphButton(QStringLiteral("\uE711"), primaryText(), 14, m_root);
+    m_closeButton = makeGlyphButton(QStringLiteral("\uE1B1"), primaryText(), 14, m_root);
     m_closeButton->setToolTip(L10n::Common::Close);
     grid->addWidget(m_closeButton, 0, 0, Qt::AlignRight | Qt::AlignTop);
 
@@ -281,7 +282,7 @@ QWidget* NowPlayingView::buildLeftColumn()
     layout->addStretch(1);
 
     m_cover = new CoverImage(left);
-    m_cover->setFixedSize(300, 300);
+    m_cover->setFixedSize(260, 260);
     m_cover->setCornerRadius(CTRadius::Large);
     layout->addWidget(m_cover, 0, Qt::AlignHCenter);
 
@@ -292,13 +293,14 @@ QWidget* NowPlayingView::buildLeftColumn()
     m_titleText = new ui::ElidedLabel(QStringLiteral("未在播放"), titleRow);
     m_titleText->setStyleSheet(QStringLiteral("color: %1; font-size: 26px; font-weight: 600;")
                                    .arg(primaryText().name()));
+    m_titleText->setMinimumWidth(120);
     m_titleText->setMaximumWidth(360);
     m_titleText->setAlignment(Qt::AlignCenter);
-    titleLayout->addWidget(m_titleText);
-    m_likeButton = makeGlyphButton(QStringLiteral("\uEB51"), secondaryText(), 20, titleRow);
+    titleLayout->addWidget(m_titleText, 1);
+    m_likeButton = makeGlyphButton(QStringLiteral("\uE0F5"), secondaryText(), 20, titleRow);
     m_likeButton->setToolTip(QStringLiteral("收藏到喜欢的音乐"));
     titleLayout->addWidget(m_likeButton);
-    layout->addWidget(titleRow, 0, Qt::AlignHCenter);
+    layout->addWidget(titleRow);
 
     m_artistButton = new QPushButton(QStringLiteral("未知艺术家"), left);
     m_artistButton->setFlat(true);
@@ -319,10 +321,10 @@ QWidget* NowPlayingView::buildLeftColumn()
     auto* controlsLayout = new QHBoxLayout(controls);
     controlsLayout->setContentsMargins(0, 0, 0, 0);
     controlsLayout->setSpacing(CTSpacing::Lg);
-    m_modeButton = makeGlyphButton(QStringLiteral("\uE8EE"), primaryText(), 16, controls);
-    m_previousButton = makeGlyphButton(QStringLiteral("\uE892"), primaryText(), 18, controls);
-    m_playPauseButton = makeGlyphButton(QStringLiteral("\uE768"), accentText(), 36, controls);
-    m_nextButton = makeGlyphButton(QStringLiteral("\uE893"), primaryText(), 18, controls);
+    m_modeButton = makeGlyphButton(QStringLiteral("\uE149"), primaryText(), 16, controls);
+    m_previousButton = makeGlyphButton(QStringLiteral("\uE162"), primaryText(), 18, controls);
+    m_playPauseButton = makeGlyphButton(QStringLiteral("\uE13F"), accentText(), 36, controls);
+    m_nextButton = makeGlyphButton(QStringLiteral("\uE163"), primaryText(), 18, controls);
     controlsLayout->addWidget(m_modeButton);
     controlsLayout->addWidget(m_previousButton);
     controlsLayout->addWidget(m_playPauseButton);
@@ -352,7 +354,7 @@ QWidget* NowPlayingView::buildLeftColumn()
     auto* volumeLayout = new QHBoxLayout(volumeRow);
     volumeLayout->setContentsMargins(0, 0, 0, 0);
     volumeLayout->setSpacing(CTSpacing::Sm);
-    m_muteButton = makeGlyphButton(QStringLiteral("\uE767"), primaryText(), 15, volumeRow);
+    m_muteButton = makeGlyphButton(QStringLiteral("\uE1AA"), primaryText(), 15, volumeRow);
     m_muteButton->setToolTip(QStringLiteral("静音"));
     m_volume = new QSlider(Qt::Horizontal, volumeRow);
     m_volume->setRange(0, 100);
@@ -366,7 +368,7 @@ QWidget* NowPlayingView::buildLeftColumn()
         QStringLiteral("QPushButton { background: transparent; border: none; color: %1;"
                        " font-size: 12px; padding: 3px 8px; border-radius: 6px; }"
                        "QPushButton:hover { background: %2; }")
-            .arg(primaryText().name(), CTColors::overlay().name()));
+            .arg(primaryText().name(), CTColors::DarkOverlay.name()));
     m_rateButton = new QPushButton(QStringLiteral("1.0x"), volumeRow);
     m_rateButton->setFlat(true);
     m_rateButton->setCursor(Qt::PointingHandCursor);
@@ -375,8 +377,8 @@ QWidget* NowPlayingView::buildLeftColumn()
         QStringLiteral("QPushButton { background: transparent; border: none; color: %1;"
                        " font-size: 12px; padding: 3px 8px; border-radius: 6px; }"
                        "QPushButton:hover { background: %2; }")
-            .arg(accentText().name(), CTColors::overlay().name()));
-    m_queueButton = makeGlyphButton(QStringLiteral("\uE8FD"), primaryText(), 15, volumeRow);
+            .arg(accentText().name(), CTColors::DarkOverlay.name()));
+    m_queueButton = makeGlyphButton(QStringLiteral("\uE2DF"), primaryText(), 15, volumeRow);
     m_queueButton->setToolTip(L10n::Common::Queue);
     volumeLayout->addStretch(1);
     volumeLayout->addWidget(m_muteButton);
@@ -481,7 +483,7 @@ QWidget* NowPlayingView::buildLyricHost()
     m_backToCurrentButton->setStyleSheet(
         QStringLiteral("QPushButton { background: %1; color: white; border: none;"
                        " border-radius: 6px; padding: 4px 12px; font-size: 12px; }")
-            .arg(CTColors::accent().name()));
+            .arg(CTColors::DarkAccent.name()));
     m_backToCurrentButton->setVisible(false);
     grid->addWidget(m_backToCurrentButton, 0, 0, Qt::AlignHCenter | Qt::AlignBottom);
 
@@ -574,6 +576,10 @@ void NowPlayingView::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
     if (m_background != nullptr) m_background->setGeometry(rect());
+    if (m_cover != nullptr) {
+        const int side = qBound(160, qMin(height() - 275, width() / 2 - 80), 320);
+        m_cover->setFixedSize(side, side);
+    }
     if (m_root != nullptr) m_root->raise();
 }
 
@@ -646,14 +652,14 @@ void NowPlayingView::refresh()
     m_sourceText->setVisible(!m_sourceText->text().isEmpty());
     m_sourceText->setToolTip(source.has_value() ? source->detail : QString());
 
-    m_playPauseButton->setText(player.playbackState().isPlayIntentActive() ? QStringLiteral("\uE769")
-                                                                           : QStringLiteral("\uE768"));
+    m_playPauseButton->setText(player.playbackState().isPlayIntentActive() ? QStringLiteral("\uE131")
+                                                                           : QStringLiteral("\uE13F"));
     m_modeButton->setText(modeGlyph(player.queue().mode));
     m_modeButton->setToolTip(playMode::displayName(player.queue().mode));
 
     const bool isNetease = song.has_value() && song->source == SongSource::Netease;
     const bool liked = song.has_value() && AppState::shared().isLiked(song->id);
-    m_likeButton->setText(liked ? QStringLiteral("\uEB52") : QStringLiteral("\uEB51"));
+    m_likeButton->setText(liked ? QStringLiteral("\uE0F5") : QStringLiteral("\uE0F5"));
     m_likeButton->setStyleSheet(glyphStyle(liked ? accentText() : secondaryText(), 20));
     m_likeButton->setEnabled(isNetease && AppState::shared().isLoggedIn());
     m_likeButton->setToolTip(liked ? QStringLiteral("取消收藏")
@@ -694,8 +700,8 @@ void NowPlayingView::syncVolume()
 void NowPlayingView::refreshMuteGlyph()
 {
     PlayerController& player = PlayerController::shared();
-    m_muteButton->setText(player.isMuted() || player.volume() <= 0.001f ? QStringLiteral("\uE74F")
-                                                                        : QStringLiteral("\uE767"));
+    m_muteButton->setText(player.isMuted() || player.volume() <= 0.001f ? QStringLiteral("\uE1AB")
+                                                                        : QStringLiteral("\uE1AA"));
 }
 
 void NowPlayingView::handlePlayerTime(double time)

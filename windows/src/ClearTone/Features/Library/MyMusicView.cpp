@@ -45,19 +45,6 @@ QString writeError()
     return message.isEmpty() ? QStringLiteral("操作失败") : message;
 }
 
-QWidget* cardGrid(const QList<QWidget*>& cards, int columns)
-{
-    auto* container = new QWidget();
-    auto* grid = new QGridLayout(container);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(CTSpacing::Lg);
-    grid->setVerticalSpacing(CTSpacing::Lg);
-    for (int index = 0; index < cards.size(); ++index) {
-        grid->addWidget(cards[index], index / columns, index % columns, Qt::AlignTop | Qt::AlignLeft);
-    }
-    grid->setColumnStretch(columns, 1);
-    return container;
-}
 
 class PlaylistNameDialog : public QDialog {
 public:
@@ -512,7 +499,7 @@ void MyMusicView::render()
     QList<QWidget*> cards;
     cards.append(buildLikedCard());
     for (const Playlist& playlist : playlists) cards.append(buildPlaylistCard(playlist));
-    m_bodyLayout->addWidget(cardGrid(cards, 4));
+    m_bodyLayout->addWidget(ui::cardGrid(cards));
     m_bodyLayout->addWidget(buildRecentEntry());
     if (QWidget* subscriptions = buildSubscriptionsSection()) {
         m_bodyLayout->addWidget(subscriptions);
@@ -634,7 +621,7 @@ QWidget* MyMusicView::buildSubscriptionsSection()
                 AppState::shared().openArtist(item.id);
             }));
         }
-        layout->addWidget(cardGrid(cards, 4));
+        layout->addWidget(ui::cardGrid(cards));
     }
     if (!m_subAlbums.isEmpty()) {
         QList<QWidget*> cards;
@@ -643,7 +630,7 @@ QWidget* MyMusicView::buildSubscriptionsSection()
                 AppState::shared().openAlbum(item.id);
             }));
         }
-        layout->addWidget(cardGrid(cards, 4));
+        layout->addWidget(ui::cardGrid(cards));
     }
     if (!m_subRadios.isEmpty()) {
         QList<QWidget*> radioCards;
@@ -667,7 +654,7 @@ QWidget* MyMusicView::buildSubscriptionsSection()
             card->onClicked = [id] { AppState::shared().openRadio(id); };
             radioCards.append(card);
         }
-        layout->addWidget(cardGrid(radioCards, 4));
+        layout->addWidget(ui::cardGrid(radioCards));
     }
     if (m_subscriptionsError.has_value()) {
         auto* error = ui::secondaryLabel(*m_subscriptionsError);

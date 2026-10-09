@@ -2,8 +2,16 @@
 
 #include <QColor>
 #include <QString>
+#include <QIcon>
+#include "Core/Persistence/AppSettings.h"
 
 namespace ct {
+
+class CTTheme {
+public:
+    static void apply(CTThemeMode mode);
+    static QIcon icon(const QString& glyph, const QColor& color = QColor());
+};
 
 class CTColors {
 public:
@@ -31,6 +39,8 @@ public:
     static QColor textPrimary();
     static QColor textSecondary();
     static QColor accent();
+    static QColor border();
+    static QColor accentSoft();
 };
 
 class CTSpacing {

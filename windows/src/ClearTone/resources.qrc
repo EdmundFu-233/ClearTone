@@ -3,5 +3,7 @@
     <qresource prefix="/">
         <file>Assets/appicon.png</file>
         <file>Assets/trayicon.png</file>
+        <file>Assets/lucide.ttf</file>
+        <file>Assets/lucide-LICENSE</file>
     </qresource>
 </RCC>

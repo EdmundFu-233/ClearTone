@@ -52,6 +52,8 @@ QLabel* secondaryLabel(const QString& text);
 ElidedLabel* titleElidedLabel(const QString& text, double size = CTTypography::Body,
     bool bold = false);
 ElidedLabel* secondaryElidedLabel(const QString& text);
+QWidget* detailHeader(const std::optional<QString>& coverURL, QWidget* info);
+QWidget* cardGrid(const QList<QWidget*>& cards);
 QWidget* headerRow(const QString& title, QWidget* trailing = nullptr);
 QPushButton* linkButton(const QString& text, std::function<void()> action);
 QPushButton* accentButton(const QString& text);
@@ -70,6 +72,7 @@ public:
     void setHighlighted(bool highlighted);
 
 protected:
+    void keyPressEvent(QKeyEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
@@ -93,6 +96,7 @@ public:
     const QList<Song>& songs() const { return m_songs; }
     void setShowIndex(bool showIndex);
     void setRowHeight(int height);
+    int contentHeight() const;
     void setEmptyText(const QString& text);
     QListWidget* listWidget() const { return m_list; }
 
@@ -118,7 +122,7 @@ private:
     QList<Row> m_rows;
     QLabel* m_empty = nullptr;
     bool m_showIndex = true;
-    int m_rowHeight = 52;
+    int m_rowHeight = 64;
     QString m_emptyText;
     int m_appObserver = 0;
     int m_stateObserver = 0;

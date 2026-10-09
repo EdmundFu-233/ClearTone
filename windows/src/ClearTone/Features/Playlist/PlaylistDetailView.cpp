@@ -4,6 +4,7 @@
 #include "Core/Models/MusicSocialProvider.h"
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/CoverImage.h"
+#include "DesignSystem/FlowLayout.h"
 #include "DesignSystem/L10n.h"
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
@@ -422,24 +423,12 @@ QWidget* PlaylistDetailView::buildHeader()
     const Playlist playlist = detail.playlist;
     const bool isSubscribed = m_isSubscribed.value_or(playlist.isSubscribed);
 
-    auto* header = new QWidget();
-    auto* layout = new QHBoxLayout(header);
-    layout->setContentsMargins(CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Lg);
-    layout->setSpacing(CTSpacing::Lg);
-
-    auto* cover = new CoverImage(header);
-    cover->setFixedSize(160, 160);
-    cover->setCornerRadius(CTRadius::Medium);
-    cover->setCoverURL(playlist.coverURL, 320);
-    layout->addWidget(cover, 0, Qt::AlignTop);
-
-    auto* info = new QWidget(header);
+    auto* info = new QWidget();
     auto* infoLayout = new QVBoxLayout(info);
-    infoLayout->setContentsMargins(CTSpacing::Lg, 0, 0, 0);
+    infoLayout->setContentsMargins(0, 0, 0, 0);
     infoLayout->setSpacing(CTSpacing::Sm);
 
-    auto* name = ui::titleLabel(playlist.name, CTTypography::PageTitle, true);
-    name->setWordWrap(true);
+    auto* name = ui::titleElidedLabel(playlist.name, 26, true);
     infoLayout->addWidget(name);
 
     if (playlist.creatorName.has_value() && !playlist.creatorName->isEmpty()) {
@@ -449,8 +438,7 @@ QWidget* PlaylistDetailView::buildHeader()
         infoLayout->addWidget(creator);
     }
     if (playlist.descriptionText.has_value() && !playlist.descriptionText->isEmpty()) {
-        auto* description = ui::secondaryLabel(*playlist.descriptionText);
-        description->setWordWrap(true);
+        auto* description = ui::secondaryElidedLabel(*playlist.descriptionText);
         description->setMaximumWidth(520);
         infoLayout->addWidget(description);
     }
@@ -477,7 +465,7 @@ QWidget* PlaylistDetailView::buildHeader()
 
     const QList<Song> songs = m_trackList->songs();
     auto* actions = new QWidget(info);
-    auto* actionsLayout = new QHBoxLayout(actions);
+    auto* actionsLayout = new FlowLayout(actions, CTSpacing::Sm);
     actionsLayout->setContentsMargins(0, 0, 0, 0);
     actionsLayout->setSpacing(CTSpacing::Md);
 
@@ -513,12 +501,10 @@ QWidget* PlaylistDetailView::buildHeader()
         connect(remove, &QPushButton::clicked, this, [this] { showDeleteDialog(); });
         actionsLayout->addWidget(remove);
     }
-    actionsLayout->addStretch(1);
     infoLayout->addWidget(actions);
     infoLayout->addStretch(1);
 
-    layout->addWidget(info, 1);
-    return header;
+    return ui::detailHeader(playlist.coverURL, info);
 }
 
 Task<void> PlaylistDetailView::subscribeAsync(bool subscribe, quint64 token)

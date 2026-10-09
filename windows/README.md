@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Tests
 powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1
 ```
 
-19 个 Qt Test 可执行、约 280 项用例，全部离线（桩 provider / 桩音频引擎），
+20 个 Qt Test 可执行（包含界面布局回归），全部离线（桩 provider / 桩音频引擎），
 持久化由 CTest 逐用例重定向到临时目录。离线测试只能证明本地实现与接口约定一致，
 真实账号登录、在线播放与上游接口可用性需要实机验证。
 
@@ -200,3 +200,27 @@ windows/
 - 音频缓存不转码（macOS 用 `afconvert` 转 128kbps OPUS），直接缓存原始流；
 - 菜单栏形态为系统托盘 + 独立迷你播放器窗口；
 - 凭据非 Windows 平台回退到 0600 明文文件（仅开发用）。
+
+## 界面与视觉回归
+
+界面使用统一的深浅主题、分组导航和自适应卡片布局。`CTTheme::apply` 会同时更新
+调色板、共享控件和已打开页面，保留搜索草稿等视图状态。正在播放页始终使用独立
+的深色配色。卡片流布局在 `DesignSystem/FlowLayout`，不要再为资料库/搜索结果写死列数。
+
+图标字体随资源打包，不依赖系统安装 Segoe MDL2 / Fluent Icons。
+资源为 [Lucide Static 0.468.0](https://unpkg.com/lucide-static@0.468.0/font/lucide.ttf)，
+许可见 `src/ClearTone/Assets/lucide-LICENSE`（同时编入应用资源）。
+
+`tests/tst_gui_layout.cpp` 检查窄窗口播放条、卡片换行、长标题、键盘导航、主题切换、
+搜索联想区和弹层边界。可在离线测试时导出实际 Qt 控件截图：
+
+```bash
+CT_GUI_SCREENSHOTS=/tmp/cleartone-gui ./scripts/run-tests.sh build-dev -R tst_gui_layout
+```
+
+模块尺寸随窗口调整：侧栏 184–224 像素，播放条在低高度窗口为 88 像素、其余为 96 像素；
+歌单/专辑卡片宽度在 144–216 像素内按列均分，封面保持正方形。详情封面为 96–160
+像素，操作区不足一行时自动换行。长标题和简介保留完整悬浮提示，避免把歌曲列表挤出视口。
+
+本地 macOS Qt 预览可以验证布局，但不替代 Windows 上的字体渲染与 125% / 150%
+系统缩放验收。

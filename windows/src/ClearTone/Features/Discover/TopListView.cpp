@@ -3,6 +3,8 @@
 #include "App/AppState.h"
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/CoverImage.h"
+#include "DesignSystem/FlowLayout.h"
+#include <QResizeEvent>
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
 #include "Playback/PlayerController.h"
@@ -80,7 +82,7 @@ QWidget* buildListRow(const TopList& list)
     name->setMaximumWidth(150);
     textLayout->addWidget(name);
     if (list.updateFrequency.has_value() && !list.updateFrequency->isEmpty()) {
-        textLayout->addWidget(ui::secondaryLabel(*list.updateFrequency));
+        textLayout->addWidget(ui::secondaryElidedLabel(*list.updateFrequency));
     }
     layout->addWidget(text, 1);
     return row;
@@ -140,7 +142,7 @@ TopListView::TopListView(QWidget* parent)
                                  .arg(CTColors::overlay().name()));
     connect(m_listBox, &QListWidget::currentRowChanged, this, [this](int row) { selectListRow(row); });
 
-    m_trackTitle = ui::titleLabel(QStringLiteral("选择榜单"), CTTypography::SectionTitle, true);
+    m_trackTitle = ui::titleElidedLabel(QStringLiteral("选择榜单"), CTTypography::SectionTitle, true);
     m_trackCount = ui::secondaryLabel(QString());
     m_playAll = ui::accentButton(QStringLiteral("播放全部"));
     m_playAll->setEnabled(false);
@@ -163,7 +165,7 @@ TopListView::TopListView(QWidget* parent)
     trackHeaderLayout->addWidget(m_playAll, 0, Qt::AlignVCenter);
 
     m_areaRow = new QWidget(this);
-    m_areaLayout = new QHBoxLayout(m_areaRow);
+    m_areaLayout = new FlowLayout(m_areaRow, CTSpacing::Sm);
     m_areaLayout->setContentsMargins(CTSpacing::Lg, 0, CTSpacing::Lg, CTSpacing::Sm);
     m_areaLayout->setSpacing(CTSpacing::Sm);
     rebuildAreaChips();
@@ -214,6 +216,12 @@ void TopListView::showEvent(QShowEvent* event)
     if (m_loaded) return;
     m_loaded = true;
     detach(m_session.loadAsync());
+}
+
+void TopListView::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    m_listHost->setFixedWidth(qBound(176, width() * 28 / 100, 248));
 }
 
 void TopListView::scheduleRenderLists()
@@ -296,7 +304,6 @@ void TopListView::rebuildAreaChips()
                 detach(loadAreaAsync(area));
             }));
     }
-    m_areaLayout->addStretch(1);
 }
 
 Task<void> TopListView::loadTracksAsync(TopList list)

@@ -61,41 +61,41 @@ QString glyph(Page page)
 {
     switch (page) {
     case Page::Discover:
-        return QStringLiteral("\uE8D6");
+        return QStringLiteral("\uE09F");
     case Page::Search:
-        return QStringLiteral("\uE721");
+        return QStringLiteral("\uE154");
     case Page::TopList:
-        return QStringLiteral("\uE8FD");
+        return QStringLiteral("\uE2DF");
     case Page::Radio:
-        return QStringLiteral("\uE704");
+        return QStringLiteral("\uE145");
     case Page::PersonalFM:
-        return QStringLiteral("\uE720");
+        return QStringLiteral("\uE0F4");
     case Page::MyMusic:
-        return QStringLiteral("\uE8A5");
+        return QStringLiteral("\uE105");
     case Page::Liked:
-        return QStringLiteral("\uE734");
+        return QStringLiteral("\uE0F5");
     case Page::Local:
-        return QStringLiteral("\uE8B7");
+        return QStringLiteral("\uE0DC");
     case Page::Recent:
-        return QStringLiteral("\uE81C");
+        return QStringLiteral("\uE1F4");
     case Page::Messages:
-        return QStringLiteral("\uE8BD");
+        return QStringLiteral("\uE112");
     case Page::Profile:
-        return QStringLiteral("\uE77B");
+        return QStringLiteral("\uE46C");
     case Page::PlaylistDetail:
-        return QStringLiteral("\uE8A5");
+        return QStringLiteral("\uE105");
     case Page::RadioDetail:
-        return QStringLiteral("\uE704");
+        return QStringLiteral("\uE145");
     case Page::AlbumDetail:
-        return QStringLiteral("\uE8B9");
+        return QStringLiteral("\uE498");
     case Page::ArtistDetail:
-        return QStringLiteral("\uE77B");
+        return QStringLiteral("\uE46C");
     case Page::SongComments:
-        return QStringLiteral("\uE90A");
+        return QStringLiteral("\uE119");
     case Page::Settings:
-        return QStringLiteral("\uE713");
+        return QStringLiteral("\uE244");
     }
-    return QStringLiteral("\uE713");
+    return QStringLiteral("\uE244");
 }
 
 bool isDetail(Page page)

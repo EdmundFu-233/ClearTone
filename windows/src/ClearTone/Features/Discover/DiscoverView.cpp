@@ -79,19 +79,6 @@ QWidget* buildArtistLinks(const QList<Artist>& artists)
     return row;
 }
 
-QWidget* cardGrid(const QList<QWidget*>& cards, int columns)
-{
-    auto* container = new QWidget();
-    auto* grid = new QGridLayout(container);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(CTSpacing::Lg);
-    grid->setVerticalSpacing(CTSpacing::Lg);
-    for (int index = 0; index < cards.size(); ++index) {
-        grid->addWidget(cards[index], index / columns, index % columns, Qt::AlignTop | Qt::AlignLeft);
-    }
-    grid->setColumnStretch(columns, 1);
-    return container;
-}
 
 QWidget* buildPlaylistGrid(const QList<Playlist>& playlists, bool isLoading,
     const std::optional<QString>& error, const QString& emptyText, std::function<void()> retry)
@@ -107,7 +94,7 @@ QWidget* buildPlaylistGrid(const QList<Playlist>& playlists, bool isLoading,
             AppState::shared().openPlaylist(item.id);
         }));
     }
-    return cardGrid(cards, 4);
+    return ui::cardGrid(cards);
 }
 
 QWidget* buildAlbumGrid(const QList<Album>& albums, bool isLoading,
@@ -124,7 +111,7 @@ QWidget* buildAlbumGrid(const QList<Album>& albums, bool isLoading,
             AppState::shared().openAlbum(item.id);
         }));
     }
-    return cardGrid(cards, 4);
+    return ui::cardGrid(cards);
 }
 
 QWidget* buildRadioCard(const RadioStation& radio)
@@ -215,10 +202,14 @@ DiscoverView::DiscoverView(QWidget* parent)
 
     auto* header = new QWidget(this);
     auto* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Xl, 0);
+    headerLayout->setContentsMargins(0, CTSpacing::Sm, 0, 0);
     headerLayout->addWidget(titleStack);
     headerLayout->addStretch(1);
-    root->addWidget(header);
+    auto* fm = ui::ghostButton(QStringLiteral("私人 FM"));
+    fm->setIcon(CTTheme::icon(page::glyph(Page::PersonalFM)));
+    fm->setProperty("ctIconGlyph", page::glyph(Page::PersonalFM));
+    connect(fm, &QPushButton::clicked, this, [] { AppState::shared().switchToTopLevel(Page::PersonalFM); });
+    headerLayout->addWidget(fm);
 
     m_dailyPlayAll = ui::ghostButton(QStringLiteral("播放全部"));
     m_newSongsPlayAll = ui::ghostButton(QStringLiteral("播放全部"));
@@ -254,8 +245,9 @@ DiscoverView::DiscoverView(QWidget* parent)
 
     auto* body = new QWidget(this);
     auto* bodyLayout = new QVBoxLayout(body);
-    bodyLayout->setContentsMargins(CTSpacing::Xl, CTSpacing::Lg, CTSpacing::Xl, CTSpacing::Xl);
-    bodyLayout->setSpacing(CTSpacing::Xl);
+    bodyLayout->setContentsMargins(CTSpacing::Xl, CTSpacing::Sm, CTSpacing::Xl, CTSpacing::Xl);
+    bodyLayout->setSpacing(CTSpacing::Lg);
+    bodyLayout->addWidget(header);
     bodyLayout->addWidget(buildSection(QStringLiteral("每日推荐"), m_dailyHost, m_dailyPlayAll));
     bodyLayout->addWidget(buildSection(QStringLiteral("推荐歌单"), m_playlistsHost, nullptr));
     bodyLayout->addWidget(
@@ -557,13 +549,32 @@ void DiscoverView::renderAll()
 
 void DiscoverView::renderDaily()
 {
+    m_dailyHost->parentWidget()->layout()->itemAt(0)->widget()->setVisible(AppState::shared().isLoggedIn());
+    m_dailyPlayAll->setVisible(AppState::shared().isLoggedIn());
     m_dailyPlayAll->setEnabled(!m_dailySongs.isEmpty());
     m_dailyPlayAll->setText(m_dailySongs.isEmpty()
             ? QStringLiteral("播放全部")
             : QStringLiteral("播放全部 (%1)").arg(m_dailySongs.size()));
 
     if (!AppState::shared().isLoggedIn()) {
-        setHost(m_dailyLayout, ui::statusPanel(QStringLiteral("登录后查看每日推荐"), false));
+        auto* panel = new QFrame();
+        panel->setObjectName(QStringLiteral("ctStatusPanel"));
+        auto* layout = new QHBoxLayout(panel);
+        layout->setContentsMargins(20, 14, 20, 14);
+        layout->setSpacing(16);
+        auto* text = new QWidget(panel);
+        auto* lines = new QVBoxLayout(text);
+        lines->setContentsMargins(0, 0, 0, 0);
+        lines->setSpacing(6);
+        lines->addWidget(ui::titleLabel(QStringLiteral("遇见更懂你的音乐"), 18, true));
+        auto* description = ui::secondaryLabel(QStringLiteral("登录网易云账号，收听每日推荐，同步你的收藏。"));
+        description->setWordWrap(true);
+        lines->addWidget(description);
+        layout->addWidget(text, 1);
+        auto* login = ui::accentButton(QStringLiteral("登录账号"));
+        connect(login, &QPushButton::clicked, this, [] { AppState::shared().setIsLoginPresented(true); });
+        layout->addWidget(login);
+        setHost(m_dailyLayout, panel);
         return;
     }
     if (m_dailyLoading && m_dailySongs.isEmpty()) {
@@ -591,6 +602,7 @@ void DiscoverView::renderPlaylists()
 
 void DiscoverView::renderDailyPlaylists()
 {
+    m_dailyPlaylistsHost->parentWidget()->setVisible(AppState::shared().isLoggedIn());
     if (!AppState::shared().isLoggedIn()) {
         setHost(m_dailyPlaylistsLayout,
             ui::statusPanel(QStringLiteral("登录后查看每日推荐歌单"), false));
@@ -621,7 +633,7 @@ void DiscoverView::renderRadios()
     for (const RadioStation& radio : std::as_const(m_radios)) {
         cards.append(buildRadioCard(radio));
     }
-    setHost(m_radiosLayout, cardGrid(cards, 4));
+    setHost(m_radiosLayout, ui::cardGrid(cards));
 }
 
 void DiscoverView::renderNewSongs()

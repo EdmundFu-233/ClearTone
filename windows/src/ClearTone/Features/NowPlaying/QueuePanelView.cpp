@@ -30,7 +30,7 @@ QPushButton* makeGlyphButton(const QString& glyph, const QString& tip, QWidget* 
     button->setFixedSize(28, 28);
     button->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: %2px;"
-        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+        " font-family: 'lucide'; }"
         "QPushButton:hover { background: %3; border-radius: 6px; }")
                               .arg(CTColors::textPrimary().name())
                               .arg(size)
@@ -56,10 +56,10 @@ QueuePanelView::QueuePanelView(QWidget* parent)
     m_countText = ui::secondaryLabel(QString());
     headerLayout->addWidget(m_countText);
     headerLayout->addStretch(1);
-    auto* clear = makeGlyphButton(QStringLiteral("\uE74D"), QStringLiteral("清空队列"), header, 14);
+    auto* clear = makeGlyphButton(QStringLiteral("\uE18D"), QStringLiteral("清空队列"), header, 14);
     connect(clear, &QPushButton::clicked, this, [] { PlayerController::shared().clearQueue(); });
     headerLayout->addWidget(clear);
-    auto* close = makeGlyphButton(QStringLiteral("\uE711"), L10n::Common::Close, header, 14);
+    auto* close = makeGlyphButton(QStringLiteral("\uE1B1"), L10n::Common::Close, header, 14);
     connect(close, &QPushButton::clicked, this, [] { AppState::shared().setShowQueue(false); });
     headerLayout->addWidget(close);
     root->addWidget(header);
@@ -175,7 +175,7 @@ void QueuePanelView::refresh()
         auto* duration = ui::secondaryLabel(CTFormatting::time(item.song.duration));
         layout->addWidget(duration, 0, Qt::AlignVCenter);
 
-        auto* remove = makeGlyphButton(QStringLiteral("\uE711"), QStringLiteral("从队列移除"), widget, 12);
+        auto* remove = makeGlyphButton(QStringLiteral("\uE1B1"), QStringLiteral("从队列移除"), widget, 12);
         const QUuid itemID = item.id;
         connect(remove, &QPushButton::clicked, this,
             [itemID] { PlayerController::shared().removeFromQueue(itemID); });

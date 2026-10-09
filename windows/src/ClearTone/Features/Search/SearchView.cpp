@@ -9,7 +9,7 @@
 #include "Providers/Netease/NeteaseSocialProvider.h"
 
 #include <QFrame>
-#include <QGridLayout>
+#include "DesignSystem/FlowLayout.h"
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -173,9 +173,6 @@ SearchView::SearchView(QWidget* parent)
     m_searchBox->setFrame(false);
     m_searchBox->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; border: none; color: %1; }")
                                    .arg(CTColors::textPrimary().name()));
-    QPalette palette = m_searchBox->palette();
-    palette.setColor(QPalette::PlaceholderText, CTColors::textSecondary());
-    m_searchBox->setPalette(palette);
     searchBox->onFocus = [this] {
         m_assistOpen = true;
         detach(m_assist.loadHotTermsAsync());
@@ -211,8 +208,17 @@ SearchView::SearchView(QWidget* parent)
     searchWrapLayout->addWidget(searchBar);
     root->addWidget(searchWrap);
 
-    m_assistHost = new QWidget(this);
-    m_assistLayout = new QVBoxLayout(m_assistHost);
+    auto* assistScroll = new QScrollArea(this);
+    assistScroll->setWidgetResizable(true);
+    assistScroll->setFrameShape(QFrame::NoFrame);
+    assistScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    assistScroll->setMinimumHeight(140);
+    assistScroll->setMaximumHeight(220);
+    m_assistHost = assistScroll;
+    auto* assistContent = new QWidget();
+    assistScroll->setWidget(assistContent);
+    assistContent->setAutoFillBackground(false);
+    m_assistLayout = new QVBoxLayout(assistContent);
     m_assistLayout->setContentsMargins(CTSpacing::Lg, CTSpacing::Xs, CTSpacing::Lg, 0);
     m_assistLayout->setSpacing(0);
     m_assistHost->setVisible(false);
@@ -530,16 +536,8 @@ QWidget* SearchView::buildResultList(const SearchResult& result, SearchType type
         break;
     }
 
-    auto* container = new QWidget();
-    auto* grid = new QGridLayout(container);
-    grid->setContentsMargins(CTSpacing::Lg, CTSpacing::Md, CTSpacing::Lg, CTSpacing::Xl);
-    grid->setHorizontalSpacing(CTSpacing::Lg);
-    grid->setVerticalSpacing(CTSpacing::Lg);
-    constexpr int columns = 4;
-    for (int index = 0; index < cards.size(); ++index) {
-        grid->addWidget(cards[index], index / columns, index % columns, Qt::AlignTop | Qt::AlignLeft);
-    }
-    grid->setColumnStretch(columns, 1);
+    auto* container = ui::cardGrid(cards);
+    container->layout()->setContentsMargins(CTSpacing::Xl, CTSpacing::Md, CTSpacing::Xl, CTSpacing::Xl);
 
     auto* area = ui::scrollWrapper(container);
     hookScrollbar(area->verticalScrollBar());
@@ -665,9 +663,9 @@ QWidget* SearchView::buildSuggestionRow(const SearchSuggestion& suggestion)
     auto* textLayout = new QVBoxLayout(text);
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(1);
-    textLayout->addWidget(ui::titleLabel(suggestion.title, CTTypography::Body, true));
+    textLayout->addWidget(ui::titleElidedLabel(suggestion.title, CTTypography::Body, true));
     if (suggestion.subtitle.has_value() && !suggestion.subtitle->isEmpty()) {
-        textLayout->addWidget(ui::secondaryLabel(*suggestion.subtitle));
+        textLayout->addWidget(ui::secondaryElidedLabel(*suggestion.subtitle));
     }
     layout->addWidget(text, 1);
 
@@ -781,12 +779,8 @@ QWidget* SearchView::buildHotTerms()
     }
 
     auto* wrap = new QWidget(stack);
-    auto* wrapLayout = new QGridLayout(wrap);
+    auto* wrapLayout = new FlowLayout(wrap, CTSpacing::Sm);
     wrapLayout->setContentsMargins(CTSpacing::Lg, 0, CTSpacing::Lg, CTSpacing::Md);
-    wrapLayout->setHorizontalSpacing(CTSpacing::Sm);
-    wrapLayout->setVerticalSpacing(CTSpacing::Xs);
-    constexpr int columns = 3;
-    int index = 0;
     for (const HotSearchTerm& term : m_assist.hotTerms()) {
         const QString text = (!term.displayPrefix.has_value() || term.displayPrefix->isEmpty())
             ? term.keyword
@@ -796,10 +790,11 @@ QWidget* SearchView::buildHotTerms()
             "QPushButton { color: %1; border: none; background: transparent; "
             "font-size: 12px; padding: 2px 6px; text-align: left; }")
                                   .arg(CTColors::textSecondary().name()));
-        wrapLayout->addWidget(button, index / columns, index % columns, Qt::AlignLeft);
-        ++index;
+        button->setToolTip(text);
+        button->setAccessibleName(text);
+        button->setText(button->fontMetrics().elidedText(text, Qt::ElideRight, 220));
+        wrapLayout->addWidget(button);
     }
-    wrapLayout->setColumnStretch(columns, 1);
     layout->addWidget(wrap);
     return stack;
 }

@@ -46,7 +46,7 @@ QPushButton* makeGlyphButton(const QString& glyph, const QString& tip, double si
     button->setFixedSize(32, 32);
     button->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: %2px;"
-        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+        " font-family: 'lucide'; }"
         "QPushButton:hover { background: %3; border-radius: 6px; }")
                               .arg(CTColors::textPrimary().name())
                               .arg(size)
@@ -173,7 +173,7 @@ void MiniPlayerWindow::buildUi()
     textLayout->addWidget(m_artist);
     infoLayout->addWidget(text, 0, 1);
 
-    auto* close = makeGlyphButton(QStringLiteral("\uE711"), QStringLiteral("隐藏迷你播放器"), 12);
+    auto* close = makeGlyphButton(QStringLiteral("\uE1B1"), QStringLiteral("隐藏迷你播放器"), 12);
     QObject::connect(close, &QPushButton::clicked, this, [this] { hide(); });
     infoLayout->addWidget(close, 0, 2);
     infoLayout->setColumnStretch(1, 1);
@@ -199,9 +199,9 @@ void MiniPlayerWindow::buildUi()
     auto* controlsLayout = new QHBoxLayout(controls);
     controlsLayout->setContentsMargins(0, 0, 0, 0);
     controlsLayout->setSpacing(CTSpacing::Xl);
-    m_previous = makeGlyphButton(QStringLiteral("\uE892"), L10n::Common::Previous, 14);
-    m_playPause = makeGlyphButton(QStringLiteral("\uE768"), QStringLiteral("播放/暂停"), 20);
-    m_next = makeGlyphButton(QStringLiteral("\uE893"), L10n::Common::Next, 14);
+    m_previous = makeGlyphButton(QStringLiteral("\uE162"), L10n::Common::Previous, 14);
+    m_playPause = makeGlyphButton(QStringLiteral("\uE13F"), QStringLiteral("播放/暂停"), 20);
+    m_next = makeGlyphButton(QStringLiteral("\uE163"), L10n::Common::Next, 14);
     QObject::connect(m_previous, &QPushButton::clicked, this, [this] { m_player->previous(); });
     QObject::connect(m_playPause, &QPushButton::clicked, this, [this] { m_player->togglePlayPause(); });
     QObject::connect(m_next, &QPushButton::clicked, this, [this] { m_player->next(); });
@@ -220,8 +220,8 @@ void MiniPlayerWindow::refresh()
     m_artist->setFullText(song ? song->artistNames() : QString());
     m_cover->setCoverURL(song ? song->coverURL : std::optional<QString>(), 96);
     m_playPause->setText(
-        m_player->playbackState().isPlayIntentActive() ? QStringLiteral("\uE769")
-                                                       : QStringLiteral("\uE768"));
+        m_player->playbackState().isPlayIntentActive() ? QStringLiteral("\uE131")
+                                                       : QStringLiteral("\uE13F"));
     m_previous->setEnabled(m_player->queue().hasPrevious());
     m_next->setEnabled(m_player->queue().hasNext());
     updateProgress();

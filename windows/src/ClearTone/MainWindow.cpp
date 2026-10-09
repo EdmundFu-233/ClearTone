@@ -52,7 +52,7 @@ namespace ct {
 
 namespace {
 
-constexpr int sidebarWidth = 236;
+constexpr int sidebarWidth = 212;
 
 AppSettings loadAppSettings()
 {
@@ -61,40 +61,11 @@ AppSettings loadAppSettings()
     return AppSettings{};
 }
 
-void applyPalette(bool dark)
-{
-    const QColor window = dark ? CTColors::DarkBackground : CTColors::LightBackground;
-    const QColor panel = dark ? CTColors::DarkPanel : CTColors::LightPanel;
-    const QColor overlay = dark ? CTColors::DarkOverlay : CTColors::LightOverlay;
-    const QColor text = dark ? CTColors::DarkTextPrimary : CTColors::LightTextPrimary;
-    const QColor secondary = dark ? CTColors::DarkTextSecondary : CTColors::LightTextSecondary;
-    const QColor accent = dark ? CTColors::DarkAccent : CTColors::LightAccent;
-
-    QPalette palette;
-    palette.setColor(QPalette::Window, window);
-    palette.setColor(QPalette::WindowText, text);
-    palette.setColor(QPalette::Base, panel);
-    palette.setColor(QPalette::AlternateBase, overlay);
-    palette.setColor(QPalette::Text, text);
-    palette.setColor(QPalette::Button, panel);
-    palette.setColor(QPalette::ButtonText, text);
-    palette.setColor(QPalette::BrightText, Qt::white);
-    palette.setColor(QPalette::Highlight, accent);
-    palette.setColor(QPalette::HighlightedText, Qt::white);
-    palette.setColor(QPalette::ToolTipBase, panel);
-    palette.setColor(QPalette::ToolTipText, text);
-    palette.setColor(QPalette::PlaceholderText, secondary);
-    palette.setColor(QPalette::Disabled, QPalette::Text, secondary);
-    palette.setColor(QPalette::Disabled, QPalette::ButtonText, secondary);
-    palette.setColor(QPalette::Disabled, QPalette::WindowText, secondary);
-    QApplication::setPalette(palette);
-}
-
 QString glyphButtonStyle(double size)
 {
     return QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: %2px;"
-        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+        " font-family: 'lucide'; }"
         "QPushButton:hover { background: %3; border-radius: 6px; }")
         .arg(CTColors::textPrimary().name())
         .arg(size)
@@ -116,6 +87,7 @@ QPushButton* makeGlyphButton(const QString& glyph, const QString& tip, double si
     button->setFlat(true);
     button->setCursor(Qt::PointingHandCursor);
     button->setToolTip(tip);
+    button->setAccessibleName(tip);
     button->setFixedSize(32, 32);
     button->setStyleSheet(glyphButtonStyle(size));
     return button;
@@ -214,6 +186,7 @@ MainWindow::MainWindow(QWidget* parent)
     updateSleepButton();
     updateOverlays();
     updateOverlayGeometry();
+    updateResponsiveGeometry();
 
     subscribeEvents();
     if (QApplication::instance() != nullptr) QApplication::instance()->installEventFilter(this);
@@ -229,36 +202,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::applyTheme()
 {
-    const AppSettings settings = loadAppSettings();
-    bool dark = false;
-    switch (settings.themeMode) {
-    case CTThemeMode::Dark:
-        dark = true;
-        break;
-    case CTThemeMode::Light:
-        dark = false;
-        break;
-    case CTThemeMode::System:
-        dark = CTColors::isDark();
-        break;
-    }
-
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-    if (QStyleHints* hints = QGuiApplication::styleHints()) {
-        switch (settings.themeMode) {
-        case CTThemeMode::Dark:
-            hints->setColorScheme(Qt::ColorScheme::Dark);
-            break;
-        case CTThemeMode::Light:
-            hints->setColorScheme(Qt::ColorScheme::Light);
-            break;
-        case CTThemeMode::System:
-            hints->unsetColorScheme();
-            break;
-        }
-    }
-#endif
-    applyPalette(dark);
+    CTTheme::apply(loadAppSettings().themeMode);
 }
 
 void MainWindow::subscribeEvents()
@@ -307,10 +251,23 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
 
     auto* header = new QWidget(side);
     auto* headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(18, 20, 18, 10);
+    headerLayout->setContentsMargins(16, 16, 12, 12);
     headerLayout->setSpacing(2);
-    headerLayout->addWidget(ui::titleLabel(QStringLiteral("澄音 ClearTone"), 18, true));
-    headerLayout->addWidget(ui::secondaryLabel(QStringLiteral("第三方网易云音乐")));
+    auto* brand = new QLabel(header);
+    brand->setPixmap(QPixmap(QStringLiteral(":/Assets/appicon.png")).scaled(38, 38, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    auto* brandRow = new QWidget(header);
+    auto* brandLayout = new QHBoxLayout(brandRow);
+    brandLayout->setContentsMargins(0, 0, 0, 0);
+    brandLayout->setSpacing(10);
+    brandLayout->addWidget(brand);
+    auto* brandText = new QWidget(brandRow);
+    auto* brandTextLayout = new QVBoxLayout(brandText);
+    brandTextLayout->setContentsMargins(0, 0, 0, 0);
+    brandTextLayout->setSpacing(0);
+    brandTextLayout->addWidget(ui::titleLabel(QStringLiteral("澄音"), 22, true));
+    brandTextLayout->addWidget(ui::secondaryElidedLabel(QStringLiteral("ClearTone")));
+    brandLayout->addWidget(brandText, 1);
+    headerLayout->addWidget(brandRow);
     sideLayout->addWidget(header);
 
     auto* scroll = new QScrollArea(side);
@@ -327,25 +284,22 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     m_sidebarList->setFrameShape(QFrame::NoFrame);
     m_sidebarList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_sidebarList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    {
-        // 侧栏条目混排 MDL2 字形与中文：用字体族列表让 Qt 逐字符回退，
-        // 否则 PUA 字形会因默认字体没有而整体不显示。
-        QFont sidebarFont = m_sidebarList->font();
-        sidebarFont.setFamilies({QStringLiteral("Segoe MDL2 Assets"), QStringLiteral("Segoe UI"),
-            QStringLiteral("Microsoft YaHei UI")});
-        m_sidebarList->setFont(sidebarFont);
-    }
+    m_sidebarList->setObjectName(QStringLiteral("ctNavigation"));
+    m_sidebarList->setIconSize(QSize(20, 20));
+    m_sidebarList->setSpacing(2);
+    m_sidebarList->setFocusPolicy(Qt::StrongFocus);
     m_sidebarList->setStyleSheet(QStringLiteral(
-        "QListWidget { background: transparent; border: none; }"
-        "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: %1; }"
+        "QListWidget { background: transparent; border: none; outline: none; }"
+        "QListWidget::item { padding: 0 12px; border-radius: 8px; color: %1; }"
         "QListWidget::item:hover { background: %2; }"
-        "QListWidget::item:selected { background: %2; color: %1; }")
-                                     .arg(CTColors::textPrimary().name(),
-                                         CTColors::overlay().name()));
+        "QListWidget::item:selected { background: %3; color: %4; font-weight: 600; }"
+        "QListWidget::item:disabled { color: %5; background: transparent; }")
+        .arg(CTColors::textPrimary().name(), CTColors::overlay().name(), CTColors::accentSoft().name(),
+            CTColors::accent().name(), CTColors::textSecondary().name()));
     QObject::connect(m_sidebarList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (m_syncingSidebar || row < 0) return;
         QListWidgetItem* item = m_sidebarList->item(row);
-        if (item == nullptr) return;
+        if (item == nullptr || !item->data(Qt::UserRole).isValid()) return;
         AppState::shared().switchToTopLevel(static_cast<Page>(item->data(Qt::UserRole).toInt()));
     });
     scrollLayout->addWidget(m_sidebarList);
@@ -358,6 +312,8 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     scrollLayout->addWidget(m_playlistPanel);
     scrollLayout->addStretch(1);
     scroll->setWidget(scrollContent);
+    scrollContent->setAutoFillBackground(false);
+    scroll->viewport()->setAutoFillBackground(false);
     sideLayout->addWidget(scroll, 1);
 
     auto* accountWrap = new QWidget(side);
@@ -379,9 +335,9 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     auto* accountLayout = new QHBoxLayout(m_accountButton);
     accountLayout->setContentsMargins(4, 4, 4, 4);
     accountLayout->setSpacing(10);
-    m_accountGlyph = new QLabel(QStringLiteral("\uE77B"), m_accountButton);
+    m_accountGlyph = new QLabel(QStringLiteral("\uE46C"), m_accountButton);
     m_accountGlyph->setStyleSheet(QStringLiteral("color: %1; font-size: 20px;"
-                                                 " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons';")
+                                                 " font-family: 'lucide';")
                                       .arg(CTColors::textPrimary().name()));
     m_accountGlyph->setAlignment(Qt::AlignVCenter);
     accountLayout->addWidget(m_accountGlyph);
@@ -397,6 +353,8 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     accountTextLayout->addWidget(m_accountName);
     accountTextLayout->addWidget(m_accountHint);
     accountLayout->addWidget(accountText, 1);
+    for (QWidget* child : m_accountButton->findChildren<QWidget*>()) child->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_accountButton->setAccessibleName(QStringLiteral("账号与登录"));
     QObject::connect(m_accountButton, &QPushButton::clicked, [] {
         AppState& app = AppState::shared();
         if (!app.account()) {
@@ -421,12 +379,12 @@ QWidget* MainWindow::buildContentColumn(QWidget* parent)
 
     auto* header = new QWidget(column);
     auto* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(16, 12, 16, 8);
+    headerLayout->setContentsMargins(24, 10, 24, 4);
     headerLayout->setSpacing(8);
-    m_backButton = makeGlyphButton(QStringLiteral("\uE72B"), L10n::Common::Back, 16, header);
+    m_backButton = makeGlyphButton(QStringLiteral("\uE04C"), L10n::Common::Back, 16, header);
     m_backButton->setVisible(false);
-    m_pageTitle = ui::titleLabel(QStringLiteral("发现音乐"), CTTypography::SectionTitle, true);
-    m_settingsButton = makeGlyphButton(QStringLiteral("\uE713"), L10n::Common::Settings, 16, header);
+    m_pageTitle = ui::secondaryLabel(QStringLiteral("发现音乐"));
+    m_settingsButton = makeGlyphButton(QStringLiteral("\uE244"), L10n::Common::Settings, 16, header);
     QObject::connect(m_backButton, &QPushButton::clicked, this,
         [] { AppState::shared().goBack(); });
     QObject::connect(m_settingsButton, &QPushButton::clicked, this,
@@ -434,6 +392,19 @@ QWidget* MainWindow::buildContentColumn(QWidget* parent)
     headerLayout->addWidget(m_backButton);
     headerLayout->addWidget(m_pageTitle);
     headerLayout->addStretch(1);
+    auto* search = ui::ghostButton(QStringLiteral("搜索音乐                         Ctrl F"));
+    search->setObjectName(QStringLiteral("ctGlobalSearch"));
+    search->setMinimumWidth(220);
+    search->setMaximumWidth(340);
+    search->setIcon(CTTheme::icon(page::glyph(Page::Search)));
+    search->setProperty("ctIconGlyph", page::glyph(Page::Search));
+    search->setAccessibleName(QStringLiteral("搜索音乐"));
+    connect(search, &QPushButton::clicked, this, [this] {
+        AppState::shared().switchToTopLevel(Page::Search);
+        if (auto* edit = m_content->currentWidget()->findChild<QLineEdit*>()) edit->setFocus();
+    });
+    headerLayout->addWidget(search);
+    headerLayout->addSpacing(8);
     headerLayout->addWidget(m_settingsButton);
     layout->addWidget(header);
 
@@ -449,8 +420,9 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     bar->setStyleSheet(QStringLiteral("#ctPlayerBar { background: %1; border-top: 1px solid %2; }")
                            .arg(CTColors::panel().name(), CTColors::overlay().name()));
     bar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    bar->setFixedHeight(104);
     auto* layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(14, 8, 14, 8);
+    layout->setContentsMargins(20, 8, 20, 8);
     layout->setSpacing(10);
 
     auto* left = new QWidget(bar);
@@ -462,14 +434,15 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     m_expandButton->setFlat(true);
     m_expandButton->setCursor(Qt::PointingHandCursor);
     m_expandButton->setToolTip(QStringLiteral("打开正在播放"));
-    m_expandButton->setFixedSize(46, 46);
+    m_expandButton->setFixedSize(56, 56);
     m_expandButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; padding: 0; }"));
     auto* coverLayout = new QVBoxLayout(m_expandButton);
     coverLayout->setContentsMargins(0, 0, 0, 0);
     m_barCover = new CoverImage(m_expandButton);
-    m_barCover->setFixedSize(46, 46);
-    m_barCover->setCornerRadius(8);
+    m_barCover->setFixedSize(56, 56);
+    m_barCover->setCornerRadius(10);
+    m_barCover->setAttribute(Qt::WA_TransparentForMouseEvents);
     coverLayout->addWidget(m_barCover);
     QObject::connect(m_expandButton, &QPushButton::clicked, this,
         [] { AppState::shared().setIsNowPlayingExpanded(true); });
@@ -479,10 +452,10 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     m_titleButton->setFlat(true);
     m_titleButton->setCursor(Qt::PointingHandCursor);
     m_titleButton->setToolTip(QStringLiteral("打开正在播放"));
-    // QPushButton 的 sizeHint 来自样式而不是内部布局，ElidedLabel 的
-    // minimumSizeHint 又是 0，不给最小宽度按钮会缩到只剩“未…”。
-    m_titleButton->setMinimumWidth(220);
-    m_titleButton->setMaximumWidth(360);
+    m_titleButton->setMinimumWidth(70);
+    m_titleButton->setFixedHeight(52);
+    m_titleButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_titleButton->setMaximumWidth(250);
     m_titleButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; text-align: left; padding: 4px; }"));
     auto* titleLayout = new QVBoxLayout(m_titleButton);
@@ -498,14 +471,16 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     titleLayout->addWidget(m_barArtist);
     QObject::connect(m_titleButton, &QPushButton::clicked, this,
         [] { AppState::shared().setIsNowPlayingExpanded(true); });
-    leftLayout->addWidget(m_titleButton);
+    leftLayout->addWidget(m_titleButton, 1);
+    for (QWidget* child : m_titleButton->findChildren<QWidget*>()) child->setAttribute(Qt::WA_TransparentForMouseEvents);
 
-    m_likeButton = makeGlyphButton(QStringLiteral("\uEB51"), QStringLiteral("喜欢"), 16, left);
+    m_likeButton = makeGlyphButton(QStringLiteral("\uE0F5"), QStringLiteral("喜欢"), 16, left);
     QObject::connect(m_likeButton, &QPushButton::clicked, this, [this] { toggleCurrentLike(false); });
     leftLayout->addWidget(m_likeButton);
-    leftLayout->addStretch(1);
+    left->setMinimumWidth(190);
 
     auto* center = new QWidget(bar);
+    center->setMinimumWidth(240);
     auto* centerLayout = new QVBoxLayout(center);
     centerLayout->setContentsMargins(0, 0, 0, 0);
     centerLayout->setSpacing(2);
@@ -514,9 +489,9 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     auto* transportLayout = new QHBoxLayout(transport);
     transportLayout->setContentsMargins(0, 0, 0, 0);
     transportLayout->setSpacing(18);
-    m_prevButton = makeGlyphButton(QStringLiteral("\uE892"), L10n::Common::Previous, 16, transport);
-    m_playPauseButton = makeGlyphButton(QStringLiteral("\uE768"), L10n::Common::Play, 22, transport);
-    m_nextButton = makeGlyphButton(QStringLiteral("\uE893"), L10n::Common::Next, 16, transport);
+    m_prevButton = makeGlyphButton(QStringLiteral("\uE162"), L10n::Common::Previous, 16, transport);
+    m_playPauseButton = makeGlyphButton(QStringLiteral("\uE13F"), L10n::Common::Play, 22, transport);
+    m_nextButton = makeGlyphButton(QStringLiteral("\uE163"), L10n::Common::Next, 16, transport);
     QObject::connect(m_prevButton, &QPushButton::clicked, this,
         [] { PlayerController::shared().previous(); });
     QObject::connect(m_playPauseButton, &QPushButton::clicked, this,
@@ -524,6 +499,9 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     QObject::connect(m_nextButton, &QPushButton::clicked, this,
         [] { PlayerController::shared().next(); });
     transportLayout->addStretch(1);
+    m_playPauseButton->setObjectName(QStringLiteral("ctPrimaryPlay"));
+    m_playPauseButton->setFixedSize(42, 42);
+    m_playPauseButton->setStyleSheet(QStringLiteral("QPushButton { background: %1; color: %2; font-family: lucide; font-size: 20px; min-width: 42px; max-width: 42px; min-height: 42px; max-height: 42px; border: none; border-radius: 20px; padding: 0; } QPushButton:focus { border: 2px solid %3; }").arg(CTColors::accent().name(), CTColors::panel().name(), CTColors::textPrimary().name()));
     transportLayout->addWidget(m_prevButton);
     transportLayout->addWidget(m_playPauseButton);
     transportLayout->addWidget(m_nextButton);
@@ -533,12 +511,14 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     auto* progressRow = new QWidget(center);
     auto* progressLayout = new QHBoxLayout(progressRow);
     progressLayout->setContentsMargins(0, 0, 0, 0);
-    progressLayout->setSpacing(0);
+    progressLayout->setSpacing(8);
     m_currentTimeLabel = ui::secondaryLabel(QStringLiteral("0:00"));
     m_currentTimeLabel->setAlignment(Qt::AlignVCenter);
     m_durationLabel = ui::secondaryLabel(QStringLiteral("0:00"));
     m_durationLabel->setAlignment(Qt::AlignVCenter);
     m_progressSlider = new QSlider(Qt::Horizontal, progressRow);
+    m_progressSlider->setObjectName(QStringLiteral("ctProgress"));
+    m_progressSlider->setAccessibleName(QStringLiteral("播放进度"));
     m_progressSlider->setRange(0, 100);
     m_progressSlider->setStyleSheet(sliderStyle());
     QObject::connect(m_progressSlider, &QSlider::sliderPressed, this,
@@ -565,13 +545,13 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     auto* right = new QWidget(bar);
     auto* rightLayout = new QHBoxLayout(right);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(8);
-    m_sleepButton = makeGlyphButton(QStringLiteral("\uE916"), QStringLiteral("睡眠定时"), 15, right);
+    rightLayout->setSpacing(3);
+    m_sleepButton = makeGlyphButton(QStringLiteral("\uE121"), QStringLiteral("睡眠定时"), 15, right);
     QObject::connect(m_sleepButton, &QPushButton::clicked, this, [this] { openSleepMenu(); });
-    m_modeButton = makeGlyphButton(QStringLiteral("\uE8EE"), QStringLiteral("顺序播放"), 15, right);
+    m_modeButton = makeGlyphButton(QStringLiteral("\uE149"), QStringLiteral("顺序播放"), 15, right);
     QObject::connect(m_modeButton, &QPushButton::clicked, this,
         [] { PlayerController::shared().cyclePlayMode(); });
-    m_queueButton = makeGlyphButton(QStringLiteral("\uE8FD"), L10n::Common::Queue, 15, right);
+    m_queueButton = makeGlyphButton(QStringLiteral("\uE2DF"), L10n::Common::Queue, 15, right);
     QObject::connect(m_queueButton, &QPushButton::clicked, this,
         [] { AppState::shared().setShowQueue(true); });
     m_rateButton = makeTextButton(QStringLiteral("1.0x"), CTColors::accent(), right);
@@ -581,14 +561,15 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     m_qualityButton = makeTextButton(QString(), CTColors::textSecondary(), right);
     m_qualityButton->setToolTip(L10n::Player::Quality);
     QObject::connect(m_qualityButton, &QPushButton::clicked, this, [this] { cycleQuality(); });
-    m_muteButton = makeGlyphButton(QStringLiteral("\uE767"), QStringLiteral("静音"), 15, right);
+    m_muteButton = makeGlyphButton(QStringLiteral("\uE1AA"), QStringLiteral("静音"), 15, right);
     QObject::connect(m_muteButton, &QPushButton::clicked, this, [] {
         PlayerController& player = PlayerController::shared();
         player.setMuted(!player.isMuted());
     });
     m_volumeSlider = new QSlider(Qt::Horizontal, right);
     m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setFixedWidth(90);
+    m_volumeSlider->setFixedWidth(64);
+    m_volumeSlider->setAccessibleName(QStringLiteral("音量"));
     m_volumeSlider->setStyleSheet(sliderStyle());
     QObject::connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int value) {
         if (m_syncingVolume) return;
@@ -601,40 +582,43 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     });
     rightLayout->addStretch(1);
     rightLayout->addWidget(m_sleepButton);
-    rightLayout->addWidget(m_modeButton);
+    transportLayout->insertWidget(1, m_modeButton);
     rightLayout->addWidget(m_queueButton);
     rightLayout->addWidget(m_rateButton);
     rightLayout->addWidget(m_qualityButton);
     rightLayout->addWidget(m_muteButton);
     rightLayout->addWidget(m_volumeSlider);
 
-    layout->addWidget(left, 2);
-    layout->addWidget(center, 3);
-    layout->addWidget(right, 2);
+    layout->addWidget(left, 3);
+    layout->addWidget(center, 4);
+    layout->addWidget(right, 3);
     return bar;
 }
 
 void MainWindow::buildOverlays()
 {
     m_nowPlayingOverlay = new QFrame(this);
+    m_nowPlayingOverlay->setProperty("ctImmersive", true);
     m_nowPlayingOverlay->setObjectName(QStringLiteral("ctNowPlayingOverlay"));
     m_nowPlayingOverlay->setStyleSheet(
-        QStringLiteral("#ctNowPlayingOverlay { background: rgba(13, 13, 18, 0.95); }"));
+        QStringLiteral("#ctNowPlayingOverlay { background: #10141c; }"));
     auto* nowPlayingLayout = new QVBoxLayout(m_nowPlayingOverlay);
     nowPlayingLayout->setContentsMargins(0, 0, 0, 0);
     nowPlayingLayout->setSpacing(0);
     auto* nowPlayingHeader = new QWidget(m_nowPlayingOverlay);
     auto* nowPlayingHeaderLayout = new QHBoxLayout(nowPlayingHeader);
     nowPlayingHeaderLayout->setContentsMargins(16, 12, 16, 12);
-    auto* collapse = makeGlyphButton(QStringLiteral("\uE70D"), QStringLiteral("收起"), 16, nowPlayingHeader);
+    auto* collapse = makeGlyphButton(QStringLiteral("\uE071"), QStringLiteral("收起"), 16, nowPlayingHeader);
+    collapse->setStyleSheet(QStringLiteral("QPushButton { font-family: lucide; font-size: 18px; color: #f0f3f8; background: transparent; border: none; }"));
     QObject::connect(collapse, &QPushButton::clicked, this,
         [] { AppState::shared().setIsNowPlayingExpanded(false); });
     m_nowPlayingTitle = new ui::ElidedLabel(QString(), nowPlayingHeader);
     m_nowPlayingTitle->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
-                                         .arg(CTColors::textPrimary().name())
+                                         .arg(CTColors::DarkTextPrimary.name())
                                          .arg(CTTypography::Body));
     m_nowPlayingTitle->setMaximumWidth(420);
     auto* nowPlayingHint = ui::secondaryLabel(QStringLiteral("正在播放"));
+    nowPlayingHint->setStyleSheet(QStringLiteral("color: #a8b3c5;"));
     nowPlayingHeaderLayout->addWidget(collapse);
     nowPlayingHeaderLayout->addStretch(1);
     nowPlayingHeaderLayout->addWidget(m_nowPlayingTitle);
@@ -664,7 +648,7 @@ void MainWindow::buildOverlays()
     queueHeaderLayout->setContentsMargins(16, 14, 10, 8);
     queueHeaderLayout->addWidget(ui::titleLabel(L10n::Common::Queue, 16, true));
     queueHeaderLayout->addStretch(1);
-    auto* queueClose = makeGlyphButton(QStringLiteral("\uE711"), L10n::Common::Close, 14, queueHeader);
+    auto* queueClose = makeGlyphButton(QStringLiteral("\uE1B1"), L10n::Common::Close, 14, queueHeader);
     QObject::connect(queueClose, &QPushButton::clicked, this,
         [] { AppState::shared().setShowQueue(false); });
     queueHeaderLayout->addWidget(queueClose);
@@ -687,7 +671,7 @@ void MainWindow::buildOverlays()
     loginPanel->setStyleSheet(QStringLiteral("#ctLoginPanel { background: %1; border-radius: 14px; }")
                                   .arg(CTColors::panel().name()));
     auto* loginPanelLayout = new QVBoxLayout(loginPanel);
-    loginPanelLayout->setContentsMargins(24, 24, 24, 24);
+    loginPanelLayout->setContentsMargins(0, 0, 0, 0);
     loginPanelLayout->addWidget(PageFactory::resolveOverlay(OverlayKind::Login));
     loginLayout->addWidget(loginPanel, 0, Qt::AlignHCenter);
     loginLayout->addStretch(1);
@@ -711,6 +695,7 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
     updateOverlayGeometry();
+    updateResponsiveGeometry();
 }
 
 void MainWindow::showEvent(QShowEvent* event)
@@ -758,7 +743,17 @@ bool MainWindow::handleKeyPress(QKeyEvent* event)
     const bool alt = modifiers.testFlag(Qt::AltModifier);
     PlayerController& player = PlayerController::shared();
 
+    if (modifiers == Qt::NoModifier && event->key() == Qt::Key_Escape) {
+        AppState& app = AppState::shared();
+        if (app.isLoginPresented()) app.setIsLoginPresented(false);
+        else if (app.showQueue()) app.setShowQueue(false);
+        else if (app.isNowPlayingExpanded()) app.setIsNowPlayingExpanded(false);
+        else return false;
+        return true;
+    }
     if (modifiers == Qt::NoModifier && event->key() == Qt::Key_Space) {
+        QWidget* focus = QApplication::focusWidget();
+        if (qobject_cast<QAbstractButton*>(focus) || qobject_cast<ui::CardButton*>(focus)) return false;
         if (isTextInputFocused()) return false;
         player.togglePlayPause();
         return true;
@@ -790,6 +785,7 @@ bool MainWindow::handleKeyPress(QKeyEvent* event)
     switch (event->key()) {
     case Qt::Key_F:
         AppState::shared().switchToTopLevel(Page::Search);
+        if (auto* edit = m_content->currentWidget()->findChild<QLineEdit*>()) edit->setFocus();
         return true;
     case Qt::Key_Comma:
         AppState::shared().switchToTopLevel(Page::Settings);
@@ -911,6 +907,7 @@ void MainWindow::showPage(Page page)
 {
     m_shownPage = page;
     m_pageTitle->setText(page::displayName(page));
+    m_pageTitle->setVisible(page::isDetail(page));
     QWidget* widget = PageFactory::resolve(page);
     if (m_content->indexOf(widget) < 0) m_content->addWidget(widget);
     m_content->setCurrentWidget(widget);
@@ -920,14 +917,27 @@ void MainWindow::showPage(Page page)
 void MainWindow::rebuildSidebarItems()
 {
     m_sidebarList->clear();
+    int index = 0;
+    int totalHeight = 8;
     for (Page page : page::sidebarPages()) {
-        auto* item = new QListWidgetItem(
-            QStringLiteral("%1  %2").arg(page::glyph(page), page::displayName(page)));
+        if (index == 0 || index == 5) {
+            auto* section = new QListWidgetItem(index == 0 ? QStringLiteral("在线音乐") : QStringLiteral("我的资料库"));
+            section->setFlags(Qt::NoItemFlags);
+            section->setSizeHint(QSize(0, 30));
+            m_sidebarList->addItem(section);
+            totalHeight += 34;
+        }
+        auto* item = new QListWidgetItem(CTTheme::icon(page::glyph(page)), page::displayName(page));
         item->setData(Qt::UserRole, static_cast<int>(page));
-        item->setSizeHint(QSize(0, 34));
+        item->setData(Qt::UserRole + 1, page::glyph(page));
+        item->setSizeHint(QSize(0, 38));
+        if (const auto key = SidebarShortcuts::keyForIndex(index))
+            item->setToolTip(QStringLiteral("%1 · Ctrl+%2").arg(page::displayName(page), QString(*key)));
         m_sidebarList->addItem(item);
+        totalHeight += 42;
+        ++index;
     }
-    m_sidebarList->setFixedHeight(m_sidebarList->count() * 34 + 8);
+    m_sidebarList->setFixedHeight(totalHeight);
 }
 
 void MainWindow::syncSidebarSelection()
@@ -937,7 +947,7 @@ void MainWindow::syncSidebarSelection()
     const Page current = AppState::shared().currentPage();
     for (int i = 0; i < m_sidebarList->count(); ++i) {
         QListWidgetItem* item = m_sidebarList->item(i);
-        if (item != nullptr && static_cast<Page>(item->data(Qt::UserRole).toInt()) == current) {
+        if (item != nullptr && item->data(Qt::UserRole).isValid() && static_cast<Page>(item->data(Qt::UserRole).toInt()) == current) {
             target = i;
             break;
         }
@@ -954,7 +964,7 @@ void MainWindow::syncPlaylists()
     for (int i = 0; i < limit; ++i) {
         signature.append(playlists.at(i).id + QChar(0x1F) + playlists.at(i).name);
     }
-    const QString joined = signature.join(QChar(0x1E));
+    const QString joined = QStringLiteral("playlists:") + signature.join(QChar(0x1E));
     if (joined == m_playlistSignature) {
         updatePlaylistHighlight();
         return;
@@ -969,6 +979,11 @@ void MainWindow::syncPlaylists()
         delete item;
     }
     m_playlistButtons.clear();
+    if (playlists.isEmpty()) {
+        auto* hint = ui::secondaryLabel(AppState::shared().isLoggedIn() ? QStringLiteral("还没有创建歌单") : QStringLiteral("登录后同步你的歌单"));
+        hint->setContentsMargins(12, 8, 0, 12);
+        m_playlistLayout->addWidget(hint);
+    }
 
     for (int i = 0; i < limit; ++i) {
         const Playlist& playlist = playlists.at(i);
@@ -976,7 +991,7 @@ void MainWindow::syncPlaylists()
         button->setFlat(true);
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(playlistButtonStyle(false));
-        button->setText(button->fontMetrics().elidedText(playlist.name, Qt::ElideRight, 192));
+        button->setText(button->fontMetrics().elidedText(playlist.name, Qt::ElideRight, 164));
         button->setToolTip(playlist.name);
         connect(button, &QPushButton::clicked, this,
             [id = playlist.id] { AppState::shared().openPlaylist(id); });
@@ -1004,7 +1019,7 @@ void MainWindow::updateAccountArea()
                                     : (account->isVIP ? QStringLiteral("VIP 会员")
                                                       : QStringLiteral("已登录")));
     m_accountGlyph->setText(
-        account && account->isVIP ? QStringLiteral("\uE735") : QStringLiteral("\uE77B"));
+        account && account->isVIP ? QStringLiteral("\uE1D5") : QStringLiteral("\uE46C"));
 }
 
 void MainWindow::updateOverlays()
@@ -1018,6 +1033,30 @@ void MainWindow::updateOverlays()
     applyVisibility(m_nowPlayingOverlay, app.isNowPlayingExpanded());
     applyVisibility(m_queueOverlay, app.showQueue());
     applyVisibility(m_loginOverlay, app.isLoginPresented());
+}
+
+void MainWindow::updateResponsiveGeometry()
+{
+    const bool compact = height() < 680;
+    if (auto* sidebar = findChild<QWidget*>(QStringLiteral("ctSidebar"))) {
+        const int desiredWidth = qBound(184, width() / 6, 224);
+        sidebar->setFixedWidth(desiredWidth);
+        for (auto* button : m_playlistButtons)
+            button->setText(button->fontMetrics().elidedText(button->toolTip(), Qt::ElideRight, desiredWidth - 44));
+    }
+    if (m_sidebarList) {
+        int totalHeight = 8;
+        for (int i = 0; i < m_sidebarList->count(); ++i) {
+            auto* item = m_sidebarList->item(i);
+            const int rowHeight = item->data(Qt::UserRole).isValid() ? (compact ? 30 : 36) : 24;
+            item->setSizeHint(QSize(0, rowHeight));
+            totalHeight += rowHeight + 4;
+        }
+        m_sidebarList->setFixedHeight(totalHeight);
+    }
+    if (auto* bar = findChild<QWidget*>(QStringLiteral("ctPlayerBar")))
+        bar->setFixedHeight(compact ? 88 : 96);
+    if (m_volumeSlider) m_volumeSlider->setFixedWidth(width() < 1000 ? 56 : 80);
 }
 
 void MainWindow::updateOverlayGeometry()
@@ -1036,7 +1075,7 @@ void MainWindow::updateBarSong()
     m_likeButton->setText(m_bar.likeGlyph());
     m_likeButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: 16px;"
-        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+        " font-family: 'lucide'; }"
         "QPushButton:hover { background: %2; border-radius: 6px; }")
                                     .arg(m_bar.likeForeground().name(),
                                         CTColors::overlay().name()));
@@ -1048,6 +1087,7 @@ void MainWindow::updateBarTransport()
 {
     m_playPauseButton->setText(m_bar.playPauseGlyph());
     m_playPauseButton->setToolTip(m_bar.playPauseTooltip());
+    m_playPauseButton->setAccessibleName(m_bar.playPauseTooltip());
     m_modeButton->setText(m_bar.modeGlyph());
     m_modeButton->setToolTip(m_bar.modeLabel());
 }
@@ -1092,7 +1132,7 @@ void MainWindow::updateSleepButton()
         m_sleepButton->setStyleSheet(plainTextButtonStyle());
         m_sleepButton->setFixedSize(m_sleepButton->fontMetrics().horizontalAdvance(text) + 16, 32);
     } else {
-        m_sleepButton->setText(QStringLiteral("\uE916"));
+        m_sleepButton->setText(QStringLiteral("\uE121"));
         m_sleepButton->setStyleSheet(glyphButtonStyle(15));
         m_sleepButton->setFixedSize(32, 32);
     }
@@ -1101,8 +1141,8 @@ void MainWindow::updateSleepButton()
 void MainWindow::updateMuteGlyph()
 {
     PlayerController& player = PlayerController::shared();
-    m_muteButton->setText(player.isMuted() || player.volume() <= 0.001f ? QStringLiteral("\uE74F")
-                                                                        : QStringLiteral("\uE767"));
+    m_muteButton->setText(player.isMuted() || player.volume() <= 0.001f ? QStringLiteral("\uE1AB")
+                                                                        : QStringLiteral("\uE1AA"));
 }
 
 void MainWindow::updateProgressTooltip()

@@ -283,16 +283,14 @@ void RadioDetailView::renderHeader()
     infoLayout->setContentsMargins(0, 0, 0, 0);
     infoLayout->setSpacing(CTSpacing::Sm);
 
-    auto* name = ui::titleLabel(station.name, 24, true);
-    name->setWordWrap(true);
+    auto* name = ui::titleElidedLabel(station.name, 24, true);
     name->setMaximumWidth(520);
     infoLayout->addWidget(name);
 
     infoLayout->addWidget(ui::secondaryLabel(metaText(station)));
 
     if (station.descriptionText.has_value() && !station.descriptionText->isEmpty()) {
-        auto* description = ui::secondaryLabel(*station.descriptionText);
-        description->setWordWrap(true);
+        auto* description = ui::secondaryElidedLabel(*station.descriptionText);
         description->setMaximumWidth(520);
         infoLayout->addWidget(description);
     }
@@ -423,14 +421,14 @@ QListWidgetItem* RadioDetailView::buildProgramRow(
     textLayout->addWidget(meta);
     layout->addWidget(text, 1);
 
-    auto* play = new QPushButton(QStringLiteral("\uE768"), widget);
+    auto* play = new QPushButton(QStringLiteral("\uE13F"), widget);
     play->setFlat(true);
     play->setCursor(Qt::PointingHandCursor);
     play->setFixedSize(32, 32);
     play->setEnabled(songIndex >= 0);
     play->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: 16px;"
-        " font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; }"
+        " font-family: 'lucide'; }"
         "QPushButton:hover { background: %2; border-radius: 6px; }")
                             .arg(CTColors::accent().name(), CTColors::overlay().name()));
     connect(play, &QPushButton::clicked, this, [this, programIndex] { playProgram(programIndex); });

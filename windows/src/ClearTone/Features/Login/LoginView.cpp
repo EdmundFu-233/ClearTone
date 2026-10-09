@@ -47,7 +47,7 @@ LoginView::LoginView(QWidget* parent)
     , m_provider(AppState::shared().provider())
 {
     setObjectName(QStringLiteral("ctLoginView"));
-    setStyleSheet(QStringLiteral("QWidget#ctLoginView { background: %1; }").arg(CTColors::background().name()));
+    setStyleSheet(QStringLiteral("QWidget#ctLoginView { background: transparent; }"));
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Xl);
@@ -96,15 +96,16 @@ LoginView::LoginView(QWidget* parent)
     layout->addWidget(qrFrame, 0, Qt::AlignHCenter);
 
     m_statusText = ui::secondaryLabel(L10n::Login::WaitingScan);
+    m_statusText->setWordWrap(true);
     m_statusText->setAlignment(Qt::AlignCenter);
-    layout->addWidget(m_statusText, 0, Qt::AlignHCenter);
+    layout->addWidget(m_statusText);
 
     m_errorText = new QLabel(this);
     m_errorText->setWordWrap(true);
     m_errorText->setAlignment(Qt::AlignCenter);
     m_errorText->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::accent().name()));
     m_errorText->hide();
-    layout->addWidget(m_errorText, 0, Qt::AlignHCenter);
+    layout->addWidget(m_errorText);
 
     m_retryButton = ui::accentButton(L10n::Common::Retry);
     m_retryButton->hide();
@@ -114,7 +115,7 @@ LoginView::LoginView(QWidget* parent)
     auto* prompt = ui::secondaryLabel(L10n::Login::ScanPrompt);
     prompt->setWordWrap(true);
     prompt->setAlignment(Qt::AlignCenter);
-    layout->addWidget(prompt, 0, Qt::AlignHCenter);
+    layout->addWidget(prompt);
     layout->addStretch(1);
 
     m_lastPresented = AppState::shared().isLoginPresented();

@@ -6,6 +6,8 @@
 #include "Playback/PlayerController.h"
 
 #include <QApplication>
+#include <QKeyEvent>
+#include "DesignSystem/FlowLayout.h"
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
@@ -22,6 +24,47 @@ namespace ct::ui {
 
 namespace {
 
+class SquareCover : public CoverImage {
+public:
+    explicit SquareCover(int side, QWidget* parent) : CoverImage(parent), m_side(side)
+    {
+        QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        policy.setHeightForWidth(true);
+        setSizePolicy(policy);
+    }
+    QSize sizeHint() const override { return QSize(m_side, m_side); }
+    QSize minimumSizeHint() const override { return QSize(80, 80); }
+    int heightForWidth(int width) const override { return width; }
+private:
+    int m_side;
+};
+
+class DetailHeader : public QWidget {
+public:
+    DetailHeader(const std::optional<QString>& url, QWidget* info)
+    {
+        setObjectName(QStringLiteral("ctDetailHeader"));
+        auto* row = new QHBoxLayout(this);
+        row->setContentsMargins(24, 12, 24, 12);
+        row->setSpacing(20);
+        m_cover = new CoverImage(this);
+        m_cover->setFixedSize(160, 160);
+        m_cover->setCornerRadius(12);
+        m_cover->setCoverURL(url, 320);
+        row->addWidget(m_cover, 0, Qt::AlignTop);
+        row->addWidget(info, 1);
+    }
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWidget::resizeEvent(event);
+        const int side = qBound(96, (width() - 96) / 4, 160);
+        if (m_cover->width() != side) m_cover->setFixedSize(side, side);
+    }
+private:
+    CoverImage* m_cover = nullptr;
+};
+
 QString secondaryStyle()
 {
     return QStringLiteral("color: %1;").arg(CTColors::textSecondary().name());
@@ -32,7 +75,8 @@ QString secondaryStyle()
 ElidedLabel::ElidedLabel(const QString& text, QWidget* parent)
     : QLabel(parent)
 {
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    setTextFormat(Qt::PlainText);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     setFullText(text);
 }
 
@@ -84,6 +128,7 @@ void ElidedLabel::updateElided()
 QLabel* titleLabel(const QString& text, double size, bool bold)
 {
     auto* label = new QLabel(text);
+    label->setTextFormat(Qt::PlainText);
     QString style = QStringLiteral("color: %1; font-size: %2px;")
                         .arg(CTColors::textPrimary().name())
                         .arg(size);
@@ -95,6 +140,7 @@ QLabel* titleLabel(const QString& text, double size, bool bold)
 QLabel* secondaryLabel(const QString& text)
 {
     auto* label = new QLabel(text);
+    label->setTextFormat(Qt::PlainText);
     label->setStyleSheet(secondaryStyle());
     return label;
 }
@@ -117,6 +163,19 @@ ElidedLabel* secondaryElidedLabel(const QString& text)
     return label;
 }
 
+QWidget* detailHeader(const std::optional<QString>& coverURL, QWidget* info)
+{
+    return new DetailHeader(coverURL, info);
+}
+
+QWidget* cardGrid(const QList<QWidget*>& cards)
+{
+    auto* container = new QWidget();
+    auto* flow = new FlowLayout(container);
+    for (QWidget* card : cards) flow->addWidget(card);
+    return container;
+}
+
 QWidget* headerRow(const QString& title, QWidget* trailing)
 {
     auto* container = new QWidget();
@@ -134,9 +193,7 @@ QPushButton* linkButton(const QString& text, std::function<void()> action)
     auto* button = new QPushButton(text);
     button->setFlat(true);
     button->setCursor(Qt::PointingHandCursor);
-    button->setStyleSheet(
-        QStringLiteral("QPushButton { color: %1; border: none; background: transparent; font-size: 12px; padding: 2px 6px; }")
-            .arg(CTColors::textSecondary().name()));
+    button->setProperty("ctRole", "link");
     QObject::connect(button, &QPushButton::clicked, [action = std::move(action)] {
         if (action) action();
     });
@@ -147,10 +204,7 @@ QPushButton* accentButton(const QString& text)
 {
     auto* button = new QPushButton(text);
     button->setCursor(Qt::PointingHandCursor);
-    button->setStyleSheet(QStringLiteral(
-        "QPushButton { background: %1; color: white; border: none; border-radius: 6px; padding: 6px 18px; font-weight: 600; }"
-        "QPushButton:hover { background: %1; }")
-                              .arg(CTColors::accent().name()));
+    button->setProperty("ctRole", "primary");
     return button;
 }
 
@@ -158,18 +212,17 @@ QPushButton* ghostButton(const QString& text)
 {
     auto* button = new QPushButton(text);
     button->setCursor(Qt::PointingHandCursor);
-    button->setStyleSheet(
-        QStringLiteral("QPushButton { background: transparent; color: %1; border: 1px solid %2; "
-                       "border-radius: 6px; padding: 6px 16px; }")
-            .arg(CTColors::textPrimary().name(), CTColors::overlay().name()));
+    button->setProperty("ctRole", "ghost");
     return button;
 }
 
 QWidget* statusPanel(const QString& text, bool showSpinner)
 {
-    auto* container = new QWidget();
+    auto* container = new QFrame();
+    container->setObjectName(QStringLiteral("ctStatusPanel"));
+    container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* layout = new QVBoxLayout(container);
-    layout->setContentsMargins(0, 60, 0, 60);
+    layout->setContentsMargins(24, 24, 24, 24);
     layout->setSpacing(10);
     layout->setAlignment(Qt::AlignCenter);
     if (showSpinner) {
@@ -180,23 +233,28 @@ QWidget* statusPanel(const QString& text, bool showSpinner)
         layout->addWidget(progress, 0, Qt::AlignHCenter);
     }
     auto* label = secondaryLabel(text);
+    label->setWordWrap(true);
     label->setAlignment(Qt::AlignCenter);
-    layout->addWidget(label, 0, Qt::AlignHCenter);
+    label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    layout->addWidget(label);
     return container;
 }
 
 QWidget* errorPanel(const QString& message, std::function<void()> retry)
 {
-    auto* container = new QWidget();
+    auto* container = new QFrame();
+    container->setObjectName(QStringLiteral("ctStatusPanel"));
+    container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* layout = new QVBoxLayout(container);
-    layout->setContentsMargins(0, 60, 0, 60);
+    layout->setContentsMargins(24, 24, 24, 24);
     layout->setSpacing(10);
     layout->setAlignment(Qt::AlignCenter);
     auto* label = secondaryLabel(message);
     label->setWordWrap(true);
     label->setAlignment(Qt::AlignCenter);
     label->setMaximumWidth(420);
-    layout->addWidget(label, 0, Qt::AlignHCenter);
+    label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    layout->addWidget(label);
     auto* button = accentButton(L10n::Common::Retry);
     QObject::connect(button, &QPushButton::clicked, [retry = std::move(retry)] {
         if (retry) retry();
@@ -220,6 +278,8 @@ QScrollArea* scrollWrapper(QWidget* content)
     area->setWidgetResizable(true);
     area->setFrameShape(QFrame::NoFrame);
     area->setWidget(content);
+    content->setAutoFillBackground(false);
+    area->viewport()->setAutoFillBackground(false);
     area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     area->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
     return area;
@@ -228,14 +288,27 @@ QScrollArea* scrollWrapper(QWidget* content)
 CardButton::CardButton(QWidget* parent)
     : QFrame(parent)
 {
+    setObjectName(QStringLiteral("ctCardButton"));
     setCursor(Qt::PointingHandCursor);
-    setStyleSheet(QStringLiteral("CardButton { background: transparent; border-radius: 8px; }"));
+    setFocusPolicy(Qt::StrongFocus);
 }
 
 void CardButton::setHighlighted(bool highlighted)
 {
-    setStyleSheet(QStringLiteral("CardButton { background: %1; border-radius: 8px; }")
-                      .arg(highlighted ? CTColors::overlay().name() : QStringLiteral("transparent")));
+    setProperty("highlighted", highlighted);
+    style()->unpolish(this);
+    style()->polish(this);
+    update();
+}
+
+void CardButton::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Space) {
+        if (onClicked) onClicked();
+        event->accept();
+        return;
+    }
+    QFrame::keyPressEvent(event);
 }
 
 void CardButton::mouseReleaseEvent(QMouseEvent* event)
@@ -246,18 +319,8 @@ void CardButton::mouseReleaseEvent(QMouseEvent* event)
     QFrame::mouseReleaseEvent(event);
 }
 
-void CardButton::enterEvent(QEnterEvent* event)
-{
-    setStyleSheet(QStringLiteral("CardButton { background: %1; border-radius: 8px; }")
-                      .arg(CTColors::overlay().name()));
-    QFrame::enterEvent(event);
-}
-
-void CardButton::leaveEvent(QEvent* event)
-{
-    setStyleSheet(QStringLiteral("CardButton { background: transparent; border-radius: 8px; }"));
-    QFrame::leaveEvent(event);
-}
+void CardButton::enterEvent(QEnterEvent* event) { QFrame::enterEvent(event); }
+void CardButton::leaveEvent(QEvent* event) { QFrame::leaveEvent(event); }
 
 namespace {
 
@@ -265,26 +328,33 @@ QWidget* makeCard(const QString& coverURL, double coverSize, double radius, cons
     const QString& subtitle, std::function<void()> onClick, double width)
 {
     auto* card = new CardButton();
-    card->setFixedWidth(static_cast<int>(width));
+    if (width >= 160) {
+        card->setMinimumWidth(144);
+        card->setMaximumWidth(216);
+        card->setProperty("ctFluidCard", true);
+    } else {
+        card->setFixedWidth(static_cast<int>(width));
+    }
+    card->setAccessibleName(title);
     auto* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
+    layout->setContentsMargins(8, 8, 8, 10);
+    layout->setSpacing(8);
 
-    auto* cover = new CoverImage(card);
-    cover->setFixedSize(static_cast<int>(coverSize), static_cast<int>(coverSize));
+    const int imageSide = static_cast<int>(qMin(coverSize, width - 16));
+    auto* cover = new SquareCover(imageSide, card);
     cover->setCornerRadius(radius);
     cover->setCoverURL(coverURL, static_cast<int>(coverSize) * 2);
-    layout->addWidget(cover, 0, Qt::AlignHCenter);
+    layout->addWidget(cover);
 
     auto* titleLabel = new ElidedLabel(title, card);
-    titleLabel->setAlignment(Qt::AlignHCenter);
+    titleLabel->setAlignment(Qt::AlignLeft);
     titleLabel->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
                                   .arg(CTColors::textPrimary().name())
                                   .arg(CTTypography::Body));
     layout->addWidget(titleLabel);
 
     auto* subtitleLabel = new ElidedLabel(subtitle, card);
-    subtitleLabel->setAlignment(Qt::AlignHCenter);
+    subtitleLabel->setAlignment(Qt::AlignLeft);
     subtitleLabel->setStyleSheet(secondaryStyle());
     layout->addWidget(subtitleLabel);
 
@@ -340,11 +410,14 @@ SongListView::SongListView(QWidget* parent)
     layout->setSpacing(0);
 
     m_list->setFrameShape(QFrame::NoFrame);
+    m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_list->setSpacing(2);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->setStyleSheet(QStringLiteral("QListWidget { background: transparent; border: none; }"
-                                         "QListWidget::item { border: none; }"
+                                         "QListWidget::item { border: none; border-radius: 8px; }"
+                                         "QListWidget::item:hover { background: %1; }"
                                          "QListWidget::item:selected { background: %1; }")
                               .arg(CTColors::overlay().name()));
     layout->addWidget(m_list);
@@ -380,9 +453,15 @@ void SongListView::setShowIndex(bool showIndex)
     rebuild();
 }
 
+int SongListView::contentHeight() const
+{
+    if (m_songs.isEmpty()) return m_emptyText.isEmpty() ? 0 : 120;
+    return m_songs.size() * (m_rowHeight + 2 * m_list->spacing()) + 2 * m_list->frameWidth();
+}
+
 void SongListView::setRowHeight(int height)
 {
-    m_rowHeight = height;
+    m_rowHeight = qMax(64, height);
     rebuild();
 }
 
@@ -420,7 +499,7 @@ void SongListView::rebuild()
 
         auto* widget = new QWidget(m_list);
         auto* layout = new QHBoxLayout(widget);
-        layout->setContentsMargins(6, 4, 12, 4);
+        layout->setContentsMargins(8, 8, 16, 8);
         layout->setSpacing(8);
 
         row.index = ui::secondaryLabel(m_showIndex ? QString::number(index + 1) : QString());
@@ -429,8 +508,8 @@ void SongListView::rebuild()
         layout->addWidget(row.index);
 
         auto* cover = new CoverImage(widget);
-        cover->setFixedSize(36, 36);
-        cover->setCornerRadius(4);
+        cover->setFixedSize(42, 42);
+        cover->setCornerRadius(7);
         cover->setCoverURL(song.coverURL.value_or(QString()), 72);
         layout->addWidget(cover);
 
@@ -454,7 +533,9 @@ void SongListView::rebuild()
         row.like->setFixedWidth(18);
         layout->addWidget(row.like);
 
-        row.reason = ui::secondaryLabel(song.unavailableReason.value_or(QString()));
+        row.reason = ui::secondaryElidedLabel(song.unavailableReason.value_or(QString()));
+        row.reason->setMaximumWidth(120);
+        row.reason->setVisible(!song.isPlayable);
         layout->addWidget(row.reason);
 
         row.duration = ui::secondaryLabel(CTFormatting::time(song.duration));

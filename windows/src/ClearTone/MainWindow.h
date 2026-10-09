@@ -62,6 +62,7 @@ private:
     void updateAccountArea();
     void updateOverlays();
     void updateOverlayGeometry();
+    void updateResponsiveGeometry();
 
     void updateBarSong();
     void updateBarTransport();

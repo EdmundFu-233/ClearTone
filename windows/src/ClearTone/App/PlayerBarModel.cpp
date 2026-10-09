@@ -41,8 +41,8 @@ std::optional<QString> PlayerBarModel::coverUrl() const
 
 QString PlayerBarModel::playPauseGlyph() const
 {
-    return m_player->playbackState().isPlayIntentActive() ? QStringLiteral("\uE769")
-                                                          : QStringLiteral("\uE768");
+    return m_player->playbackState().isPlayIntentActive() ? QStringLiteral("\uE131")
+                                                          : QStringLiteral("\uE13F");
 }
 
 QString PlayerBarModel::playPauseTooltip() const
@@ -55,11 +55,11 @@ QString PlayerBarModel::modeGlyph() const
     switch (m_player->queue().mode) {
     case PlayMode::Sequential:
     case PlayMode::LoopAll:
-        return QStringLiteral("\uE8EE");
+        return QStringLiteral("\uE149");
     case PlayMode::LoopOne:
-        return QStringLiteral("\uE8ED");
+        return QStringLiteral("\uE1FC");
     default:
-        return QStringLiteral("\uE8B1");
+        return QStringLiteral("\uE161");
     }
 }
 
@@ -67,7 +67,7 @@ QString PlayerBarModel::modeLabel() const { return playMode::displayName(m_playe
 
 QString PlayerBarModel::likeGlyph() const
 {
-    return isLiked() ? QStringLiteral("\uEB52") : QStringLiteral("\uEB51");
+    return isLiked() ? QStringLiteral("\uE0F5") : QStringLiteral("\uE0F5");
 }
 
 QColor PlayerBarModel::likeForeground() const

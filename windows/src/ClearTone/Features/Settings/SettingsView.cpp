@@ -40,6 +40,7 @@ QWidget* labeled(const QString& text, QWidget* control)
     label->setStyleSheet(
         QStringLiteral("color: %1; font-weight: 500;").arg(CTColors::textPrimary().name()));
     layout->addWidget(label);
+    control->setMaximumWidth(440);
     layout->addWidget(control);
     return panel;
 }
@@ -86,27 +87,6 @@ QualityLevel qualityFromIndex(int index)
     if (index <= 0) return songQualityPolicy::autoLevel;
     const QList<QualityLevel>& levels = songQualityPolicy::selectableLevels;
     return index - 1 < levels.size() ? levels[index - 1] : songQualityPolicy::autoLevel;
-}
-
-void applyTheme(CTThemeMode mode)
-{
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-    QStyleHints* hints = QGuiApplication::styleHints();
-    if (hints == nullptr) return;
-    switch (mode) {
-    case CTThemeMode::Dark:
-        hints->setColorScheme(Qt::ColorScheme::Dark);
-        break;
-    case CTThemeMode::Light:
-        hints->setColorScheme(Qt::ColorScheme::Light);
-        break;
-    case CTThemeMode::System:
-        hints->unsetColorScheme();
-        break;
-    }
-#else
-    Q_UNUSED(mode);
-#endif
 }
 
 } // namespace
@@ -388,7 +368,7 @@ void SettingsView::save()
     PersistenceStore::shared().saveSetting(QStringLiteral("appSettings"), m_settings.toJson());
     AudioCacheManager::shared().setEnabled(m_settings.audioCacheEnabled);
     PlayerController::shared().setRequestedQuality(m_settings.preferredQuality);
-    applyTheme(m_settings.themeMode);
+    CTTheme::apply(m_settings.themeMode);
 }
 
 void SettingsView::updateCloseHint()

@@ -73,19 +73,6 @@ QWidget* statBlock(const QString& label, const QString& value)
     return panel;
 }
 
-QWidget* cardGrid(const QList<QWidget*>& cards, int columns)
-{
-    auto* container = new QWidget();
-    auto* grid = new QGridLayout(container);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(CTSpacing::Lg);
-    grid->setVerticalSpacing(CTSpacing::Lg);
-    for (int index = 0; index < cards.size(); ++index) {
-        grid->addWidget(cards[index], index / columns, index % columns, Qt::AlignTop | Qt::AlignLeft);
-    }
-    grid->setColumnStretch(columns, 1);
-    return container;
-}
 
 QWidget* subscriptionGroup(const QString& title, QWidget* content)
 {
@@ -644,8 +631,8 @@ QWidget* ProfileView::buildSignInCard()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(CTSpacing::Lg);
 
-    auto* icon = new QLabel(QStringLiteral("\uE8FB"), content);
-    QFont iconFont(QStringLiteral("Segoe MDL2 Assets"));
+    auto* icon = new QLabel(QStringLiteral("\uE240"), content);
+    QFont iconFont(QStringLiteral("lucide"));
     iconFont.setPixelSize(28);
     icon->setFont(iconFont);
     icon->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::accent().name()));
@@ -848,7 +835,7 @@ QWidget* ProfileView::buildSubscriptionsSection()
                 AppState::shared().openArtist(item.id);
             }));
         }
-        layout->addWidget(subscriptionGroup(QStringLiteral("关注的歌手"), cardGrid(cards, 4)));
+        layout->addWidget(subscriptionGroup(QStringLiteral("关注的歌手"), ui::cardGrid(cards)));
     }
     if (!m_subAlbums.isEmpty()) {
         QList<QWidget*> cards;
@@ -857,14 +844,14 @@ QWidget* ProfileView::buildSubscriptionsSection()
                 AppState::shared().openAlbum(item.id);
             }));
         }
-        layout->addWidget(subscriptionGroup(QStringLiteral("收藏的专辑"), cardGrid(cards, 4)));
+        layout->addWidget(subscriptionGroup(QStringLiteral("收藏的专辑"), ui::cardGrid(cards)));
     }
     if (!m_subRadios.isEmpty()) {
         QList<QWidget*> cards;
         for (const RadioStation& radio : std::as_const(m_subRadios)) {
             cards.append(makeRadioCard(radio));
         }
-        layout->addWidget(subscriptionGroup(QStringLiteral("收藏的电台"), cardGrid(cards, 4)));
+        layout->addWidget(subscriptionGroup(QStringLiteral("收藏的电台"), ui::cardGrid(cards)));
     }
     if (!m_subPlaylists.isEmpty()) {
         QList<QWidget*> cards;
@@ -873,7 +860,7 @@ QWidget* ProfileView::buildSubscriptionsSection()
                 AppState::shared().openPlaylist(item.id);
             }));
         }
-        layout->addWidget(subscriptionGroup(QStringLiteral("收藏的歌单"), cardGrid(cards, 4)));
+        layout->addWidget(subscriptionGroup(QStringLiteral("收藏的歌单"), ui::cardGrid(cards)));
     }
 
     if (m_subscriptionsError.has_value()) {

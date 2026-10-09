@@ -4,6 +4,7 @@
 #include "Core/Models/MusicSocialProvider.h"
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/CoverImage.h"
+#include "DesignSystem/FlowLayout.h"
 #include "DesignSystem/L10n.h"
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
@@ -231,8 +232,8 @@ Task<void> AlbumDetailView::loadSimilarAsync(quint64 token, QString albumID, Son
 
 void AlbumDetailView::refreshTrackHeights()
 {
-    m_trackList->setFixedHeight(m_trackList->songs().size() * 52);
-    m_similarList->setFixedHeight(m_similarList->songs().size() * 52);
+    m_trackList->setFixedHeight(m_trackList->contentHeight());
+    m_similarList->setFixedHeight(m_similarList->contentHeight());
 }
 
 void AlbumDetailView::render()
@@ -280,24 +281,12 @@ QWidget* AlbumDetailView::buildHeader()
     const PlaylistDetail detail = *m_detail;
     const bool isSubscribed = m_isSubscribed.value_or(false);
 
-    auto* header = new QWidget();
-    auto* layout = new QHBoxLayout(header);
-    layout->setContentsMargins(CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Lg);
-    layout->setSpacing(CTSpacing::Lg);
-
-    auto* cover = new CoverImage(header);
-    cover->setFixedSize(180, 180);
-    cover->setCornerRadius(CTRadius::Medium);
-    cover->setCoverURL(detail.playlist.coverURL, 360);
-    layout->addWidget(cover, 0, Qt::AlignTop);
-
-    auto* info = new QWidget(header);
+    auto* info = new QWidget();
     auto* infoLayout = new QVBoxLayout(info);
-    infoLayout->setContentsMargins(CTSpacing::Lg, 0, 0, 0);
+    infoLayout->setContentsMargins(0, 0, 0, 0);
     infoLayout->setSpacing(CTSpacing::Sm);
 
-    auto* name = ui::titleLabel(detail.playlist.name, CTTypography::PageTitle, true);
-    name->setWordWrap(true);
+    auto* name = ui::titleElidedLabel(detail.playlist.name, 26, true);
     infoLayout->addWidget(name);
 
     if (detail.playlist.creatorName.has_value() && !detail.playlist.creatorName->isEmpty()) {
@@ -305,11 +294,13 @@ QWidget* AlbumDetailView::buildHeader()
         const QString label = QStringLiteral("歌手：%1").arg(artistName);
         if (detail.artistID.has_value() && !detail.artistID->isEmpty()) {
             const QString artistID = *detail.artistID;
-            auto* link = ui::linkButton(QString(),
-                [artistID] { AppState::shared().openArtist(artistID); });
-            link->setText(link->fontMetrics().elidedText(label, Qt::ElideRight, 520));
-            link->setToolTip(label);
-            infoLayout->addWidget(link, 0, Qt::AlignLeft);
+            auto* link = new ui::CardButton();
+            link->setAccessibleName(label);
+            auto* line = new QHBoxLayout(link);
+            line->setContentsMargins(0, 0, 0, 0);
+            line->addWidget(ui::secondaryElidedLabel(label));
+            link->onClicked = [artistID] { AppState::shared().openArtist(artistID); };
+            infoLayout->addWidget(link);
         } else {
             auto* text = ui::secondaryElidedLabel(label);
             text->setMaximumWidth(520);
@@ -320,7 +311,7 @@ QWidget* AlbumDetailView::buildHeader()
     infoLayout->addWidget(ui::secondaryLabel(QStringLiteral("%1 首歌曲").arg(detail.tracks.size())));
 
     auto* actions = new QWidget(info);
-    auto* actionsLayout = new QHBoxLayout(actions);
+    auto* actionsLayout = new FlowLayout(actions, CTSpacing::Sm);
     actionsLayout->setContentsMargins(0, 0, 0, 0);
     actionsLayout->setSpacing(CTSpacing::Md);
 
@@ -348,7 +339,6 @@ QWidget* AlbumDetailView::buildHeader()
         });
         actionsLayout->addWidget(subscribe);
     }
-    actionsLayout->addStretch(1);
     infoLayout->addWidget(actions);
 
     if (m_actionError.has_value()) {
@@ -358,8 +348,7 @@ QWidget* AlbumDetailView::buildHeader()
     }
     infoLayout->addStretch(1);
 
-    layout->addWidget(info, 1);
-    return header;
+    return ui::detailHeader(detail.playlist.coverURL, info);
 }
 
 Task<void> AlbumDetailView::subscribeAsync(bool subscribe, quint64 token)
