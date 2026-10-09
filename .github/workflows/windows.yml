@@ -61,11 +61,25 @@ jobs:
       - name: 离线单测
         shell: pwsh
         run: |
+          # 原生命令非零退出在 pwsh 7.3+ 可能被当终止错误，导致失败诊断跑不到
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           $listed = ctest --test-dir windows/build-ci -N
           if (-not ($listed | Select-String 'Test  #1:')) {
             throw '没有注册任何测试（Qt Test 未找到或 tests 未加入构建）'
           }
           ctest --test-dir windows/build-ci --output-on-failure
+          $ctestCode = $LASTEXITCODE
+          if ($ctestCode -ne 0) {
+            # GUI 测试的 stdout 在 ctest 里可能丢失；让它把报告写文件再打印。
+            $env:CLEARTONE_TEST_STORAGE_DIR = Join-Path $env:RUNNER_TEMP 'ct-gui-report'
+            New-Item -ItemType Directory -Force -Path $env:CLEARTONE_TEST_STORAGE_DIR | Out-Null
+            $report = Join-Path $env:RUNNER_TEMP 'gui-report.txt'
+            & windows/build-ci/tests/tst_gui_layout.exe -o $report,txt
+            Write-Host "tst_gui_layout exit=$LASTEXITCODE"
+            Get-Content $report -ErrorAction SilentlyContinue
+            throw "离线单测失败：ctest 退出码 $ctestCode"
+          }
 
       # 启动冒烟：起辅助进程、跑事件循环、加载封面，捕捉“启动即闪退”类问题。
       - name: 启动冒烟（构建产物）
