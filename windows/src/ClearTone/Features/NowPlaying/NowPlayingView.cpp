@@ -645,7 +645,11 @@ void NowPlayingView::refresh()
     m_artistButton->setText(m_artistButton->fontMetrics().elidedText(artistText, Qt::ElideRight, 380));
     m_artistButton->setToolTip(artistText);
     m_artistButton->setEnabled(hasArtist);
-    m_cover->setCoverURL(song.has_value() ? song->coverURL : std::nullopt, 600);
+    // 隐藏时按控件实际尺寸解码，展开后再按 2x 重载：600px 大图每首歌
+    // 占 1.4MB，长时间切歌会把封面缓存迅速顶满。
+    const int coverSide = qMax(160, m_cover->width());
+    m_cover->setCoverURL(song.has_value() ? song->coverURL : std::nullopt,
+        isVisible() ? coverSide * 2 : coverSide);
 
     const std::optional<PlayingSourceInfo> source = player.playingSource();
     m_sourceText->setText(source.has_value() ? source->text : QString());

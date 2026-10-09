@@ -76,7 +76,10 @@ void CTTheme::apply(CTThemeMode mode)
         });
         QFont font = QApplication::font();
 #ifdef Q_OS_WIN
-        font.setFamilies({QStringLiteral("Segoe UI"), QStringLiteral("Microsoft YaHei UI")});
+        // Windows 11 的界面字体：Segoe UI Variable（拉丁）+ 微软雅黑 UI（中文），
+        // Qt 按字体族列表逐字符回退；Win10 没有 Variable 时退回 Segoe UI。
+        font.setFamilies({QStringLiteral("Segoe UI Variable Text"), QStringLiteral("Segoe UI"),
+            QStringLiteral("Microsoft YaHei UI")});
 #endif
         font.setPixelSize(13);
         QApplication::setFont(font);

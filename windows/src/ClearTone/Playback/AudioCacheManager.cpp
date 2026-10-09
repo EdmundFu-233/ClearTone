@@ -384,36 +384,38 @@ void AudioCacheManager::downloadJob(const PendingCache& job)
 {
     const QString temp = QDir(m_cacheDirectory)
                              .filePath(tempPrefix + QUuid::createUuid().toString(QUuid::WithoutBraces));
+    auto file = std::make_shared<QFile>(temp);
+    if (!file->open(QIODevice::WriteOnly)) {
+        CTLog::general().warn(QStringLiteral("音频缓存失败 [%1]: 无法写入临时文件").arg(job.songID));
+        finishCacheJob(job);
+        return;
+    }
     QNetworkRequest request(job.sourceURL);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(downloadTimeoutMs);
     QNetworkReply* reply = m_network->get(request);
-    QObject::connect(reply, &QNetworkReply::finished, reply, [this, job, temp, reply] {
+    // 边下边写：QNetworkReply 默认把整个响应体缓存在内存里，一首无损的
+    // 大小在几十 MB，会造成明显的内存尖峰（播放时内存暴涨的主因之一）。
+    reply->setReadBufferSize(256 * 1024);
+    QObject::connect(reply, &QNetworkReply::readyRead, reply, [reply, file] {
+        file->write(reply->readAll());
+    });
+    QObject::connect(reply, &QNetworkReply::finished, reply, [this, job, temp, reply, file] {
         reply->deleteLater();
+        file->write(reply->readAll());
+        file->close();
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         // status 0 = 非 HTTP 协议（data:/qrc 等）；HTTP 请求仍必须是 2xx。
         const bool statusOk = statusCode == 0 ? true : (statusCode >= 200 && statusCode <= 299);
-        if (reply->error() != QNetworkReply::NoError || !statusOk) {
+        if (reply->error() != QNetworkReply::NoError || !statusOk || file->size() <= 0) {
             QFile::remove(temp);
-            CTLog::general().warn(
-                QStringLiteral("音频缓存失败 [%1]: %2")
-                    .arg(job.songID, CTLog::sanitize(reply->errorString())));
-            finishCacheJob(job);
-            return;
-        }
-        QFile file(temp);
-        if (!file.open(QIODevice::WriteOnly)) {
-            QFile::remove(temp);
-            CTLog::general().warn(QStringLiteral("音频缓存失败 [%1]: 无法写入临时文件").arg(job.songID));
-            finishCacheJob(job);
-            return;
-        }
-        const QByteArray payload = reply->readAll();
-        const qint64 written = file.write(payload);
-        file.close();
-        if (written != payload.size()) {
-            QFile::remove(temp);
-            CTLog::general().warn(QStringLiteral("音频缓存失败 [%1]: 写入不完整").arg(job.songID));
+            if (reply->error() != QNetworkReply::NoError || !statusOk) {
+                CTLog::general().warn(
+                    QStringLiteral("音频缓存失败 [%1]: %2")
+                        .arg(job.songID, CTLog::sanitize(reply->errorString())));
+            } else {
+                CTLog::general().warn(QStringLiteral("音频缓存失败 [%1]: 响应为空").arg(job.songID));
+            }
             finishCacheJob(job);
             return;
         }

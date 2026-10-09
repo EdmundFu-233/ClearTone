@@ -33,8 +33,10 @@ public:
     static QString cacheRoot();
     static QString diskCachePath(const QString& url);
 
-    static constexpr int MemoryEntryLimit = 400;
-    static constexpr qint64 MemoryByteLimit = 64LL * 1024 * 1024;
+    static constexpr int MemoryEntryLimit = 200;
+    // 封面缓存上限：每首歌一张 600px 封面约 1.4MB，64MB 会让长时间切歌的
+    // 内存平台期高得离谱；24MB 足够覆盖当前页面 + 最近若干首。
+    static constexpr qint64 MemoryByteLimit = 24LL * 1024 * 1024;
     static constexpr qint64 DiskByteLimit = 300LL * 1024 * 1024;
     static constexpr int DiskMaxAgeDays = 60;
 
