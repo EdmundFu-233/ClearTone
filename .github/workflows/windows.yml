@@ -78,8 +78,13 @@ jobs:
           Copy-Item 'ClearTone/Resources/HelperRuntime/api' (Join-Path $helper 'api') -Recurse -Force
           $env:CLEARTONE_HELPER_ROOT = $helper
           $env:QT_QPA_PLATFORM = 'offscreen'
-          & windows/build-ci/ClearTone.exe --smoke-test 20
-          if ($LASTEXITCODE -ne 0) { throw "冒烟测试失败：退出码 $LASTEXITCODE" }
+          # GUI 子系统进程必须用 Start-Process -Wait，`&` 不等它结束也拿不到退出码
+          $proc = Start-Process -FilePath 'windows/build-ci/ClearTone.exe' `
+            -ArgumentList '--smoke-test', '20' -PassThru -Wait
+          if ($proc.ExitCode -ne 0) {
+            Get-Content "$env:LOCALAPPDATA\ClearTone\ClearTone\logs\cleartone.log" -Tail 60 -ErrorAction SilentlyContinue
+            throw "冒烟测试失败：退出码 $($proc.ExitCode)"
+          }
 
   # 发布包：tag 推送或手动触发时，构建 win-x64 / win-arm64 的 zip
   package:
@@ -142,8 +147,12 @@ jobs:
         if: matrix.arch == 'x64'
         shell: pwsh
         run: |
-          & "windows/publish/win-x64/ClearTone.exe" --smoke-test 20
-          if ($LASTEXITCODE -ne 0) { throw "发布包冒烟失败：退出码 $LASTEXITCODE" }
+          $proc = Start-Process -FilePath 'windows/publish/win-x64/ClearTone.exe' `
+            -ArgumentList '--smoke-test', '20' -PassThru -Wait
+          if ($proc.ExitCode -ne 0) {
+            Get-Content "$env:LOCALAPPDATA\ClearTone\ClearTone\logs\cleartone.log" -Tail 60 -ErrorAction SilentlyContinue
+            throw "发布包冒烟失败：退出码 $($proc.ExitCode)"
+          }
 
       - name: 列出产物内容
         shell: pwsh
