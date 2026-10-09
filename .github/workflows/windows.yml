@@ -153,10 +153,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           ls -la artifacts
-          if ! gh release view "$TAG"; then
-            gh release create "$TAG" --title "澄音 ClearTone ${TAG#v}" --generate-notes
+          # 该 job 未 checkout，gh 需要显式 -R 指定仓库
+          if ! gh release view "$TAG" -R "$REPO"; then
+            gh release create "$TAG" -R "$REPO" --title "澄音 ClearTone ${TAG#v}" --generate-notes
           fi
-          gh release upload "$TAG" artifacts/*.zip --clobber
+          gh release upload "$TAG" artifacts/*.zip -R "$REPO" --clobber
