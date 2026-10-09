@@ -143,7 +143,7 @@ Task<void> HelperProcessManager::start(CancellationToken ct)
     if (m_state.kind == HelperState::Kind::Starting) {
         QElapsedTimer timer;
         timer.start();
-        while (m_state.kind == HelperState::Kind::Starting && timer.elapsed() < 20000) {
+        while (m_state.kind == HelperState::Kind::Starting && timer.elapsed() < 35000) {
             co_await Delay(100, ct);
         }
         if (m_state.kind != HelperState::Kind::Running) {
@@ -221,7 +221,7 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
         });
 
     process->start();
-    if (!process->waitForStarted(3000)) {
+    if (!process->waitForStarted(10000)) {
         const QString message = QStringLiteral("启动失败: %1").arg(process->errorString());
         stopProcess();
         setState({HelperState::Kind::Failed, 0, message});
@@ -230,11 +230,14 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
     }
 
     try {
-        co_await waitForHealthy(15000, ct);
+        // Node 冷启动在低配设备/ARM 上可能超过 15 秒，给足 30 秒。
+        co_await waitForHealthy(30000, ct);
     } catch (...) {
         stopProcess();
         setState({HelperState::Kind::Failed, 0, QStringLiteral("健康检查超时")});
         m_lastError = QStringLiteral("本地服务启动超时，请重试");
+        // 冷启动偶发超时：自动重试一次，失败则交给调用方。
+        scheduleRestart(1000, false);
         throw MusicException::helperProcessTimeout();
     }
 

@@ -318,6 +318,14 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     m_sidebarList->setFrameShape(QFrame::NoFrame);
     m_sidebarList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_sidebarList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    {
+        // 侧栏条目混排 MDL2 字形与中文：用字体族列表让 Qt 逐字符回退，
+        // 否则 PUA 字形会因默认字体没有而整体不显示。
+        QFont sidebarFont = m_sidebarList->font();
+        sidebarFont.setFamilies({QStringLiteral("Segoe MDL2 Assets"), QStringLiteral("Segoe UI"),
+            QStringLiteral("Microsoft YaHei UI")});
+        m_sidebarList->setFont(sidebarFont);
+    }
     m_sidebarList->setStyleSheet(QStringLiteral(
         "QListWidget { background: transparent; border: none; }"
         "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: %1; }"
