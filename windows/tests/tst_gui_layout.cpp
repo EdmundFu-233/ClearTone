@@ -58,6 +58,21 @@ private slots:
         }
         QVERIFY(!CTTheme::icon(page::glyph(Page::Search)).isNull());
     }
+    void customChromeAndAccountKeepTheirLayout()
+    {
+#ifdef Q_OS_WIN
+        QVERIFY(m_window->windowFlags().testFlag(Qt::FramelessWindowHint));
+        auto* title = m_window->findChild<QWidget*>(QStringLiteral("ctTitleBar"));
+        QVERIFY(title);
+        QCOMPARE(title->height(), 36);
+#endif
+        auto* avatar = m_window->findChild<CoverImage*>(QStringLiteral("ctAccountAvatar"));
+        QVERIFY(avatar);
+        QCOMPARE(avatar->size(), QSize(38, 38));
+        auto* sidebar = m_window->findChild<QWidget*>(QStringLiteral("ctSidebar"));
+        QVERIFY(sidebar);
+        QVERIFY(sidebar->rect().contains(QRect(avatar->mapTo(sidebar, QPoint()), avatar->size())));
+    }
     void cardsReflowWithoutHorizontalClipping()
     {
         QList<QWidget*> cards;

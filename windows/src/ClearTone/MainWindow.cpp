@@ -23,7 +23,9 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include <QCursor>
 #include <QFrame>
+#include <QFont>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QJsonObject>
@@ -47,6 +49,9 @@
 
 #include <algorithm>
 #include <cmath>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace ct {
 
@@ -138,6 +143,10 @@ void appendSubscription(QList<std::function<void()>>& subscriptions, Event& even
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
+#ifdef Q_OS_WIN
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowMinMaxButtonsHint
+        | Qt::WindowSystemMenuHint);
+#endif
     applyTheme();
 
     setWindowTitle(QStringLiteral("澄音 ClearTone"));
@@ -160,6 +169,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
+#ifdef Q_OS_WIN
+    rootLayout->addWidget(buildTitleBar(central));
+#endif
 
     auto* upper = new QWidget(central);
     auto* upperLayout = new QHBoxLayout(upper);
@@ -190,6 +202,82 @@ MainWindow::MainWindow(QWidget* parent)
 
     subscribeEvents();
     if (QApplication::instance() != nullptr) QApplication::instance()->installEventFilter(this);
+}
+
+QWidget* MainWindow::buildTitleBar(QWidget* parent)
+{
+    m_titleBar = new QWidget(parent);
+    m_titleBar->setObjectName(QStringLiteral("ctTitleBar"));
+    m_titleBar->setFixedHeight(36);
+    m_titleBar->setStyleSheet(QStringLiteral("#ctTitleBar { background: %1; border-bottom: 1px solid %2; }")
+                                  .arg(CTColors::panel().name(), CTColors::border().name()));
+    auto* layout = new QHBoxLayout(m_titleBar);
+    layout->setContentsMargins(14, 0, 0, 0);
+    layout->setSpacing(0);
+    auto* title = ui::secondaryLabel(QStringLiteral("澄音 ClearTone"));
+    layout->addWidget(title);
+    layout->addStretch(1);
+    auto makeControl = [this, layout](const QString& glyph, const QString& tip, auto callback) {
+        auto* button = makeGlyphButton(glyph, tip, 15, m_titleBar);
+        button->setFixedSize(46, 34);
+        button->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: none; color: %1; font-family: 'Segoe UI'; font-size: 17px; }"
+            "QPushButton:hover { background: %2; }")
+                                  .arg(CTColors::textPrimary().name(), CTColors::overlay().name()));
+        layout->addWidget(button);
+        connect(button, &QPushButton::clicked, this, callback);
+        return button;
+    };
+    makeControl(QStringLiteral("−"), QStringLiteral("最小化"), [this] { showMinimized(); });
+    m_maximizeButton = makeControl(QStringLiteral("□"), QStringLiteral("最大化/还原"), [this] {
+        if (isMaximized()) showNormal(); else showMaximized();
+    });
+    auto* close = makeControl(QStringLiteral("×"), QStringLiteral("关闭"), [this] { this->close(); });
+    close->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; border: none; color: %1; font-family: 'Segoe UI'; font-size: 20px; }"
+        "QPushButton:hover { background: #c42b32; color: white; }")
+                             .arg(CTColors::textPrimary().name()));
+    return m_titleBar;
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+#ifdef Q_OS_WIN
+    if (eventType == QByteArrayLiteral("windows_generic_MSG") && m_titleBar) {
+        const auto* msg = static_cast<MSG*>(message);
+        if (msg->message == WM_NCHITTEST) {
+            const QPoint point = mapFromGlobal(QCursor::pos());
+            if (rect().contains(point) && !isMaximized()) {
+                constexpr int border = 6;
+                const bool left = point.x() < border;
+                const bool right = point.x() >= width() - border;
+                const bool top = point.y() < border;
+                const bool bottom = point.y() >= height() - border;
+                if (top && left) *result = HTTOPLEFT;
+                else if (top && right) *result = HTTOPRIGHT;
+                else if (bottom && left) *result = HTBOTTOMLEFT;
+                else if (bottom && right) *result = HTBOTTOMRIGHT;
+                else if (left) *result = HTLEFT;
+                else if (right) *result = HTRIGHT;
+                else if (top) *result = HTTOP;
+                else if (bottom) *result = HTBOTTOM;
+                else *result = HTCLIENT;
+                if (*result != HTCLIENT) return true;
+            }
+            const QPoint titlePoint = m_titleBar->mapFrom(this, point);
+            if (m_titleBar->rect().contains(titlePoint)
+                && !qobject_cast<QPushButton*>(m_titleBar->childAt(titlePoint))) {
+                *result = HTCAPTION;
+                return true;
+            }
+        }
+    }
+#else
+    Q_UNUSED(eventType);
+    Q_UNUSED(message);
+    Q_UNUSED(result);
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 MainWindow::~MainWindow()
@@ -243,6 +331,10 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     auto* side = new QFrame(parent);
     side->setObjectName(QStringLiteral("ctSidebar"));
     side->setFixedWidth(sidebarWidth);
+    QFont sidebarFont = QApplication::font();
+    sidebarFont.setStyleStrategy(QFont::PreferAntialias);
+    sidebarFont.setHintingPreference(QFont::PreferNoHinting);
+    side->setFont(sidebarFont);
     side->setStyleSheet(QStringLiteral("#ctSidebar { background: %1; border-right: 1px solid %2; }")
                             .arg(CTColors::panel().name(), CTColors::overlay().name()));
     auto* sideLayout = new QVBoxLayout(side);
@@ -329,18 +421,18 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     m_accountButton = new QPushButton(accountFrame);
     m_accountButton->setFlat(true);
     m_accountButton->setCursor(Qt::PointingHandCursor);
-    m_accountButton->setMinimumHeight(44);
+    m_accountButton->setFixedHeight(54);
     m_accountButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; text-align: left; padding: 4px; }"));
     auto* accountLayout = new QHBoxLayout(m_accountButton);
     accountLayout->setContentsMargins(4, 4, 4, 4);
-    accountLayout->setSpacing(10);
-    m_accountGlyph = new QLabel(QStringLiteral("\uE46C"), m_accountButton);
-    m_accountGlyph->setStyleSheet(QStringLiteral("color: %1; font-size: 20px;"
-                                                 " font-family: 'lucide';")
-                                      .arg(CTColors::textPrimary().name()));
-    m_accountGlyph->setAlignment(Qt::AlignVCenter);
-    accountLayout->addWidget(m_accountGlyph);
+    accountLayout->setSpacing(8);
+    m_accountAvatar = new CoverImage(m_accountButton);
+    m_accountAvatar->setObjectName(QStringLiteral("ctAccountAvatar"));
+    m_accountAvatar->setFixedSize(38, 38);
+    m_accountAvatar->setCornerRadius(19);
+    m_accountAvatar->setPlaceholderText(QStringLiteral("人"));
+    accountLayout->addWidget(m_accountAvatar, 0, Qt::AlignVCenter);
     auto* accountText = new QWidget(m_accountButton);
     auto* accountTextLayout = new QVBoxLayout(accountText);
     accountTextLayout->setContentsMargins(0, 0, 0, 0);
@@ -350,6 +442,7 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
                                      .arg(CTColors::textPrimary().name())
                                      .arg(CTTypography::Body));
     m_accountHint = ui::secondaryLabel(QStringLiteral("点击扫码登录"));
+    m_accountHint->setTextFormat(Qt::PlainText);
     accountTextLayout->addWidget(m_accountName);
     accountTextLayout->addWidget(m_accountHint);
     accountLayout->addWidget(accountText, 1);
@@ -698,6 +791,13 @@ void MainWindow::resizeEvent(QResizeEvent* event)
     updateResponsiveGeometry();
 }
 
+void MainWindow::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange && m_maximizeButton)
+        m_maximizeButton->setText(isMaximized() ? QStringLiteral("❐") : QStringLiteral("□"));
+}
+
 void MainWindow::showEvent(QShowEvent* event)
 {
     QMainWindow::showEvent(event);
@@ -709,7 +809,6 @@ void MainWindow::showEvent(QShowEvent* event)
         MediaSessionIntegration::shared().initialize(this);
         ct::detach(HelperProcessManager::shared().startIfNeeded(CancellationToken::none()));
         ct::detach(AppState::shared().restoreLoginState());
-        PlayerController::shared().resumeFromPersistence();
     } catch (const MusicException& error) {
         CTLog::general().error(
             QStringLiteral("启动初始化失败: %1").arg(CTLog::sanitize(error.userFacingMessage())));
@@ -1018,8 +1117,7 @@ void MainWindow::updateAccountArea()
     m_accountHint->setText(!account ? QStringLiteral("点击扫码登录")
                                     : (account->isVIP ? QStringLiteral("VIP 会员")
                                                       : QStringLiteral("已登录")));
-    m_accountGlyph->setText(
-        account && account->isVIP ? QStringLiteral("\uE1D5") : QStringLiteral("\uE46C"));
+    m_accountAvatar->setCoverURL(account ? account->avatarURL : std::nullopt, 76);
 }
 
 void MainWindow::updateOverlays()

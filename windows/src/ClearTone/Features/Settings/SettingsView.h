@@ -12,6 +12,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
+class QNetworkAccessManager;
 
 namespace ct {
 
@@ -35,6 +36,7 @@ private:
     void updateCacheSize();
     void updateAccount();
     void updateAutoQualityLabel();
+    void checkForUpdates();
     QString autoQualityLabel() const;
     Task<void> logoutAsync();
 
@@ -46,7 +48,6 @@ private:
     QCheckBox* m_menuBarBox = nullptr;
     QCheckBox* m_miniTopBox = nullptr;
     QComboBox* m_performanceBox = nullptr;
-    QComboBox* m_spectrumBox = nullptr;
     QDoubleSpinBox* m_offsetBox = nullptr;
     QLabel* m_closeHint = nullptr;
     QLabel* m_offsetDescription = nullptr;
@@ -55,6 +56,10 @@ private:
     QLabel* m_accountText = nullptr;
     QPushButton* m_logoutButton = nullptr;
     QLabel* m_saveHint = nullptr;
+    QLabel* m_updateHint = nullptr;
+    QPushButton* m_updateButton = nullptr;
+    QPushButton* m_downloadButton = nullptr;
+    QNetworkAccessManager* m_updateClient = nullptr;
 
     AppSettings m_settings;
     bool m_loading = false;

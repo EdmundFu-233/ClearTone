@@ -41,12 +41,15 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
     QWidget* buildSidebar(QWidget* parent);
+    QWidget* buildTitleBar(QWidget* parent);
     QWidget* buildContentColumn(QWidget* parent);
     QWidget* buildPlayerBar(QWidget* parent);
     void buildOverlays();
@@ -98,13 +101,15 @@ private:
     QHash<QString, QPushButton*> m_playlistButtons;
 
     QPushButton* m_accountButton = nullptr;
-    QLabel* m_accountGlyph = nullptr;
+    CoverImage* m_accountAvatar = nullptr;
     ui::ElidedLabel* m_accountName = nullptr;
     QLabel* m_accountHint = nullptr;
 
     QPushButton* m_backButton = nullptr;
     QLabel* m_pageTitle = nullptr;
     QPushButton* m_settingsButton = nullptr;
+    QWidget* m_titleBar = nullptr;
+    QPushButton* m_maximizeButton = nullptr;
     QStackedWidget* m_content = nullptr;
 
     CoverImage* m_barCover = nullptr;

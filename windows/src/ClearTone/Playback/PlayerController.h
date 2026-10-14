@@ -81,7 +81,6 @@ public:
     void playSong(const Song& song);
     void pause();
     void resume();
-    void resumeFromPersistence();
     void togglePlayPause();
     void next();
     void previous();
@@ -156,7 +155,7 @@ private:
     PersistedQueue makeSnapshot() const;
     void persistState();
     void persistProgressThrottled();
-    bool loadPersistedState();
+    bool loadPersistedState(bool restorePosition);
     void stopPlayback();
     void notifyQueueChanged();
     void updateNowPlayingInfo();

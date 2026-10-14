@@ -4,6 +4,8 @@
 #include "Features/Shared/PageFactory.h"
 
 #include <QDir>
+#include <QLabel>
+#include <QPushButton>
 
 using namespace ct;
 
@@ -51,6 +53,7 @@ private slots:
     void everyPageHasARegisteredView();
     void everyOverlayHasARegisteredView();
     void everyViewConstructs();
+    void removedWindowsSectionsAreNotRendered();
 };
 
 void ViewSmokeTests::initTestCase()
@@ -95,6 +98,26 @@ void ViewSmokeTests::everyViewConstructs()
         PageFactory::invalidateOverlay(kind);
     }
     QTest::qWait(50);
+}
+
+void ViewSmokeTests::removedWindowsSectionsAreNotRendered()
+{
+    auto* discover = PageFactory::resolve(Page::Discover);
+    QStringList titles;
+    for (const auto* label : discover->findChildren<QLabel*>()) titles.append(label->text());
+    QVERIFY(titles.contains(QStringLiteral("每日推荐歌单")));
+    for (const QString& removed : {QStringLiteral("推荐歌单"), QStringLiteral("新歌速递"),
+             QStringLiteral("新专辑")}) QVERIFY(!titles.contains(removed));
+    PageFactory::invalidate(Page::Discover);
+
+    auto* settings = PageFactory::resolve(Page::Settings);
+    bool hasUpdateButton = false;
+    for (const auto* label : settings->findChildren<QLabel*>())
+        QVERIFY(label->text() != QStringLiteral("频谱显示"));
+    for (const auto* button : settings->findChildren<QPushButton*>())
+        hasUpdateButton |= button->objectName() == QStringLiteral("ctCheckUpdates");
+    QVERIFY(hasUpdateButton);
+    PageFactory::invalidate(Page::Settings);
 }
 
 QTEST_MAIN(ViewSmokeTests)

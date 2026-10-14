@@ -89,16 +89,13 @@ PlayerController::PlayerController()
     m_provider = &NeteaseProvider::shared();
     m_recentlyPlayed = PersistenceStore::shared().loadRecentSongs();
     m_songQualityOverrides = loadSongQualityOverrides();
-    const bool restored = loadPersistedState();
     AppSettings settings;
     const QJsonValue rawSettings =
         PersistenceStore::shared().loadSetting(QStringLiteral("appSettings"));
     if (rawSettings.isObject()) settings = AppSettings::fromJson(rawSettings.toObject());
+    loadPersistedState(settings.resumePlaybackOnLaunch);
     setPreferredQuality(settings.preferredQuality);
     setRequestedQualityValue(songQualityPolicy::effectiveGlobalLevel(m_preferredQuality, m_isAccountVIP));
-    if (restored && settings.resumePlaybackOnLaunch) {
-        beginRestoredPlayback(false);
-    }
 }
 
 // MARK: - 播放控制
@@ -553,11 +550,6 @@ void PlayerController::beginRestoredPlayback(bool autoplay)
     if (!m_currentSong) return;
     if (m_engine && m_engineStarted) return;
     beginPlay(*m_currentSong, m_currentTime > 0 ? std::optional<double>(m_currentTime) : std::nullopt, autoplay);
-}
-
-void PlayerController::resumeFromPersistence()
-{
-    beginRestoredPlayback(false);
 }
 
 void PlayerController::togglePlayPause()
@@ -1031,7 +1023,7 @@ void PlayerController::persistNow()
     PersistenceWriter::shared().persistAndFlush(makeSnapshot(), m_recentlyPlayed);
 }
 
-bool PlayerController::loadPersistedState()
+bool PlayerController::loadPersistedState(bool restorePosition)
 {
     const auto data = PersistenceStore::shared().loadQueue();
     if (!data) return false;
@@ -1044,7 +1036,7 @@ bool PlayerController::loadPersistedState()
     setCurrentSong(m_queue.currentItem() != nullptr ? std::optional<Song>(m_queue.currentItem()->song)
                                                    : std::nullopt);
     setDuration(m_currentSong ? m_currentSong->duration : 0);
-    setCurrentTime(data->currentTime);
+    setCurrentTime(restorePosition ? data->currentTime : 0);
     if (m_currentSong) {
         setPlaybackState(makeState(PlaybackState::Kind::Paused, m_currentSong->id));
     }

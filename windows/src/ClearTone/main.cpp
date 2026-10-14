@@ -19,6 +19,7 @@ int main(int argc, char** argv)
 #endif
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("ClearTone"));
+    QApplication::setApplicationVersion(QStringLiteral(CT_APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("ClearTone"));
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
 

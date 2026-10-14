@@ -97,23 +97,6 @@ QWidget* buildPlaylistGrid(const QList<Playlist>& playlists, bool isLoading,
     return ui::cardGrid(cards);
 }
 
-QWidget* buildAlbumGrid(const QList<Album>& albums, bool isLoading,
-    const std::optional<QString>& error, const QString& emptyText, std::function<void()> retry)
-{
-    if (isLoading && albums.isEmpty()) return ui::statusPanel(QStringLiteral("加载中…"), true);
-    if (error.has_value() && albums.isEmpty()) {
-        return ui::errorPanel(*error, std::move(retry));
-    }
-    if (albums.isEmpty()) return ui::statusPanel(emptyText, false);
-    QList<QWidget*> cards;
-    for (const Album& album : albums) {
-        cards.append(ui::albumCard(album, [](const Album& item) {
-            AppState::shared().openAlbum(item.id);
-        }));
-    }
-    return ui::cardGrid(cards);
-}
-
 QWidget* buildRadioCard(const RadioStation& radio)
 {
     auto* card = new ui::CardButton();
@@ -212,12 +195,8 @@ DiscoverView::DiscoverView(QWidget* parent)
     headerLayout->addWidget(fm);
 
     m_dailyPlayAll = ui::ghostButton(QStringLiteral("播放全部"));
-    m_newSongsPlayAll = ui::ghostButton(QStringLiteral("播放全部"));
     connect(m_dailyPlayAll, &QPushButton::clicked, this, [this] {
         if (!m_dailySongs.isEmpty()) PlayerController::shared().playSongs(m_dailySongs, 0);
-    });
-    connect(m_newSongsPlayAll, &QPushButton::clicked, this, [this] {
-        if (!m_newSongs.isEmpty()) PlayerController::shared().playSongs(m_newSongs, 0);
     });
 
     auto makeHost = [](QWidget*& host, QVBoxLayout*& layout) {
@@ -227,11 +206,8 @@ DiscoverView::DiscoverView(QWidget* parent)
         layout->setSpacing(0);
     };
     makeHost(m_dailyHost, m_dailyLayout);
-    makeHost(m_playlistsHost, m_playlistsLayout);
     makeHost(m_dailyPlaylistsHost, m_dailyPlaylistsLayout);
     makeHost(m_radiosHost, m_radiosLayout);
-    makeHost(m_newSongsHost, m_newSongsLayout);
-    makeHost(m_newAlbumsHost, m_newAlbumsLayout);
 
     auto buildSection = [](const QString& title, QWidget* host, QWidget* trailing) {
         auto* section = new QWidget();
@@ -249,13 +225,9 @@ DiscoverView::DiscoverView(QWidget* parent)
     bodyLayout->setSpacing(CTSpacing::Lg);
     bodyLayout->addWidget(header);
     bodyLayout->addWidget(buildSection(QStringLiteral("每日推荐"), m_dailyHost, m_dailyPlayAll));
-    bodyLayout->addWidget(buildSection(QStringLiteral("推荐歌单"), m_playlistsHost, nullptr));
     bodyLayout->addWidget(
         buildSection(QStringLiteral("每日推荐歌单"), m_dailyPlaylistsHost, nullptr));
     bodyLayout->addWidget(buildSection(QStringLiteral("推荐电台"), m_radiosHost, nullptr));
-    bodyLayout->addWidget(
-        buildSection(QStringLiteral("新歌速递"), m_newSongsHost, m_newSongsPlayAll));
-    bodyLayout->addWidget(buildSection(QStringLiteral("新专辑"), m_newAlbumsHost, nullptr));
     bodyLayout->addStretch(1);
     root->addWidget(ui::scrollWrapper(body), 1);
 
@@ -303,11 +275,8 @@ void DiscoverView::loadAll()
 {
     const quint64 token = ++m_loadToken;
     detach(loadDailySongsAsync(token));
-    detach(loadPlaylistsAsync(token));
     detach(loadDailyPlaylistsAsync(token));
     detach(loadRadiosAsync(token));
-    detach(loadNewSongsAsync(token));
-    detach(loadNewAlbumsAsync(token));
 }
 
 Task<void> DiscoverView::loadDailySongsAsync(quint64 token)
@@ -344,37 +313,6 @@ Task<void> DiscoverView::loadDailySongsAsync(quint64 token)
     if (!*alive || token != m_loadToken) co_return;
     m_dailyLoading = false;
     renderDaily();
-    co_return;
-}
-
-Task<void> DiscoverView::loadPlaylistsAsync(quint64 token)
-{
-    auto alive = m_alive;
-    m_playlistsLoading = true;
-    m_playlistsError.reset();
-    renderPlaylists();
-    if (AppState::shared().provider() == nullptr) {
-        m_playlistsLoading = false;
-        renderPlaylists();
-        co_return;
-    }
-    try {
-        const QList<Playlist> loaded = co_await AppState::shared().provider()->fetchRecommendPlaylists(
-            CancellationToken::none());
-        if (!*alive || token != m_loadToken) co_return;
-        m_playlists = loaded;
-    } catch (const MusicException& error) {
-        if (!*alive || token != m_loadToken) co_return;
-        m_playlists.clear();
-        m_playlistsError = error.userFacingMessage();
-    } catch (const std::exception& error) {
-        if (!*alive || token != m_loadToken) co_return;
-        m_playlists.clear();
-        m_playlistsError = unknownUserMessage(error);
-    }
-    if (!*alive || token != m_loadToken) co_return;
-    m_playlistsLoading = false;
-    renderPlaylists();
     co_return;
 }
 
@@ -441,58 +379,6 @@ Task<void> DiscoverView::loadRadiosAsync(quint64 token)
     co_return;
 }
 
-Task<void> DiscoverView::loadNewSongsAsync(quint64 token)
-{
-    auto alive = m_alive;
-    m_newSongsLoading = true;
-    m_newSongsError.reset();
-    renderNewSongs();
-    try {
-        const QList<Song> loaded = co_await socialProvider().fetchNewSongs(
-            30, CancellationToken::none());
-        if (!*alive || token != m_loadToken) co_return;
-        m_newSongs = loaded;
-    } catch (const MusicException& error) {
-        if (!*alive || token != m_loadToken) co_return;
-        m_newSongs.clear();
-        m_newSongsError = error.userFacingMessage();
-    } catch (const std::exception& error) {
-        if (!*alive || token != m_loadToken) co_return;
-        m_newSongs.clear();
-        m_newSongsError = unknownUserMessage(error);
-    }
-    if (!*alive || token != m_loadToken) co_return;
-    m_newSongsLoading = false;
-    renderNewSongs();
-    co_return;
-}
-
-Task<void> DiscoverView::loadNewAlbumsAsync(quint64 token)
-{
-    auto alive = m_alive;
-    m_newAlbumsLoading = true;
-    m_newAlbumsError.reset();
-    renderNewAlbums();
-    try {
-        const QList<Album> loaded = co_await socialProvider().fetchNewAlbums(
-            30, CancellationToken::none());
-        if (!*alive || token != m_loadToken) co_return;
-        m_newAlbums = loaded;
-    } catch (const MusicException& error) {
-        if (!*alive || token != m_loadToken) co_return;
-        m_newAlbums.clear();
-        m_newAlbumsError = error.userFacingMessage();
-    } catch (const std::exception& error) {
-        if (!*alive || token != m_loadToken) co_return;
-        m_newAlbums.clear();
-        m_newAlbumsError = unknownUserMessage(error);
-    }
-    if (!*alive || token != m_loadToken) co_return;
-    m_newAlbumsLoading = false;
-    renderNewAlbums();
-    co_return;
-}
-
 Task<void> DiscoverView::dislikeDailyAsync(Song song)
 {
     auto alive = m_alive;
@@ -540,11 +426,8 @@ Task<void> DiscoverView::dislikeDailyAsync(Song song)
 void DiscoverView::renderAll()
 {
     renderDaily();
-    renderPlaylists();
     renderDailyPlaylists();
     renderRadios();
-    renderNewSongs();
-    renderNewAlbums();
 }
 
 void DiscoverView::renderDaily()
@@ -593,13 +476,6 @@ void DiscoverView::renderDaily()
     setHost(m_dailyLayout, buildSongStrip(m_dailySongs, true));
 }
 
-void DiscoverView::renderPlaylists()
-{
-    setHost(m_playlistsLayout,
-        buildPlaylistGrid(m_playlists, m_playlistsLoading, m_playlistsError,
-            QStringLiteral("暂无推荐歌单"), [this] { detach(loadPlaylistsAsync(m_loadToken)); }));
-}
-
 void DiscoverView::renderDailyPlaylists()
 {
     m_dailyPlaylistsHost->parentWidget()->setVisible(AppState::shared().isLoggedIn());
@@ -634,36 +510,6 @@ void DiscoverView::renderRadios()
         cards.append(buildRadioCard(radio));
     }
     setHost(m_radiosLayout, ui::cardGrid(cards));
-}
-
-void DiscoverView::renderNewSongs()
-{
-    m_newSongsPlayAll->setEnabled(!m_newSongs.isEmpty());
-    m_newSongsPlayAll->setText(m_newSongs.isEmpty()
-            ? QStringLiteral("播放全部")
-            : QStringLiteral("播放全部 (%1)").arg(m_newSongs.size()));
-
-    if (m_newSongsLoading && m_newSongs.isEmpty()) {
-        setHost(m_newSongsLayout, ui::statusPanel(QStringLiteral("加载中…"), true));
-        return;
-    }
-    if (m_newSongsError.has_value() && m_newSongs.isEmpty()) {
-        setHost(m_newSongsLayout,
-            ui::errorPanel(*m_newSongsError, [this] { detach(loadNewSongsAsync(m_loadToken)); }));
-        return;
-    }
-    if (m_newSongs.isEmpty()) {
-        setHost(m_newSongsLayout, ui::statusPanel(QStringLiteral("暂无新歌"), false));
-        return;
-    }
-    setHost(m_newSongsLayout, buildSongStrip(m_newSongs, false));
-}
-
-void DiscoverView::renderNewAlbums()
-{
-    setHost(m_newAlbumsLayout,
-        buildAlbumGrid(m_newAlbums, m_newAlbumsLoading, m_newAlbumsError,
-            QStringLiteral("暂无新专辑"), [this] { detach(loadNewAlbumsAsync(m_loadToken)); }));
 }
 
 QWidget* DiscoverView::buildSongStrip(const QList<Song>& songs, bool allowDislike)
