@@ -93,69 +93,33 @@ jobs:
             throw "冒烟测试失败：退出码 $($proc.ExitCode)"
           }
 
-  # 发布包：tag 推送或手动触发时，构建 win-x64 / win-arm64 的 zip
+  # 发布包：tag 推送或手动触发时，构建 win-x64 的 zip
   package:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            qt_version: '6.12.0'
-            qt_arch: win64_mingw
-            qt_host_arch: ''
-          - arch: arm64
-            qt_version: '6.8.3'
-            qt_arch: win64_msvc2022_arm64_cross_compiled
-            qt_host_arch: win64_msvc2022_64
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Qt（${{ matrix.qt_version }} ${{ matrix.qt_arch }}）
+      - name: 安装 Qt（${{ env.QT_VERSION }} MinGW 13.1）
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          if ('${{ matrix.arch }}' -eq 'x64') {
-            python -m pip install 'git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7'
-          } else {
-            python -m pip install aqtinstall
-          }
-          $qtVersion = '${{ matrix.qt_version }}'
-          python -m aqt install-qt windows desktop $qtVersion ${{ matrix.qt_arch }} --outputdir C:\Qt -m qtmultimedia qtshadertools
-          if ('${{ matrix.arch }}' -eq 'x64') {
-            python -m aqt install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 --outputdir C:\Qt
-          }
-          $pattern = if ('${{ matrix.arch }}' -eq 'arm64') { 'arm64' } else { '^mingw.*64$' }
-          $kit = Get-ChildItem "C:\Qt\$qtVersion" -Directory |
-            Where-Object { $_.Name -match $pattern } | Select-Object -First 1
+          python -m pip install 'git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7'
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_mingw --outputdir C:\Qt -m qtmultimedia qtshadertools
+          python -m aqt install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 --outputdir C:\Qt
+          $kit = Get-ChildItem "C:\Qt\$env:QT_VERSION" -Directory |
+            Where-Object { $_.Name -match '^mingw.*64$' } | Select-Object -First 1
           if (-not $kit) { throw '未找到 Qt kit' }
           "QT_ROOT=$($kit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          # 交叉编译 arm64 需要一份 x64 主机 Qt（提供 moc/rcc/windeployqt）
-          if ('${{ matrix.qt_host_arch }}') {
-            python -m aqt install-qt windows desktop $qtVersion ${{ matrix.qt_host_arch }} --outputdir C:\Qt
-            $hostKit = Get-ChildItem "C:\Qt\$qtVersion" -Directory |
-              Where-Object { $_.Name -match 'msvc\d+_64$' } | Select-Object -First 1
-            if (-not $hostKit) { throw '未找到主机 Qt kit' }
-            "QT_HOST_ROOT=$($hostKit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          }
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: matrix.arch == 'arm64'
-        with:
-          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
-
-      - name: 打包（win-${{ matrix.arch }}）
+      - name: 打包（win-x64）
         shell: pwsh
         run: >
           pwsh -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build-app.ps1
-          -Arch ${{ matrix.arch }} -QtRoot "$env:QT_ROOT" -QtHostPath "$env:QT_HOST_ROOT" -Generator Ninja
+          -Arch x64 -QtRoot "$env:QT_ROOT" -Generator Ninja
 
-      # arm64 产物无法在 x64 runner 上运行，只能对 x64 包做启动冒烟。
       - name: 启动冒烟（win-x64 发布包）
-        if: matrix.arch == 'x64'
         shell: pwsh
         run: |
           $proc = Start-Process -FilePath 'windows/publish/win-x64/ClearTone.exe' `
@@ -168,17 +132,17 @@ jobs:
       - name: 列出产物内容
         shell: pwsh
         run: |
-          Get-ChildItem -Recurse "windows/publish/win-${{ matrix.arch }}" |
+          Get-ChildItem -Recurse 'windows/publish/win-x64' |
             Select-Object -ExpandProperty FullName | ForEach-Object { Write-Host $_ }
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: ClearTone-win-${{ matrix.arch }}
-          path: windows/publish/ClearTone-win-${{ matrix.arch }}.zip
+          name: ClearTone-win-x64
+          path: windows/publish/ClearTone-win-x64.zip
           if-no-files-found: error
 
-  # tag 推送时汇总产物并创建 GitHub Release
+  # tag 推送时用 x64 产物创建 GitHub Release
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: package
@@ -203,4 +167,4 @@ jobs:
           if ! gh release view "$TAG" -R "$REPO"; then
             gh release create "$TAG" -R "$REPO" --title "澄音 ClearTone ${TAG#v}" --generate-notes
           fi
-          gh release upload "$TAG" artifacts/*.zip -R "$REPO" --clobber
+          gh release upload "$TAG" artifacts/ClearTone-win-x64.zip -R "$REPO" --clobber
