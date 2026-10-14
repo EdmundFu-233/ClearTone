@@ -40,6 +40,7 @@ public:
     static QString runtimeRoot();
     static QString resolveRuntimeDirectory();
     static QString resolveNodeBinary(const QString& runtimeDir);
+    static QString resolveRustBinary(const QString& runtimeDir);
 
     Task<void> startIfNeeded(CancellationToken ct);
     Task<void> start(CancellationToken ct);
@@ -58,7 +59,7 @@ private:
 
     Task<void> performStart(CancellationToken ct);
     Task<void> waitForHealthy(int timeoutMs, CancellationToken ct);
-    Task<bool> checkHealth();
+    Awaitable<bool> checkHealth();
     // 命名协程 + 显式参数：协程帧会复制参数，而 lambda 协程的闭包捕获在
     // 调用方返回后失效（临时闭包在栈上）。
     Task<void> monitorHelper(bool alive);

@@ -145,9 +145,10 @@ QString NeteaseProvider::requireUserID()
 
 Task<QString> NeteaseProvider::fetchQRCodeKey(CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/login/qr/key"),
-        {{QStringLiteral("randomCNIP"), QStringLiteral("true")}}, std::nullopt, std::nullopt,
-        QStringLiteral("GET"), true, ct);
+    const QHash<QString, QString> query{{QStringLiteral("randomCNIP"), QStringLiteral("true")}};
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/login/qr/key"),
+        query, std::nullopt, std::nullopt,
+        QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const std::optional<QString> key = json::optionalString(json::prop(json::prop(json, "data"), "unikey"));
     if (!key) throw MusicException::invalidResponse();
@@ -156,9 +157,9 @@ Task<QString> NeteaseProvider::fetchQRCodeKey(CancellationToken ct)
 
 Task<QString> NeteaseProvider::fetchQRCodeImage(const QString& key, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/login/qr/create"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/login/qr/create"),
         {{QStringLiteral("key"), key}, {QStringLiteral("qrimg"), QStringLiteral("true")}},
-        std::nullopt, std::nullopt, QStringLiteral("GET"), true, ct);
+        std::nullopt, std::nullopt, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const std::optional<QString> qrimg = json::optionalString(json::prop(json::prop(json, "data"), "qrimg"));
     if (!qrimg) throw MusicException::invalidResponse();
@@ -168,11 +169,11 @@ Task<QString> NeteaseProvider::fetchQRCodeImage(const QString& key, Cancellation
 Task<QRLoginStatus> NeteaseProvider::checkQRCodeStatus(const QString& key, CancellationToken ct)
 {
     const QString timestamp = QString::number(QDateTime::currentMSecsSinceEpoch());
-    const QByteArray data = co_await request(QStringLiteral("/login/qr/check"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/login/qr/check"),
         {{QStringLiteral("key"), key},
             {QStringLiteral("timestamp"), timestamp},
             {QStringLiteral("randomCNIP"), QStringLiteral("true")}},
-        std::nullopt, std::nullopt, QStringLiteral("GET"), true, ct);
+        std::nullopt, std::nullopt, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const std::optional<int> code = json::optionalInt(json::prop(json, "code"));
     if (!code) throw MusicException::invalidResponse();
@@ -199,8 +200,8 @@ Task<void> NeteaseProvider::logout(CancellationToken ct)
 {
     try {
         const std::optional<QString> cookie = loadLoginCookie();
-        co_await request(QStringLiteral("/logout"), {}, cookie, std::nullopt,
-            QStringLiteral("POST"), true, ct);
+        co_await ([&] { return request(QStringLiteral("/logout"), {}, cookie, std::nullopt,
+            QStringLiteral("POST"), true, ct); }());
     } catch (...) {
         CredentialStore::shared().remove(CredentialKey::NeteaseCookie);
         CredentialStore::shared().remove(CredentialKey::NeteaseUserID);
@@ -231,8 +232,8 @@ Task<std::optional<AccountInfo>> NeteaseProvider::fetchAccountInfo(CancellationT
 Task<std::optional<AccountInfo>> NeteaseProvider::fetchAccountInfo(
     const QString& cookie, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/user/account"), {}, cookie,
-        std::nullopt, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/user/account"), {}, cookie,
+        std::nullopt, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue account = json::prop(json, "account");
     const QJsonValue profile = json::prop(json, "profile");
@@ -268,12 +269,12 @@ Task<SearchResult> NeteaseProvider::search(
         break;
     }
 
-    const QByteArray data = co_await request(QStringLiteral("/cloudsearch"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/cloudsearch"),
         {{QStringLiteral("keywords"), query},
             {QStringLiteral("type"), QString::number(typeCode)},
             {QStringLiteral("limit"), QString::number(limit)},
             {QStringLiteral("offset"), QString::number((page - 1) * limit)}},
-        std::nullopt, 120, QStringLiteral("GET"), true, ct);
+        std::nullopt, 120, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue result = json::prop(json, "result");
     if (!json::hasValue(result)) throw MusicException::invalidResponse();
@@ -314,8 +315,8 @@ Task<SearchResult> NeteaseProvider::search(
 
 Task<PlaylistDetail> NeteaseProvider::fetchPlaylistDetail(const QString& id, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/playlist/detail"),
-        {{QStringLiteral("id"), id}}, loadLoginCookie(), 300, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/playlist/detail"),
+        {{QStringLiteral("id"), id}}, loadLoginCookie(), 300, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue playlistDict = json::prop(json, "playlist");
     if (!json::hasValue(playlistDict)) throw MusicException::invalidResponse();
@@ -332,11 +333,11 @@ Task<PlaylistDetail> NeteaseProvider::fetchPlaylistDetail(const QString& id, Can
 Task<QList<Song>> NeteaseProvider::fetchPlaylistTracks(
     const QString& id, int page, int limit, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/playlist/track/all"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/playlist/track/all"),
         {{QStringLiteral("id"), id},
             {QStringLiteral("limit"), QString::number(limit)},
             {QStringLiteral("offset"), QString::number((page - 1) * limit)}},
-        loadLoginCookie(), 300, QStringLiteral("GET"), true, ct);
+        loadLoginCookie(), 300, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue songs = json::prop(json, "songs");
     if (!songs.isArray()) throw MusicException::invalidResponse();
@@ -485,8 +486,8 @@ void NeteaseProvider::streamPlaylistTracks(const QString& id, int totalCount, in
 
 Task<PlaylistDetail> NeteaseProvider::fetchAlbumDetail(const QString& id, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/album"),
-        {{QStringLiteral("id"), id}}, std::nullopt, 600, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/album"),
+        {{QStringLiteral("id"), id}}, std::nullopt, 600, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue albumDict = json::prop(json, "album");
     if (!json::hasValue(albumDict)) throw MusicException::invalidResponse();
@@ -520,7 +521,7 @@ Task<PlaylistDetail> NeteaseProvider::fetchAlbumDetail(const QString& id, Cancel
 
 Task<ArtistDetail> NeteaseProvider::fetchArtistDetail(const QString& id, CancellationToken ct)
 {
-    const QList<QByteArray> responses = co_await whenAllRequests({
+    const QList<std::function<Task<QByteArray>()>> factories{
         [this, id, ct]() -> Task<QByteArray> {
             return request(QStringLiteral("/artist/detail"), {{QStringLiteral("id"), id}},
                 std::nullopt, 600, QStringLiteral("GET"), true, ct);
@@ -534,7 +535,9 @@ Task<ArtistDetail> NeteaseProvider::fetchArtistDetail(const QString& id, Cancell
                 {{QStringLiteral("id"), id}, {QStringLiteral("limit"), QStringLiteral("20")}},
                 std::nullopt, 600, QStringLiteral("GET"), true, ct);
         },
-    });
+    };
+    auto pending = whenAllRequests(factories);
+    const QList<QByteArray> responses = co_await pending;
 
     const QJsonValue profileJson = parseJson(responses.at(0));
     const QJsonValue artistDict = json::prop(json::prop(profileJson, "data"), "artist");
@@ -566,9 +569,9 @@ Task<PlayableURL> NeteaseProvider::fetchPlayableURL(
     std::optional<qint64> standardSizeBytes;
 
     try {
-        const QByteArray data = co_await request(QStringLiteral("/song/url/v1"),
+        const QByteArray data = co_await ([&] { return request(QStringLiteral("/song/url/v1"),
             {{QStringLiteral("id"), songID}, {QStringLiteral("level"), level}},
-            cookie, 240, QStringLiteral("GET"), true, ct);
+            cookie, 240, QStringLiteral("GET"), true, ct); }());
         const QJsonValue json = parseJson(data);
         const QJsonArray firstArray = json::array(json::prop(json, "data"));
         if (!firstArray.isEmpty()) {
@@ -653,8 +656,8 @@ Task<std::optional<QUrl>> NeteaseProvider::fetchMatchURL(
     QHash<QString, QString> query;
     query.insert(QStringLiteral("id"), songID);
     if (source && !source->isEmpty()) query.insert(QStringLiteral("source"), *source);
-    const QByteArray data = co_await request(QStringLiteral("/song/url/match"), query,
-        loadLoginCookie(), 240, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/song/url/match"), query,
+        loadLoginCookie(), 240, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const std::optional<QString> urlString = json::optionalString(json::prop(json, "data"));
     if (!urlString) co_return std::optional<QUrl>{};
@@ -684,8 +687,8 @@ Task<bool> NeteaseProvider::isStreamReachable(const QUrl& url, CancellationToken
     }
 
     try {
-        const HTTPResponse response = co_await m_probeClient.get(url,
-            {{QStringLiteral("Range"), QStringLiteral("bytes=0-0")}}, probeTimeoutMs, ct);
+        const HTTPResponse response = co_await ([&] { return m_probeClient.get(url,
+            {{QStringLiteral("Range"), QStringLiteral("bytes=0-0")}}, probeTimeoutMs, ct); }());
         const bool ok = response.statusCode >= 200 && response.statusCode <= 299;
         if (ok) {
             std::lock_guard<std::mutex> lock(m_reachGate);
@@ -701,8 +704,8 @@ Task<bool> NeteaseProvider::isStreamReachable(const QUrl& url, CancellationToken
 
 Task<LyricResult> NeteaseProvider::fetchLyrics(const QString& songID, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/lyric/new"),
-        {{QStringLiteral("id"), songID}}, loadLoginCookie(), 1800, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/lyric/new"),
+        {{QStringLiteral("id"), songID}}, loadLoginCookie(), 1800, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
 
     const QString lrc = json::optionalString(json::prop(json::prop(json, "lrc"), "lyric"))
@@ -738,9 +741,9 @@ Task<QList<Playlist>> NeteaseProvider::fetchUserPlaylists(CancellationToken ct)
     const std::optional<QString> cookie = loadLoginCookie();
     if (!cookie) throw MusicException::notLoggedIn();
     const QString userID = requireUserID();
-    const QByteArray data = co_await request(QStringLiteral("/user/playlist"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/user/playlist"),
         {{QStringLiteral("uid"), userID}, {QStringLiteral("limit"), QStringLiteral("1000")}},
-        cookie, 120, QStringLiteral("GET"), true, ct);
+        cookie, 120, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue playlists = json::prop(json, "playlist");
     if (!playlists.isArray()) throw MusicException::invalidResponse();
@@ -753,8 +756,8 @@ Task<QStringList> NeteaseProvider::fetchLikedSongIDs(CancellationToken ct)
     const std::optional<QString> cookie = loadLoginCookie();
     if (!cookie) throw MusicException::notLoggedIn();
     const QString userID = requireUserID();
-    const QByteArray data = co_await request(QStringLiteral("/likelist"),
-        {{QStringLiteral("uid"), userID}}, cookie, 60, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/likelist"),
+        {{QStringLiteral("uid"), userID}}, cookie, 60, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue ids = json::prop(json, "ids");
     if (!ids.isArray()) throw MusicException::invalidResponse();
@@ -776,9 +779,9 @@ Task<QList<Song>> NeteaseProvider::fetchLikedSongs(CancellationToken ct)
     for (int start = 0; start < idStrings.size(); start += detailBatchSize) {
         const int end = qMin(start + detailBatchSize, static_cast<int>(idStrings.size()));
         const QStringList batch = idStrings.mid(start, end - start);
-        const QByteArray detailData = co_await request(QStringLiteral("/song/detail"),
+        const QByteArray detailData = co_await ([&] { return request(QStringLiteral("/song/detail"),
             {{QStringLiteral("ids"), batch.join(QLatin1Char(','))}}, cookie, 300,
-            QStringLiteral("GET"), true, ct);
+            QStringLiteral("GET"), true, ct); }());
         const QJsonValue detailJson = parseJson(detailData);
         const QJsonValue songs = json::prop(detailJson, "songs");
         if (!songs.isArray()) continue;
@@ -795,11 +798,11 @@ Task<void> NeteaseProvider::likeSong(const QString& id, bool like, CancellationT
     const std::optional<QString> userID = CredentialStore::shared().load(CredentialKey::NeteaseUserID);
     if (!userID || userID->isEmpty()) throw MusicException::notLoggedIn();
 
-    const QByteArray data = co_await request(QStringLiteral("/song/like"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/song/like"),
         {{QStringLiteral("id"), id},
             {QStringLiteral("uid"), *userID},
             {QStringLiteral("like"), like ? QStringLiteral("true") : QStringLiteral("false")}},
-        cookie, std::nullopt, QStringLiteral("POST"), true, ct);
+        cookie, std::nullopt, QStringLiteral("POST"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const std::optional<int> code = json::optionalInt(json::prop(json, "code"));
     if (code != 200) throw MusicException::apiError(code.value_or(-1), likeFailureMessage(json));
@@ -810,9 +813,9 @@ Task<void> NeteaseProvider::likeSong(const QString& id, bool like, CancellationT
 
 Task<QList<Playlist>> NeteaseProvider::fetchRecommendPlaylists(CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/personalized"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/personalized"),
         {{QStringLiteral("limit"), QStringLiteral("20")}}, loadLoginCookie(), 600,
-        QStringLiteral("GET"), true, ct);
+        QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue result = json::prop(json, "result");
     if (!result.isArray()) throw MusicException::invalidResponse();
@@ -824,8 +827,8 @@ Task<QList<Song>> NeteaseProvider::fetchDailyRecommendSongs(CancellationToken ct
 {
     const std::optional<QString> cookie = loadLoginCookie();
     if (!cookie) throw MusicException::notLoggedIn();
-    const QByteArray data = co_await request(QStringLiteral("/recommend/songs"), {}, cookie, 300,
-        QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/recommend/songs"), {}, cookie, 300,
+        QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue dailySongs = json::prop(json::prop(json, "data"), "dailySongs");
     if (!dailySongs.isArray()) throw MusicException::invalidResponse();
@@ -837,8 +840,8 @@ Task<QList<Song>> NeteaseProvider::fetchDailyRecommendSongs(CancellationToken ct
 
 Task<QList<RadioCategory>> NeteaseProvider::fetchRadioCategories(CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/dj/catelist"), {}, std::nullopt, 3600,
-        QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/dj/catelist"), {}, std::nullopt, 3600,
+        QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue categories = json::prop(json, "categories");
     if (!categories.isArray()) throw MusicException::invalidResponse();
@@ -861,9 +864,9 @@ Task<QList<RadioCategory>> NeteaseProvider::fetchRadioCategories(CancellationTok
 
 Task<QList<RadioStation>> NeteaseProvider::fetchRecommendedRadios(int limit, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/dj/recommend"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/dj/recommend"),
         {{QStringLiteral("limit"), QString::number(limit)}}, std::nullopt, 600,
-        QStringLiteral("GET"), true, ct);
+        QStringLiteral("GET"), true, ct); }());
     co_return parseRadioStations(data);
 }
 
@@ -873,8 +876,8 @@ Task<QList<RadioStation>> NeteaseProvider::fetchHotRadios(
     QHash<QString, QString> query;
     query.insert(QStringLiteral("limit"), QString::number(limit));
     if (categoryID && !categoryID->isEmpty()) query.insert(QStringLiteral("cat"), *categoryID);
-    const QByteArray data = co_await request(QStringLiteral("/dj/hot"), query, std::nullopt, 600,
-        QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/dj/hot"), query, std::nullopt, 600,
+        QStringLiteral("GET"), true, ct); }());
     co_return parseRadioStations(data);
 }
 
@@ -891,11 +894,11 @@ Task<QList<RadioProgram>> NeteaseProvider::fetchRadioPrograms(
     const QString& radioID, int page, int limit, CancellationToken ct)
 {
     const int offset = (page - 1) * limit;
-    const QByteArray data = co_await request(QStringLiteral("/dj/program"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/dj/program"),
         {{QStringLiteral("rid"), radioID},
             {QStringLiteral("limit"), QString::number(limit)},
             {QStringLiteral("offset"), QString::number(offset)}},
-        std::nullopt, 300, QStringLiteral("GET"), true, ct);
+        std::nullopt, 300, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue programs = json::prop(json, "programs");
     if (!programs.isArray()) throw MusicException::invalidResponse();
@@ -907,8 +910,8 @@ Task<QList<RadioProgram>> NeteaseProvider::fetchRadioPrograms(
 
 Task<ArtistProfile> NeteaseProvider::fetchArtistProfile(const QString& id, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/artist/detail"),
-        {{QStringLiteral("id"), id}}, loadLoginCookie(), 600, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/artist/detail"),
+        {{QStringLiteral("id"), id}}, loadLoginCookie(), 600, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QJsonValue payload = json::prop(json, "data");
     const QJsonValue artistDict = json::prop(payload, "artist");
@@ -933,8 +936,8 @@ Task<ArtistProfile> NeteaseProvider::fetchArtistProfile(const QString& id, Cance
 
 Task<QList<Song>> NeteaseProvider::fetchHotArtistSongs(const QString& id, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/artist/top/song"),
-        {{QStringLiteral("id"), id}}, std::nullopt, 600, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/artist/top/song"),
+        {{QStringLiteral("id"), id}}, std::nullopt, 600, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     co_return json::compactMap<Song>(json::array(json::prop(json, "songs")),
         [](const QJsonValue& element) { return NeteaseProvider::mapSong(element); });
@@ -945,12 +948,12 @@ Task<ArtistSongPage> NeteaseProvider::fetchArtistSongs(
 {
     std::optional<int> ttl;
     if (order == QLatin1String("hot")) ttl = 300;
-    const QByteArray data = co_await request(QStringLiteral("/artist/songs"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/artist/songs"),
         {{QStringLiteral("id"), id},
             {QStringLiteral("order"), order},
             {QStringLiteral("offset"), QString::number(offset)},
             {QStringLiteral("limit"), QString::number(limit)}},
-        loadLoginCookie(), ttl, QStringLiteral("GET"), true, ct);
+        loadLoginCookie(), ttl, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     const QList<Song> songs = json::compactMap<Song>(json::array(json::prop(json, "songs")),
         [](const QJsonValue& element) { return NeteaseProvider::mapSong(element); });
@@ -967,12 +970,12 @@ Task<ArtistSongPage> NeteaseProvider::fetchArtistSongs(
 Task<ArtistAlbumPage> NeteaseProvider::fetchArtistAlbums(
     const QString& id, int offset, int limit, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/artist/album"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/artist/album"),
         {{QStringLiteral("id"), id},
             {QStringLiteral("offset"), QString::number(offset)},
             {QStringLiteral("limit"), QString::number(limit)},
             {QStringLiteral("total"), QStringLiteral("true")}},
-        std::nullopt, 300, QStringLiteral("GET"), true, ct);
+        std::nullopt, 300, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
 
     ArtistAlbumPage page;
@@ -988,12 +991,12 @@ Task<ArtistAlbumPage> NeteaseProvider::fetchArtistAlbums(
 Task<ArtistMVPage> NeteaseProvider::fetchArtistMVs(
     const QString& id, int offset, int limit, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/artist/mv"),
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/artist/mv"),
         {{QStringLiteral("id"), id},
             {QStringLiteral("offset"), QString::number(offset)},
             {QStringLiteral("limit"), QString::number(limit)},
             {QStringLiteral("total"), QStringLiteral("true")}},
-        std::nullopt, 300, QStringLiteral("GET"), true, ct);
+        std::nullopt, 300, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
 
     ArtistMVPage page;
@@ -1006,8 +1009,8 @@ Task<ArtistMVPage> NeteaseProvider::fetchArtistMVs(
 
 Task<ArtistIntro> NeteaseProvider::fetchArtistIntro(const QString& id, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/artist/desc"),
-        {{QStringLiteral("id"), id}}, std::nullopt, 3600, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/artist/desc"),
+        {{QStringLiteral("id"), id}}, std::nullopt, 3600, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
 
     ArtistIntro intro;
@@ -1032,8 +1035,8 @@ Task<ArtistIntro> NeteaseProvider::fetchArtistIntro(const QString& id, Cancellat
 Task<QList<Artist>> NeteaseProvider::fetchSimilarArtists(
     const QString& artistID, CancellationToken ct)
 {
-    const QByteArray data = co_await request(QStringLiteral("/simi/artist"),
-        {{QStringLiteral("id"), artistID}}, std::nullopt, 600, QStringLiteral("GET"), true, ct);
+    const QByteArray data = co_await ([&] { return request(QStringLiteral("/simi/artist"),
+        {{QStringLiteral("id"), artistID}}, std::nullopt, 600, QStringLiteral("GET"), true, ct); }());
     const QJsonValue json = parseJson(data);
     QJsonValue raw = json::prop(json, "artists");
     if (!raw.isArray()) raw = json::prop(json, "data");
@@ -1086,7 +1089,7 @@ Task<QByteArray> NeteaseProvider::requestImpl(QString path,
 
         HTTPResponse response;
         if (method == QLatin1String("POST")) {
-            response = co_await m_session.postForm(url, QByteArray(), headers, requestTimeoutMs, ct);
+            response = co_await ([&] { return m_session.postForm(url, QByteArray(), headers, requestTimeoutMs, ct); }());
         } else {
             response = co_await m_session.get(url, headers, requestTimeoutMs, ct);
         }
@@ -1161,8 +1164,8 @@ Task<void> NeteaseProvider::confirmSessionWithProbe()
     bool alive = false;
     try {
         const std::optional<QString> cookie = loadLoginCookie();
-        const QByteArray data = co_await request(QStringLiteral("/user/account"), {}, cookie,
-            std::nullopt, QStringLiteral("GET"), false, CancellationToken::none());
+        const QByteArray data = co_await ([&] { return request(QStringLiteral("/user/account"), {}, cookie,
+            std::nullopt, QStringLiteral("GET"), false, CancellationToken::none()); }());
         const QJsonValue json = parseJson(data);
         alive = json::hasValue(json::prop(json::prop(json, "account"), "id"));
     } catch (...) {

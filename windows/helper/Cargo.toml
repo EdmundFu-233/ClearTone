@@ -1,0 +1,32 @@
+[package]
+name = "cleartone-helper"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+axum = "0.7"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+cipher = { version = "0.4", features = ["alloc", "block-padding"] }
+ecb = { version = "0.1", features = ["alloc"] }
+flate2 = "1"
+hex = "0.4"
+hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["png"] }
+md-5 = "0.10"
+num-bigint = "0.4"
+qrcode = { version = "0.14", default-features = false }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+url = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

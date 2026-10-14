@@ -17,6 +17,13 @@ std::optional<QString> userMessage(const std::exception& error)
 
 SearchSession::SearchSession(IMusicProvider* provider) : m_provider(provider) {}
 
+SearchSession::~SearchSession()
+{
+    *m_alive = false;
+    if (m_searchCts) m_searchCts->cancel();
+    if (m_loadMoreCts) m_loadMoreCts->cancel();
+}
+
 void SearchSession::setDraftQuery(const QString& value)
 {
     if (m_draftQuery == value) return;
@@ -69,12 +76,14 @@ void SearchSession::start(const QString& query, SearchType type)
     m_isLoadingMore = false;
     m_paginationError.reset();
     notifyChanged();
-    startOnLoop(searchPageAsync(query, type, 1, generation, token));
+    startOnLoop(searchPageAsync(query, type, 1, generation, token, m_alive));
 }
 
 Task<void> SearchSession::searchPageAsync(
-    QString query, SearchType type, int page, int generation, CancellationToken ct)
+    QString query, SearchType type, int page, int generation, CancellationToken ct,
+    std::shared_ptr<bool> alive)
 {
+    if (!*alive) co_return;
     if (m_provider == nullptr) {
         if (generation == m_generation) {
             m_isLoading = false;
@@ -84,23 +93,27 @@ Task<void> SearchSession::searchPageAsync(
     }
     try {
         SearchResult found = co_await m_provider->search(query, type, page, pageSize, ct);
+        if (!*alive) co_return;
         if (generation == m_generation && !ct.isCancellationRequested()) {
             m_result = std::move(found);
             notifyChanged();
         }
     } catch (const MusicException& error) {
+        if (!*alive) co_return;
         if (generation == m_generation && !ct.isCancellationRequested()) {
             m_errorMessage = error.userFacingMessage();
             m_result.reset();
             notifyChanged();
         }
     } catch (const std::exception& error) {
+        if (!*alive) co_return;
         if (generation == m_generation && !ct.isCancellationRequested()) {
             m_errorMessage = userMessage(error);
             m_result.reset();
             notifyChanged();
         }
     }
+    if (!*alive) co_return;
     if (generation == m_generation) {
         m_isLoading = false;
         notifyChanged();
@@ -122,12 +135,14 @@ void SearchSession::loadMore()
     m_loadMoreCts = std::make_shared<CancellationTokenSource>();
     const CancellationToken token = m_loadMoreCts->token();
     notifyChanged();
-    startOnLoop(loadMorePageAsync(query, type, page, generation, token));
+    startOnLoop(loadMorePageAsync(query, type, page, generation, token, m_alive));
 }
 
 Task<void> SearchSession::loadMorePageAsync(
-    QString query, SearchType type, int page, int generation, CancellationToken ct)
+    QString query, SearchType type, int page, int generation, CancellationToken ct,
+    std::shared_ptr<bool> alive)
 {
+    if (!*alive) co_return;
     if (m_provider == nullptr) {
         if (generation == m_generation) {
             m_loadMoreCts = nullptr;
@@ -138,6 +153,7 @@ Task<void> SearchSession::loadMorePageAsync(
     }
     try {
         SearchResult more = co_await m_provider->search(query, type, page, pageSize, ct);
+        if (!*alive) co_return;
         if (generation == m_generation && !ct.isCancellationRequested()) {
             SearchResult merged = m_result.value_or(SearchResult{});
             switch (type) {
@@ -160,18 +176,21 @@ Task<void> SearchSession::loadMorePageAsync(
             notifyChanged();
         }
     } catch (const MusicException& error) {
+        if (!*alive) co_return;
         if (generation == m_generation && !ct.isCancellationRequested()) {
             m_currentPage = page - 1;
             m_paginationError = error.userFacingMessage();
             notifyChanged();
         }
     } catch (const std::exception& error) {
+        if (!*alive) co_return;
         if (generation == m_generation && !ct.isCancellationRequested()) {
             m_currentPage = page - 1;
             m_paginationError = userMessage(error);
             notifyChanged();
         }
     }
+    if (!*alive) co_return;
     if (generation == m_generation) {
         m_loadMoreCts = nullptr;
         m_isLoadingMore = false;

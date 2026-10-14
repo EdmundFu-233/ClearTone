@@ -10,6 +10,13 @@
 
 int main(int argc, char** argv)
 {
+#ifdef Q_OS_WIN
+    // DirectWrite maps the entire installed font collection on first text paint;
+    // on machines with many fonts this adds hundreds of MB to the working set.
+    // Keep an explicitly selected Qt platform/engine (e.g. offscreen in CI).
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", "windows:fontengine=gdi");
+#endif
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("ClearTone"));
     QApplication::setOrganizationName(QStringLiteral("ClearTone"));

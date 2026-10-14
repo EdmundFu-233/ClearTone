@@ -7,10 +7,10 @@ ClearTone 的 Windows 桌面版，**Qt 6 Widgets + C++20（CMake）**，功能�
 播放页（YRC 逐字歌词、翻译/音译、偏移调节）、音质菜单与单曲音质覆盖、倍速菜单、
 睡眠定时、音频缓存、动态背景。
 
-网易云接入与 macOS 版**共用同一份**本地 Node.js 辅助进程
-（`ClearTone/Resources/HelperRuntime/api`）：仅监听 `127.0.0.1`、随机端口 +
-一次性 token（`X-CT-Token`）、Cookie 走 `X-CT-Cookie` 头、主进程退出时跟随退出。
-Windows 侧只额外携带 win-x64 / win-arm64 的 `node.exe`。
+Windows 网易云接入由 **Rust 辅助进程**（`windows/helper/`）提供，不再打包 Node.js
+或 npm 依赖。Qt 客户端保持原有界面与播放逻辑。辅助进程仅监听 `127.0.0.1`，
+使用随机端口与一次性 `X-CT-Token`；Cookie 通过 `X-CT-Cookie` 传入，进程随客户端退出。
+macOS 版仍使用原有的 Node 辅助进程，未受影响。
 
 > 旧版 .NET 8 + Avalonia 实现已于 2026-10 整体替换（旧实现见 git 历史）；
 > C# → C++ 的逐条映射约定见 [CONVENTIONS.md](CONVENTIONS.md)。
@@ -21,33 +21,33 @@ Windows 侧只额外携带 win-x64 / win-arm64 的 `node.exe`。
 
 前置：
 
-- **Visual Studio 2022**（“使用 C++ 的桌面开发”工作负载；要交叉编译 ARM64 还需要
-  “MSVC v143 - VS 2022 C++ ARM64 生成工具”）；
-- **CMake ≥ 3.24**（VS 自带即可）；
-- **Qt 6.5+**（Qt Online Installer 勾选 `MSVC 2022 64-bit`，做 ARM64 包则同时勾选
-  `MSVC 2022 ARM64`；**并勾选 Qt Multimedia / Qt Shader Tools**，否则没有音频后端）；
-  也可以用 `aqtinstall`：
-  `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtmultimedia qtshadertools`、
-  `aqt install-qt windows desktop 6.8.3 win64_msvc2022_arm64_cross_compiled -m qtmultimedia qtshadertools`；
-- **Node.js**（仅开发机需要，用于 `npm ci` 装辅助进程依赖；应用运行不依赖系统 Node）。
+- **Qt 6.12.0 MinGW 13.1.0 64-bit kit**（Qt Online Installer 的 `Qt for Development → Qt → Qt 6.12.0`）；
+  `Build Tools` 下同时勾选 **MinGW 13.1.0 64-bit、CMake、Ninja**，若列出
+  `Additional Libraries` 则勾选 **Qt Multimedia / Qt Shader Tools**。不需要 Qt WebEngine、Qt Creator、
+  Sources、Debug Information Files、QML Live Preview 或 MSVC。默认装到 `C:\Qt`；
+- 仅 **ARM64 构建**仍需要 Qt ARM64 kit 和 MSVC 交叉编译器（MinGW kit 不支持 ARM64）；
+- **Rust stable + Cargo**（构建辅助进程；目标机器不必安装 Rust）。
 
 ```powershell
 cd windows
 
-# Debug 构建，完成后直接运行（Qt 自动探测；也可加 -QtRoot C:\Qt\6.8.3\msvc2022_64）
-powershell -ExecutionPolicy Bypass -File build.ps1 -Run
+# Debug 构建并运行；从普通 PowerShell 即可，不用 VS Developer PowerShell
+powershell -ExecutionPolicy Bypass -File build.ps1 -Run -QtRoot C:\Qt\6.12.0\mingw_64
 
 # 构建并运行全部离线单测
 powershell -ExecutionPolicy Bypass -File build.ps1 -Tests
 
-# win-arm64 Release 发布包（zip，含 Qt 运行库与 helper）
-# 在 ARM64 Windows 上直接构建；在 x64 Windows 上交叉编译需同时提供主机 Qt
-powershell -ExecutionPolicy Bypass -File build.ps1 -Arch arm64 -Release -Package `
-  -QtRoot C:\Qt\6.8.3\msvc2022_arm64 -QtHostPath C:\Qt\6.8.3\msvc2022_64
+# win-x64 Release zip（Qt DLL / MinGW 运行库 / Rust helper 全部打包）
+powershell -ExecutionPolicy Bypass -File build.ps1 -Release -Package -QtRoot C:\Qt\6.12.0\mingw_64
 ```
 
-脚本会自动：准备 `runtime\win-<arch>\node.exe` → 缺 `api\node_modules` 时执行
-`npm ci --omit=dev --ignore-scripts` → CMake 配置/构建 →（可选）跑测试 / 运行 / 打包。
+脚本会自动编译 Rust 辅助进程 → CMake 配置/构建 →（可选）跑测试 / 运行 / 打包。
+可单独运行 `cargo test --manifest-path helper/Cargo.toml` 检查加密与路由。
+
+Windows 默认使用 Qt 的 GDI 字体引擎：DirectWrite 首次绘制文字时会映射机器上
+**全部**已安装字体，字体很多时可能使工作集增加数百 MB。若某些可变字体或彩色
+字形显示不符合预期，可在启动前设置 `QT_QPA_PLATFORM=windows:fontengine=directwrite`
+恢复 Qt 原始行为。
 
 ### macOS / Linux（开发自测）
 
@@ -69,17 +69,17 @@ cd windows
 | `build.ps1` | `build.sh` | 说明 |
 | --- | --- | --- |
 | `-Arch x64\|arm64` | — | 目标架构（默认取本机；arm64 交叉编译需对应 Qt 包与 VS ARM64 工具链） |
-| `-QtRoot PATH` | `--qt PATH` | Qt 安装前缀（默认自动探测 `C:\Qt\*` / `brew --prefix qt`） |
+| `-QtRoot PATH` | `--qt PATH` | Qt 安装前缀（默认自动探测 `C:\Qt\*`、`D:\Qt\*` / `brew --prefix qt`） |
 | `-QtHostPath PATH` | — | ARM64 交叉编译时指向 x64 主机 Qt（提供 moc/rcc/windeployqt；默认自动探测） |
 | `-Release` | `--release` | Release 构建（默认 Debug） |
 | `-Tests` | `--tests` | 构建后运行全部离线单测（ctest） |
 | `-Run` | `--run` | 构建后运行应用 |
 | `-Package` | — | 走 `scripts\build-app.ps1` 打 Release 发布 zip |
 | `-VlcRoot PATH` | `--vlc-root PATH` | 可选：libVLC SDK 根（含 `include\` / `lib\`）；缺省用 Qt Multimedia |
-| `-Generator NAME` | — | 构建生成器（默认 `Visual Studio 17 2022`；ARM64 交叉或 CI 环境可用 `Ninja`，需先进入 VS 开发者环境） |
+| `-Generator NAME` | — | 默认随 kit 自动选择 MinGW → Ninja、MSVC → Visual Studio 生成器 |
 | `-Clean` | `--clean` | 先清空构建目录 |
 | `-BuildDir PATH` | `--dir PATH` | 构建目录 |
-| `-SkipHelper` | `--skip-helper` | 跳过辅助进程准备 |
+| `-SkipHelper` | `--skip-helper` | 跳过辅助进程编译（自行设置 `CLEARTONE_HELPER_BINARY`） |
 
 ## 测试
 
@@ -104,22 +104,22 @@ powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1
 一键脚本（推荐）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1 -Arch all -Release -Package `
-  -QtRoot C:\Qt\6.8.3\msvc2022_64
+powershell -ExecutionPolicy Bypass -File build.ps1 -Arch x64 -Release -Package `
+  -QtRoot C:\Qt\6.12.0\mingw_64
 ```
 
 等价的手动流程：
 
 ```powershell
-# x64 / arm64 / all；-VlcRoot 可选
-powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch arm64 `
-  -QtRoot C:\Qt\6.8.3\msvc2022_arm64
+# x64；-VlcRoot 可选
+powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch x64 `
+  -QtRoot C:\Qt\6.12.0\mingw_64
 ```
 
 产物：
 
 - `publish\win-<arch>\`：`ClearTone.exe` + `windeployqt` 部署的 Qt 运行库 +
-  `helper\bin\node.exe` + `helper\api\`（业务代码与依赖）；
+  `helper\cleartone-helper.exe`；
 - `publish\ClearTone-win-<arch>.zip`：可直接分发，解压后运行 `ClearTone.exe`。
 
 说明：
@@ -141,17 +141,21 @@ powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch arm64 `
 环境变量：
 
 - `CLEARTONE_STORAGE_DIR` / `CLEARTONE_TEST_STORAGE_DIR`：持久化根目录（测试隔离用）；
-- `CLEARTONE_HELPER_ROOT` / `CLEARTONE_HELPER_NODE`：辅助进程目录与 node 二进制覆盖
-  （macOS 开发时自动定位仓库内 `HelperRuntime`，无需设置）。
+- `CLEARTONE_HELPER_ROOT` / `CLEARTONE_HELPER_BINARY`：Windows 辅助进程目录与
+  Rust 可执行文件覆盖（macOS 开发仍自动定位仓库内 `HelperRuntime`）。
 
 ## 辅助进程启动排查
 
 优先看 `%LOCALAPPDATA%\ClearTone\logs\helper.log`。常见原因：
 
-- 缺少 `helper\bin\node.exe` —— 运行 `scripts\fetch-node-win.ps1 -Arch <arch>`；
-- 缺少 `helper\api\node_modules` —— 在 `ClearTone\Resources\HelperRuntime\api` 下执行
-  `npm ci --omit=dev --ignore-scripts`；
+- 缺少 `helper\cleartone-helper.exe` —— 运行 `windows\build.ps1` 或重新打包；
 - 杀毒软件拦截本地回环监听 —— 将安装目录加入白名单。
+
+Rust 后端目前覆盖 Windows 客户端的搜索、推荐、登录、歌曲/歌单/专辑/歌手、歌词、
+播放地址、榜单、电台和多数资料库/评论接口。上游的第三方解灰
+`/song/url/match` 和需要额外反作弊签名的 `/playlist/subscribe` 尚未移植；
+未支持的路由会明确返回 404，不会静默转发到 Node。受版权/地区限制的音源
+仍可能没有播放地址。真实账号登录和在线播放需在目标 Windows 设备上验证。
 
 ## 目录结构
 
@@ -160,7 +164,8 @@ windows/
   CMakeLists.txt        # cleartone_lib（OBJECT 库）+ ClearTone 可执行 + tests
   build.ps1 / build.sh  # 一键编译
   CONVENTIONS.md        # C# → C++ 移植约定（命名/异步/JSON/网络/日志）
-  scripts/              # run-tests / build-app / fetch-node-win / setup-helper 调用
+   helper/               # Rust 本地服务、加密协议与接口路由
+   scripts/              # run-tests / build-app
   src/ClearTone/
     main.cpp
     App/                # MainWindow、托盘、迷你窗、AppState（导航 + 歌单写操作）
@@ -179,7 +184,7 @@ windows/
     Features/           # 各页面视图（纯 C++ 搭 UI，CT_REGISTER_PAGE 注册）
     Rendering/          # InFlightGate 等
   tests/                # Qt Test（tst_*.cpp，自动发现）
-  runtime/              # fetch-node-win 下载的 node.exe（不入库）
+   helper/target/        # Rust 构建产物（不入库）
 ```
 
 ## 架构约定（新增代码请遵守）

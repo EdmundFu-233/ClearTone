@@ -603,11 +603,12 @@ Task<void> PlaylistDetailView::removeTrackAsync(Playlist playlist, QString songI
     QPointer<QDialog> dialog, QPointer<QLabel> error, QPointer<QPushButton> confirm)
 {
     auto alive = m_alive;
+    const QStringList songIDs{songID};
     if (confirm) confirm->setEnabled(false);
     if (error) error->setVisible(false);
     bool ok = false;
     try {
-        ok = co_await AppState::shared().modifyPlaylist(playlist, QStringList{songID}, false);
+        ok = co_await AppState::shared().modifyPlaylist(playlist, songIDs, false);
     } catch (const MusicException&) {
     } catch (const std::exception&) {
     }

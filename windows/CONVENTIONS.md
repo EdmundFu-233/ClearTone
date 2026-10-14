@@ -20,6 +20,9 @@
   复制进协程帧，仍指向调用方栈上的临时闭包；调用方返回后协程恢复会读到被覆写的内存，
   表现为随机闪退（封面、辅助进程监控等处都踩过）。顶层协程一律写成命名函数/成员函数，
   需要捕获的内容作为显式参数传入（参数会复制进协程帧）。
+- Qt 的 MinGW 13.1 / GCC 13.1 对 `co_await request(..., QHash{...})` 会触发编译器内部错误。
+  可先构造 `auto pending = request(...); co_await pending;`，或在**同步执行的非协程**
+  lambda 中准备请求：`co_await ([&] { return request(...); }());`。lambda 体不得含 `co_await`。
 - **禁止阻塞**（不调用 `wait()`/`processEvents()`）；延迟一律 `co_await ct::Delay(ms, ct)`。
 - 取消：方法接收 `ct::CancellationToken ct`，网络层传入；`ct.isCancellationRequested()` 判断。
 - `throw MusicException(...)` / `catch (const MusicException&)` 与 C# 的 throw/catch 一一对应；

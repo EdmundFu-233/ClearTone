@@ -125,6 +125,23 @@ QString HelperProcessManager::resolveNodeBinary(const QString& runtimeDir)
     return candidates.first();
 }
 
+QString HelperProcessManager::resolveRustBinary(const QString& runtimeDir)
+{
+    const QByteArray overrideBinary = qgetenv("CLEARTONE_HELPER_BINARY");
+    if (!overrideBinary.isEmpty() && QFile::exists(QString::fromUtf8(overrideBinary)))
+        return QString::fromUtf8(overrideBinary);
+    const QString bundled = QDir(runtimeDir).filePath(QStringLiteral("cleartone-helper.exe"));
+    if (QFile::exists(bundled)) return bundled;
+
+    QDir directory(QCoreApplication::applicationDirPath());
+    for (int i = 0; i < 8; ++i) {
+        const QString candidate = directory.filePath(QStringLiteral("windows/helper/target/debug/cleartone-helper.exe"));
+        if (QFile::exists(candidate)) return candidate;
+        if (!directory.cdUp()) break;
+    }
+    return bundled;
+}
+
 void HelperProcessManager::setState(const HelperState& state)
 {
     m_state = state;
@@ -161,6 +178,15 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
     m_lastError.clear();
 
     const QString runtimeDir = resolveRuntimeDirectory();
+#ifdef Q_OS_WIN
+    const QString helperBinary = resolveRustBinary(runtimeDir);
+    if (!QFile::exists(helperBinary)) {
+        const QString message = QStringLiteral("Rust 辅助进程未找到: %1。请先运行 windows/build.ps1").arg(helperBinary);
+        setState({HelperState::Kind::Failed, 0, message});
+        m_lastError = message;
+        throw MusicException::helperProcessUnavailable();
+    }
+#else
     if (!QDir(runtimeDir).exists()) {
         const QString message =
             QStringLiteral("辅助进程运行时未找到: %1。请先运行 scripts/setup-helper.sh 或 windows/scripts/fetch-node-win.sh")
@@ -179,6 +205,7 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
         m_lastError = message;
         throw MusicException::helperProcessUnavailable();
     }
+#endif
 
     m_port = QRandomGenerator::global()->bounded(21000, 29001);
     m_authToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -194,14 +221,20 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
     environment.insert(QStringLiteral("CT_AUTH_TOKEN"), m_authToken);
     environment.insert(QStringLiteral("HOST"), QStringLiteral("127.0.0.1"));
     environment.insert(QStringLiteral("NODE_ENV"), QStringLiteral("production"));
+    environment.insert(QStringLiteral("CT_PARENT_PID"), QString::number(QCoreApplication::applicationPid()));
     for (const char* key : {"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"}) {
         environment.insert(QString::fromLatin1(key), QString());
     }
 
     process->setProcessEnvironment(environment);
+#ifdef Q_OS_WIN
+    process->setWorkingDirectory(QFileInfo(helperBinary).absolutePath());
+    process->setProgram(helperBinary);
+#else
     process->setWorkingDirectory(apiDir);
     process->setProgram(nodeBinary);
     process->setArguments({apiScript});
+#endif
     process->setProcessChannelMode(QProcess::SeparateChannels);
 
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process] {
@@ -258,19 +291,23 @@ Task<void> HelperProcessManager::waitForHealthy(int timeoutMs, CancellationToken
     throw MusicException::helperProcessTimeout();
 }
 
-Task<bool> HelperProcessManager::checkHealth()
+Awaitable<bool> HelperProcessManager::checkHealth()
 {
     const int port = m_port;
     const QString token = m_authToken;
-    if (port <= 0) co_return false;
-    const QUrl url(QStringLiteral("http://127.0.0.1:%1/ct_health").arg(port));
-    try {
-        const HTTPResponse response = co_await m_healthClient->get(
-            url, {{QStringLiteral("X-CT-Token"), token}}, 2000, CancellationToken::none());
-        co_return response.statusCode == 200;
-    } catch (...) {
-        co_return false;
+    if (port <= 0) {
+        return Awaitable<bool>{[](Callback<bool> done) { done(Result<bool>::success(false)); }};
     }
+    const QUrl url(QStringLiteral("http://127.0.0.1:%1/ct_health").arg(port));
+    // GCC 13.1 (Qt's MinGW kit) ICEs when destroying the HTTPResponse inside
+    // a try/catch coroutine here. Map the same async HTTP result without a
+    // coroutine frame; failures still resolve to false for the restart loop.
+    return Awaitable<bool>{[client = m_healthClient.get(), url, token](Callback<bool> done) {
+        client->get(url, {{QStringLiteral("X-CT-Token"), token}}, 2000, CancellationToken::none())
+            .starter([done = std::move(done)](Result<HTTPResponse> reply) {
+                done(Result<bool>::success(reply.isSuccess() && reply.value().statusCode == 200));
+            });
+    }};
 }
 
 void HelperProcessManager::stop()

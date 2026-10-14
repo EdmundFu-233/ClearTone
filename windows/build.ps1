@@ -22,7 +22,7 @@ param(
     [string]$QtRoot = '',
     [string]$QtHostPath = '',
     [string]$VlcRoot = '',
-    [string]$Generator = 'Visual Studio 17 2022',
+    [string]$Generator = '',
     [switch]$Release,
     [switch]$Tests,
     [switch]$Run,
@@ -34,56 +34,37 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Split-Path -Parent $ScriptDir
+. (Join-Path $ScriptDir 'scripts\qt-toolchain.ps1')
 
 if (-not $Arch) {
     $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
 }
 $Config = if ($Release) { 'Release' } else { 'Debug' }
 $vsArch = if ($Arch -eq 'arm64') { 'ARM64' } else { 'x64' }
-if (-not $BuildDir) { $BuildDir = Join-Path $ScriptDir "build\$Arch-$($Config.ToLower())" }
-
-function Resolve-QtRoot {
-    param([string]$Explicit, [string]$TargetArch)
-    if ($Explicit) { return $Explicit }
-    $windeployqt = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
-    if ($windeployqt) { return (Split-Path -Parent $windeployqt.Source) }
-    $kitPattern = if ($TargetArch -eq 'arm64') { 'arm64' } else { 'msvc\d+_64$' }
-    $candidates = Get-ChildItem 'C:\Qt' -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^\d+\.\d+' } |
-        Sort-Object Name -Descending
-    foreach ($version in $candidates) {
-        $kits = Get-ChildItem $version.FullName -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match $kitPattern } |
-            Sort-Object Name -Descending
-        foreach ($kit in $kits) {
-            if (Test-Path (Join-Path $kit.FullName 'bin\windeployqt.exe')) { return $kit.FullName }
-        }
-    }
-    throw "未找到 Qt（$TargetArch）：请用 -QtRoot 指定（含 bin\windeployqt.exe）；ARM64 需要 Qt 的 win64_msvc2022_arm64 包。"
+$QtRoot = Resolve-ClearToneQtRoot -Explicit $QtRoot -Arch $Arch
+$isMinGW = Test-ClearToneMinGWKit -Kit $QtRoot
+if ($isMinGW -and $Arch -ne 'x64') { throw 'Qt MinGW kit 仅支持 x64；ARM64 需要 Qt ARM64 + MSVC 工具链。' }
+if (-not $Generator) { $Generator = if ($isMinGW) { 'Ninja' } else { 'Visual Studio 17 2022' } }
+if ($isMinGW -and $Generator -ne 'Ninja') { throw 'Qt MinGW kit 请使用 Ninja 生成器（不要使用 Visual Studio 生成器）。' }
+Initialize-ClearToneQtTools -Kit $QtRoot
+if (-not $BuildDir) {
+    $toolchain = if ($isMinGW) { 'mingw' } else { 'msvc' }
+    $BuildDir = Join-Path $ScriptDir "build\$Arch-$($Config.ToLower())-$toolchain"
 }
 
 function Prepare-Helper {
     if ($SkipHelper) { return }
-    Write-Host '=== [1/4] 准备辅助进程运行时 ===' -ForegroundColor Cyan
-    & (Join-Path $ScriptDir 'scripts\fetch-node-win.ps1') -Arch $Arch | Out-Null
-
-    $apiDir = Join-Path $RepoRoot 'ClearTone\Resources\HelperRuntime\api'
-    if (-not (Test-Path (Join-Path $apiDir 'app.js'))) {
-        throw "缺少辅助进程业务代码：$apiDir"
-    }
-    if (-not (Test-Path (Join-Path $apiDir 'node_modules'))) {
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            throw "缺少 $apiDir\node_modules，且未找到 npm；请安装 Node.js 后执行 npm ci --omit=dev --ignore-scripts"
-        }
-        Write-Host "安装 api 依赖（npm ci）..."
-        Push-Location $apiDir
-        try { & npm ci --omit=dev --ignore-scripts | Out-Host } finally { Pop-Location }
-    }
+    Initialize-ClearToneRustTools
+    Write-Host '=== [1/4] 编译 Rust 辅助进程 ===' -ForegroundColor Cyan
+    $target = if ($Arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } elseif ($isMinGW) { 'x86_64-pc-windows-gnu' } else { 'x86_64-pc-windows-msvc' }
+    & rustup target add $target
+    if ($LASTEXITCODE -ne 0) { throw "Rust target installation failed: $target" }
+    & cargo build --manifest-path (Join-Path $ScriptDir 'helper\Cargo.toml') --locked --target $target
+    if ($LASTEXITCODE -ne 0) { throw 'Rust helper build failed' }
+    $env:CLEARTONE_HELPER_BINARY = Join-Path $ScriptDir "helper\target\$target\debug\cleartone-helper.exe"
 }
 
 function Invoke-Build {
-    $QtRoot = Resolve-QtRoot -Explicit $QtRoot -TargetArch $Arch
     # ARM64 交叉编译需要一份 x64 主机 Qt（moc/rcc/windeployqt）
     if ($Arch -eq 'arm64' -and -not $QtHostPath) {
         $hostKit = Get-ChildItem 'C:\Qt' -Directory -ErrorAction SilentlyContinue |
@@ -105,12 +86,18 @@ function Invoke-Build {
     if (-not $isNinja) { $cmakeArgs += @('-A', $vsArch) }
     $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtRoot"
     if ($isNinja) { $cmakeArgs += "-DCMAKE_BUILD_TYPE=$Config" }
+    if ($isMinGW) {
+        $cmakeArgs += "-DCMAKE_C_COMPILER=$((Get-Command gcc.exe).Source)"
+        $cmakeArgs += "-DCMAKE_CXX_COMPILER=$((Get-Command g++.exe).Source)"
+    }
     if ($QtHostPath) { $cmakeArgs += "-DQT_HOST_PATH=$QtHostPath" }
     if ($VlcRoot) { $cmakeArgs += "-DCT_VLC_ROOT=$VlcRoot" }
     & cmake @cmakeArgs | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'CMake 配置失败' }
 
     Write-Host '=== [3/4] 构建 ===' -ForegroundColor Cyan
     & cmake --build $BuildDir --config $Config -j | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Qt 客户端构建失败' }
     return $(if ($isNinja) { Join-Path $BuildDir 'ClearTone.exe' } else { Join-Path $BuildDir "$Config\ClearTone.exe" })
 }
 
@@ -119,7 +106,8 @@ function Invoke-Build {
 if ($Package) {
     if (-not $Release) { Write-Host '提示：打包固定使用 Release 配置。' }
     & (Join-Path $ScriptDir 'scripts\build-app.ps1') -Arch $Arch -QtRoot $QtRoot -QtHostPath $QtHostPath `
-        -VlcRoot $VlcRoot -Generator $Generator -SkipNode
+        -VlcRoot $VlcRoot -Generator $Generator
+    if ($LASTEXITCODE -ne 0) { throw '发布包构建失败' }
     return
 }
 
@@ -129,6 +117,7 @@ $exe = Invoke-Build
 if ($Tests) {
     Write-Host '=== [4/4] 离线单测 ===' -ForegroundColor Cyan
     & ctest --test-dir $BuildDir -C $Config --output-on-failure
+    if ($LASTEXITCODE -ne 0) { throw '离线单测失败' }
 }
 
 if ($Run) {

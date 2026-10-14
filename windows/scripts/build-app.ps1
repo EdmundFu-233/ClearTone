@@ -10,7 +10,7 @@
   可选：libVLC SDK 根目录（含 include\ 与 lib\）。留空则使用 Qt Multimedia
   音频后端（Windows Media Foundation 解码）。
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch all -QtRoot C:\Qt\6.8.0\msvc2022_64
+   powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch x64 -QtRoot C:\Qt\6.12.0\mingw_64
 #>
 param(
     [ValidateSet('x64', 'arm64', 'all')][string]$Arch = 'x64',
@@ -18,45 +18,15 @@ param(
     # 交叉编译（x64 主机出 arm64 产物）时指向主机 Qt（x64）安装目录
     [string]$QtHostPath = '',
     [string]$VlcRoot = '',
-    [string]$Generator = 'Visual Studio 17 2022',
-    [ValidateSet('Debug', 'Release')][string]$BuildType = 'Release',
-    [switch]$SkipNode
+    [string]$Generator = '',
+    [ValidateSet('Debug', 'Release')][string]$BuildType = 'Release'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $WindowsDir = Split-Path -Parent $ScriptDir
-
-function Resolve-QtRoot {
-    param([string]$Explicit, [string]$TargetArch)
-    if ($Explicit) { return $Explicit }
-    $windeployqt = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
-    if ($windeployqt) { return (Split-Path -Parent $windeployqt.Source) }
-    $kitPattern = if ($TargetArch -eq 'arm64') { 'arm64' } else { 'msvc\d+_64$' }
-    $candidates = Get-ChildItem 'C:\Qt' -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^\d+\.\d+' } |
-        Sort-Object Name -Descending
-    foreach ($version in $candidates) {
-        $kits = Get-ChildItem $version.FullName -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match $kitPattern } |
-            Sort-Object Name -Descending
-        foreach ($kit in $kits) {
-            if (Test-Path (Join-Path $kit.FullName 'bin\windeployqt.exe')) { return $kit.FullName }
-        }
-    }
-    throw "未找到 Qt（$TargetArch）：请用 -QtRoot 指定（含 bin\windeployqt.exe）。"
-}
-
-function Fetch-Node {
-    param([string]$TargetArch)
-    if ($SkipNode) {
-        $nodeExe = Join-Path $WindowsDir "runtime\win-$TargetArch\node.exe"
-        if (-not (Test-Path $nodeExe)) { throw "缺少 $nodeExe，且指定了 -SkipNode" }
-        return $nodeExe
-    }
-    return & (Join-Path $ScriptDir 'fetch-node-win.ps1') -Arch $TargetArch
-}
+. (Join-Path $ScriptDir 'qt-toolchain.ps1')
 
 # 交叉编译（x64 主机 → arm64 目标）时的运行库部署。
 # 清单与 x64 上 windeployqt 的输出保持一致（见 CI 的“列出产物内容”）。
@@ -141,30 +111,50 @@ function Deploy-CrossRuntime {
 function Build-One {
     param([string]$TargetArch)
 
-    $buildDir = Join-Path $WindowsDir "build\win-$TargetArch"
-    $publishDir = Join-Path $WindowsDir "publish\win-$TargetArch"
-    $resolvedQt = Resolve-QtRoot -Explicit $QtRoot -TargetArch $TargetArch
+    $resolvedQt = Resolve-ClearToneQtRoot -Explicit $QtRoot -Arch $TargetArch
+    $isMinGW = Test-ClearToneMinGWKit -Kit $resolvedQt
+    if ($isMinGW -and $TargetArch -ne 'x64') { throw 'Qt MinGW kit 仅支持 x64。' }
+    $selectedGenerator = if ($Generator) { $Generator } elseif ($isMinGW) { 'Ninja' } else { 'Visual Studio 17 2022' }
+    if ($isMinGW -and $selectedGenerator -ne 'Ninja') { throw 'Qt MinGW kit 请使用 Ninja 生成器。' }
+    Initialize-ClearToneQtTools -Kit $resolvedQt
 
-    Write-Host "=== [$TargetArch] 1/5 准备辅助进程运行时 ==="
-    $nodeExe = Fetch-Node -TargetArch $TargetArch
+    $flavor = if ($isMinGW) { 'mingw' } else { 'msvc' }
+    $buildDir = Join-Path $WindowsDir "build\win-$TargetArch-$flavor-$($BuildType.ToLower())"
+    $publishDir = Join-Path $WindowsDir "publish\win-$TargetArch"
+
+    Write-Host "=== [$TargetArch] 1/5 编译 Rust 辅助进程 ==="
+    Initialize-ClearToneRustTools
+    $rustTarget = if ($TargetArch -eq 'arm64') { 'aarch64-pc-windows-msvc' } elseif ($isMinGW) { 'x86_64-pc-windows-gnu' } else { 'x86_64-pc-windows-msvc' }
+    & rustup target add $rustTarget
+    if ($LASTEXITCODE -ne 0) { throw "rustup target add $rustTarget failed" }
+    & cargo build --manifest-path (Join-Path $WindowsDir 'helper\Cargo.toml') --release --locked --target $rustTarget
+    if ($LASTEXITCODE -ne 0) { throw "Rust helper build failed for $rustTarget" }
+    $helperExe = Join-Path $WindowsDir "helper\target\$rustTarget\release\cleartone-helper.exe"
+    if (-not (Test-Path $helperExe)) { throw "缺少产物：$helperExe" }
 
     $vsArch = if ($TargetArch -eq 'arm64') { 'ARM64' } else { 'x64' }
-    $isNinja = $Generator -like 'Ninja*'
+    $isNinja = $selectedGenerator -like 'Ninja*'
 
-    Write-Host "=== [$TargetArch] 2/5 CMake 配置（$Generator，Qt: $resolvedQt）==="
-    $configureArgs = @('-S', $WindowsDir, '-B', $buildDir, '-G', $Generator)
+    Write-Host "=== [$TargetArch] 2/5 CMake 配置（$selectedGenerator，Qt: $resolvedQt）==="
+    $configureArgs = @('-S', $WindowsDir, '-B', $buildDir, '-G', $selectedGenerator)
     if (-not $isNinja) { $configureArgs += @('-A', $vsArch) }
     $configureArgs += @(
         "-DCMAKE_PREFIX_PATH=$resolvedQt",
         '-DCT_BUILD_TESTS=OFF'
     )
     if ($isNinja) { $configureArgs += "-DCMAKE_BUILD_TYPE=$BuildType" }
+    if ($isMinGW) {
+        $configureArgs += "-DCMAKE_C_COMPILER=$((Get-Command gcc.exe).Source)"
+        $configureArgs += "-DCMAKE_CXX_COMPILER=$((Get-Command g++.exe).Source)"
+    }
     if ($QtHostPath) { $configureArgs += "-DQT_HOST_PATH=$QtHostPath" }
     if ($VlcRoot) { $configureArgs += "-DCT_VLC_ROOT=$VlcRoot" }
     & cmake @configureArgs
+    if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败：$TargetArch" }
 
     Write-Host "=== [$TargetArch] 3/5 构建 ==="
     & cmake --build $buildDir --config $BuildType -j
+    if ($LASTEXITCODE -ne 0) { throw "Qt 客户端构建失败：$TargetArch" }
 
     Write-Host "=== [$TargetArch] 4/5 windeployqt 与辅助进程 ==="
     if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
@@ -184,22 +174,23 @@ function Build-One {
     } else {
         $windeployqt = Join-Path $resolvedQt 'bin\windeployqt.exe'
         if (-not (Test-Path $windeployqt)) { throw "缺少 $windeployqt" }
-        & $windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw `
-            (Join-Path $publishDir 'ClearTone.exe')
+        $deployArgs = @('--release', '--no-translations', '--no-system-d3d-compiler', '--no-opengl-sw')
+        if ($isMinGW) { $deployArgs += '--compiler-runtime' }
+        & $windeployqt @deployArgs (Join-Path $publishDir 'ClearTone.exe')
+        if ($LASTEXITCODE -ne 0) { throw "windeployqt 失败：$TargetArch" }
+        if ($isMinGW) {
+            $compilerBin = Split-Path -Parent (Get-Command g++.exe).Source
+            foreach ($dll in @('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')) {
+                $source = Join-Path $compilerBin $dll
+                if (-not (Test-Path $source)) { throw "缺少 MinGW 运行库：$source" }
+                Copy-Item $source $publishDir -Force
+            }
+        }
     }
 
-    $helperBin = Join-Path $publishDir 'helper\bin'
-    $helperApi = Join-Path $publishDir 'helper\api'
-    New-Item -ItemType Directory -Force -Path $helperBin | Out-Null
-    Copy-Item $nodeExe (Join-Path $helperBin 'node.exe') -Force
-    $apiSource = Join-Path (Split-Path -Parent $WindowsDir) 'ClearTone\Resources\HelperRuntime\api'
-    if (-not (Test-Path (Join-Path $apiSource 'app.js'))) {
-        throw "缺少辅助进程业务代码：$apiSource"
-    }
-    if (-not (Test-Path (Join-Path $apiSource 'node_modules'))) {
-        throw "缺少 $apiSource\node_modules，请先在 ClearTone\Resources\HelperRuntime\api 下执行 npm ci --omit=dev --ignore-scripts"
-    }
-    Copy-Item $apiSource $helperApi -Recurse -Force
+    $helperDir = Join-Path $publishDir 'helper'
+    New-Item -ItemType Directory -Force -Path $helperDir | Out-Null
+    Copy-Item $helperExe (Join-Path $helperDir 'cleartone-helper.exe') -Force
 
     if ($VlcRoot) {
         $vlcOut = Join-Path $publishDir 'libvlc'

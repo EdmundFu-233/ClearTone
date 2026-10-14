@@ -399,9 +399,10 @@ Task<void> ProfileView::openCommentSongAsync(QString songID)
 {
     auto alive = m_alive;
     if (songID.isEmpty()) co_return;
+    const QHash<QString, QString> query{{QStringLiteral("ids"), songID}};
     try {
         const QByteArray data = co_await NeteaseProvider::shared().request(QStringLiteral("/song/detail"),
-            {{QStringLiteral("ids"), songID}}, NeteaseProvider::loadLoginCookie(), 300,
+            query, NeteaseProvider::loadLoginCookie(), 300,
             QStringLiteral("GET"), true, CancellationToken::none());
         if (!*alive || !m_isAttached) co_return;
         const QJsonValue json = NeteaseProvider::parseJson(data);

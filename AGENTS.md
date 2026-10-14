@@ -105,9 +105,8 @@ iOS target 已补齐登录、设置与详情页。构建与免费账号签名见
 
 `windows/` 是 **Qt 6 Widgets + C++20（CMake）** 的桌面移植，功能与 macOS 对齐
 （2026-10 起替换旧的 .NET 8 + Avalonia 实现，旧实现见 git 历史）。
-与 macOS **共用同一份** Node 辅助进程业务代码（`ClearTone/Resources/HelperRuntime/api`，
-纯 JS，平台无关），Windows 侧只额外携带 win-x64 / win-arm64 的 `node.exe`
-（`scripts/fetch-node-win.sh` 下载，不入库）。差异：音频输出默认 libVLC
+Windows 侧使用独立 Rust 辅助进程（`windows/helper/`），不再打包 Node；macOS
+仍使用 `ClearTone/Resources/HelperRuntime/api`。差异：音频输出默认 libVLC
 （C API；无 SDK 时回退 Qt Multimedia），凭据用 DPAPI
 （`Core/Security/CredentialStore.cpp`），音频缓存不转码（无 `afconvert`），
 系统媒体控制（SMTC）只留接入点未接线。
@@ -126,7 +125,7 @@ cmake --build windows/build-dev -j8
 ./windows/build-dev/ClearTone --smoke-test 20
 
 # Windows 发布（在 Windows 上；Qt 不能从 macOS 交叉发布）
-powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch all -QtRoot C:\Qt\6.8.0\msvc2022_64
+powershell -ExecutionPolicy Bypass -File windows\scripts\build-app.ps1 -Arch x64 -QtRoot C:\Qt\6.12.0\mingw_64
 ```
 
 约定：`Features/**` 的页面用**纯 C++** 搭 UI（QWidget 子类 + 代码布局），

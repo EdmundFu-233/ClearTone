@@ -6,5 +6,6 @@ build/
 build-*/
 dist/
 vendor/
+helper/target/
 *.user
 .DS_Store

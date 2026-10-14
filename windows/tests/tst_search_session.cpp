@@ -84,6 +84,8 @@ private slots:
     void testCancelInFlightRollsBackInFlightPage();
     void testPaginationFailureKeepsResultAndSurfacesError();
     void testFailedNewSearchDoesNotLeaveStaleResult();
+    void testDestroyDiscardsQueuedSearch();
+    void testDestroyCancelsInFlightSearch();
 };
 
 void SearchSessionTests::testPaginationUsesCommittedQueryNotDraft()
@@ -602,6 +604,35 @@ void SearchSessionTests::testDisplayTypeFollowsCommittedQuery()
     session.submit(SearchType::Song);
     QVERIFY2(until([&] { return session.displayType() == SearchType::Song; }), "displayType 未跟随");
     QCOMPARE(session.displayType(), SearchType::Song);
+}
+
+void SearchSessionTests::testDestroyDiscardsQueuedSearch()
+{
+    StubMusicProvider provider;
+    {
+        SearchSession session(&provider);
+        session.setDraftQuery(QStringLiteral("queued"));
+        session.submit(SearchType::Song);
+    }
+    QTest::qWait(20);
+    QCOMPARE(provider.searchCalls.size(), 0);
+}
+
+void SearchSessionTests::testDestroyCancelsInFlightSearch()
+{
+    StubMusicProvider provider;
+    provider.searchHandler = [](QString, SearchType, int, int, CancellationToken ct) -> Task<SearchResult> {
+        co_await Delay(60000, ct);
+        co_return SearchResult{};
+    };
+    {
+        SearchSession session(&provider);
+        session.setDraftQuery(QStringLiteral("in-flight"));
+        session.submit(SearchType::Song);
+        QVERIFY(until([&] { return !provider.searchCalls.isEmpty(); }));
+    }
+    QTest::qWait(20);
+    QCOMPARE(provider.searchCalls.size(), 1);
 }
 
 void SearchSessionTests::testCancelInFlightRollsBackInFlightPage()

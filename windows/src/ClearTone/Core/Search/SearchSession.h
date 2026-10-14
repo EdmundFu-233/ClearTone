@@ -12,6 +12,7 @@ namespace ct {
 class SearchSession {
 public:
     explicit SearchSession(IMusicProvider* provider = nullptr);
+    ~SearchSession();
 
     std::function<void()> onChanged;
 
@@ -41,9 +42,11 @@ private:
 
     void start(const QString& query, SearchType type);
     Task<void> searchPageAsync(
-        QString query, SearchType type, int page, int generation, CancellationToken ct);
+        QString query, SearchType type, int page, int generation, CancellationToken ct,
+        std::shared_ptr<bool> alive);
     Task<void> loadMorePageAsync(
-        QString query, SearchType type, int page, int generation, CancellationToken ct);
+        QString query, SearchType type, int page, int generation, CancellationToken ct,
+        std::shared_ptr<bool> alive);
     void notifyChanged();
 
     IMusicProvider* m_provider = nullptr;
@@ -61,6 +64,7 @@ private:
     int m_generation = 0;
     std::shared_ptr<CancellationTokenSource> m_searchCts;
     std::shared_ptr<CancellationTokenSource> m_loadMoreCts;
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
 };
 
 } // namespace ct
