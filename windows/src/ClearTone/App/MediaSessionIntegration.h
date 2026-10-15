@@ -46,7 +46,6 @@ private:
 
 #ifdef Q_OS_WIN
     bool m_initialized = false;
-    QString m_thumbnailSongID;
     int m_songSub = 0;
     int m_stateSub = 0;
     int m_durationSub = 0;
