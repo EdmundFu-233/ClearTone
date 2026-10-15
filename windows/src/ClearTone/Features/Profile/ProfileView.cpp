@@ -12,15 +12,12 @@
 
 #include <QFont>
 #include <QFrame>
-#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
 
-#include <cmath>
 #include <utility>
 
 namespace ct {
@@ -58,21 +55,6 @@ QFrame* card(QWidget* content)
     layout->addWidget(content);
     return frame;
 }
-
-QWidget* statBlock(const QString& label, const QString& value)
-{
-    auto* panel = new QWidget();
-    auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(2);
-    auto* valueLabel = ui::titleLabel(value, CTTypography::Body, true);
-    valueLabel->setStyleSheet(
-        QStringLiteral("color: %1; font-weight: 500;").arg(CTColors::textPrimary().name()));
-    layout->addWidget(valueLabel);
-    layout->addWidget(ui::secondaryLabel(label));
-    return panel;
-}
-
 
 QWidget* subscriptionGroup(const QString& title, QWidget* content)
 {
@@ -144,7 +126,7 @@ ProfileView::ProfileView(QWidget* parent)
     titleLayout->setContentsMargins(CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Xl, CTSpacing::Lg);
     titleLayout->setSpacing(CTSpacing::Xs);
     titleLayout->addWidget(ui::titleLabel(QStringLiteral("我的"), CTTypography::PageTitle, true));
-    m_subtitle = ui::secondaryLabel(QStringLiteral("听歌等级与记录。"));
+    m_subtitle = ui::secondaryLabel(QStringLiteral("听歌记录与收藏。"));
     titleLayout->addWidget(m_subtitle);
     root->addWidget(titleStack);
 
@@ -217,8 +199,6 @@ void ProfileView::loadAll()
     const quint64 token = ++m_loadToken;
     resetState();
     render();
-    detach(loadLevelAsync(token));
-    detach(loadCountsAsync(token));
     detach(loadRecordsAsync(token));
     detach(loadSubscriptionsAsync(token));
     detach(loadMyCommentsAsync(token));
@@ -226,17 +206,11 @@ void ProfileView::loadAll()
 
 void ProfileView::resetState()
 {
-    m_level.reset();
-    m_loadingLevel = false;
-    m_levelError.reset();
     m_signIn.reset();
     m_signingIn = false;
     m_records.clear();
     m_loadingRecords = false;
     m_recordsError.reset();
-    m_counts.reset();
-    m_loadingCounts = false;
-    m_countsError.reset();
     m_subArtists.clear();
     m_subAlbums.clear();
     m_subRadios.clear();
@@ -246,52 +220,6 @@ void ProfileView::resetState()
     m_myComments.clear();
     m_loadingMyComments = false;
     m_myCommentsError.reset();
-}
-
-Task<void> ProfileView::loadLevelAsync(quint64 token)
-{
-    auto alive = m_alive;
-    m_loadingLevel = !m_level.has_value();
-    m_levelError.reset();
-    render();
-    try {
-        const UserLevelInfo loaded = co_await socialProvider().fetchUserLevel(CancellationToken::none());
-        if (!*alive || m_loadToken != token) co_return;
-        m_level = loaded;
-    } catch (const MusicException& error) {
-        if (!*alive || m_loadToken != token) co_return;
-        m_levelError = error.userFacingMessage();
-    } catch (const std::exception& error) {
-        if (!*alive || m_loadToken != token) co_return;
-        m_levelError = unknownUserMessage(error);
-    }
-    if (!*alive || m_loadToken != token) co_return;
-    m_loadingLevel = false;
-    render();
-    co_return;
-}
-
-Task<void> ProfileView::loadCountsAsync(quint64 token)
-{
-    auto alive = m_alive;
-    m_loadingCounts = !m_counts.has_value();
-    m_countsError.reset();
-    render();
-    try {
-        const QHash<QString, int> loaded = co_await socialProvider().fetchUserCounts(CancellationToken::none());
-        if (!*alive || m_loadToken != token) co_return;
-        m_counts = loaded;
-    } catch (const MusicException& error) {
-        if (!*alive || m_loadToken != token) co_return;
-        m_countsError = error.userFacingMessage();
-    } catch (const std::exception& error) {
-        if (!*alive || m_loadToken != token) co_return;
-        m_countsError = unknownUserMessage(error);
-    }
-    if (!*alive || m_loadToken != token) co_return;
-    m_loadingCounts = false;
-    render();
-    co_return;
 }
 
 Task<void> ProfileView::loadRecordsAsync(quint64 token)
@@ -439,7 +367,6 @@ Task<void> ProfileView::signInAsync()
         const SignInResult result = co_await socialProvider().dailySignIn(CancellationToken::none());
         if (!*alive) co_return;
         m_signIn = result;
-        if (result.isSuccess()) co_await loadLevelAsync(m_loadToken);
     } catch (const MusicException& error) {
         if (!*alive) co_return;
         m_signIn = SignInResult{SignInResult::Kind::Failed, 0, error.userFacingMessage()};
@@ -475,7 +402,7 @@ void ProfileView::render()
         m_subtitle->setText(account && !account->nickname.isEmpty() ? account->nickname
                                                                     : QStringLiteral("已登录"));
     } else {
-        m_subtitle->setText(QStringLiteral("听歌等级与记录。"));
+        m_subtitle->setText(QStringLiteral("听歌记录与收藏。"));
     }
 
     clearLayout(m_bodyLayout);
@@ -486,9 +413,7 @@ void ProfileView::render()
     }
 
     m_bodyLayout->addWidget(buildAccountCard());
-    m_bodyLayout->addWidget(buildLevelCard());
     m_bodyLayout->addWidget(buildSignInCard());
-    m_bodyLayout->addWidget(buildCountsCard());
     m_bodyLayout->addWidget(buildRecordsSection());
     m_bodyLayout->addWidget(buildSubscriptionsSection());
     m_bodyLayout->addWidget(buildMyCommentsSection());
@@ -503,7 +428,7 @@ QWidget* ProfileView::buildLoginRequired()
     layout->setSpacing(CTSpacing::Md);
     layout->setAlignment(Qt::AlignCenter);
 
-    auto* hint = new QLabel(QStringLiteral("登录后查看听歌等级与记录"));
+    auto* hint = new QLabel(QStringLiteral("登录后查看听歌记录与收藏"));
     hint->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::textSecondary().name()));
     hint->setAlignment(Qt::AlignCenter);
     layout->addWidget(hint, 0, Qt::AlignHCenter);
@@ -563,68 +488,6 @@ QWidget* ProfileView::buildAccountCard()
     return card(content);
 }
 
-QWidget* ProfileView::buildLevelCard()
-{
-    auto* panel = new QWidget();
-    auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(CTSpacing::Md);
-
-    auto* header = new QWidget(panel);
-    auto* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(0, 0, 0, 0);
-    headerLayout->addWidget(ui::titleLabel(QStringLiteral("听歌等级"), CTTypography::SectionTitle, true));
-    headerLayout->addStretch(1);
-    if (m_loadingLevel) {
-        auto* progress = new QProgressBar(header);
-        progress->setRange(0, 0);
-        progress->setTextVisible(false);
-        progress->setFixedWidth(80);
-        progress->setFixedHeight(4);
-        headerLayout->addWidget(progress, 0, Qt::AlignVCenter);
-    } else if (m_level.has_value()) {
-        auto* level = new QLabel(QStringLiteral("Lv.%1").arg(m_level->level), header);
-        level->setStyleSheet(QStringLiteral("color: %1; font-size: 22px;").arg(CTColors::accent().name()));
-        headerLayout->addWidget(level, 0, Qt::AlignVCenter);
-    }
-    layout->addWidget(header);
-
-    if (m_level.has_value()) {
-        const UserLevelInfo& info = *m_level;
-        auto* progress = new QProgressBar(panel);
-        progress->setRange(0, 1000);
-        progress->setValue(qBound(0, static_cast<int>(std::round(info.progressFraction() * 1000)), 1000));
-        progress->setTextVisible(false);
-        progress->setFixedHeight(4);
-        layout->addWidget(progress);
-
-        auto* stats = new QWidget(panel);
-        auto* statsLayout = new QHBoxLayout(stats);
-        statsLayout->setContentsMargins(0, 0, 0, 0);
-        statsLayout->setSpacing(CTSpacing::Xl);
-        statsLayout->addWidget(statBlock(QStringLiteral("累计听歌"),
-            QStringLiteral("%1 首").arg(info.listenSongs)));
-        statsLayout->addWidget(statBlock(QStringLiteral("累计天数"),
-            QStringLiteral("%1 天").arg(info.listenDays)));
-        statsLayout->addStretch(1);
-        const QString hintText = info.nextLevelNeedLoginDays > 0
-            ? QStringLiteral("再听 %1 天升级").arg(info.remainingLoginDays())
-            : QStringLiteral("已是最高等级");
-        statsLayout->addWidget(ui::secondaryLabel(hintText), 0, Qt::AlignVCenter);
-        layout->addWidget(stats);
-    } else if (m_levelError.has_value()) {
-        auto* error = ui::secondaryLabel(*m_levelError);
-        error->setWordWrap(true);
-        layout->addWidget(error);
-        auto* retry = ui::linkButton(QStringLiteral("重试"), [this] {
-            const quint64 token = m_loadToken;
-            detach(loadLevelAsync(token));
-        });
-        layout->addWidget(retry, 0, Qt::AlignLeft);
-    }
-    return card(panel);
-}
-
 QWidget* ProfileView::buildSignInCard()
 {
     auto* content = new QWidget();
@@ -668,7 +531,7 @@ QString ProfileView::signInSubtitle() const
             return m_signIn->reason;
         }
     }
-    return QStringLiteral("连续登录可提升听歌等级");
+    return QStringLiteral("每天登录即可打卡");
 }
 
 QWidget* ProfileView::buildSignInButton()
@@ -679,63 +542,12 @@ QWidget* ProfileView::buildSignInButton()
         return label;
     }
     if (m_signIn.has_value() && m_signIn->kind == SignInResult::Kind::AlreadySigned) {
-        auto* reload = ui::ghostButton(QStringLiteral("重新加载"));
-        connect(reload, &QPushButton::clicked, this, [this] {
-            const quint64 token = m_loadToken;
-            detach(loadLevelAsync(token));
-        });
-        return reload;
+        return new QLabel(QStringLiteral("已打卡"));
     }
     auto* button = ui::accentButton(m_signingIn ? QStringLiteral("打卡中…") : QStringLiteral("打卡"));
     button->setEnabled(!m_signingIn && AppState::shared().canPerformWrite());
     connect(button, &QPushButton::clicked, this, [this] { detach(signInAsync()); });
     return button;
-}
-
-QWidget* ProfileView::buildCountsCard()
-{
-    auto* panel = new QWidget();
-    auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(CTSpacing::Md);
-    layout->addWidget(ui::titleLabel(QStringLiteral("收藏数量"), CTTypography::SectionTitle, true));
-
-    if (m_counts.has_value()) {
-        auto* grid = new QGridLayout();
-        grid->setContentsMargins(0, 0, 0, 0);
-        grid->setHorizontalSpacing(CTSpacing::Md);
-        grid->setVerticalSpacing(CTSpacing::Sm);
-        int index = 0;
-        for (auto iterator = m_counts->constBegin(); iterator != m_counts->constEnd(); ++iterator) {
-            auto* chip = new QWidget(panel);
-            chip->setFixedWidth(96);
-            auto* chipLayout = new QVBoxLayout(chip);
-            chipLayout->setContentsMargins(0, 0, 0, 0);
-            chipLayout->setSpacing(2);
-            chipLayout->addWidget(ui::titleLabel(QString::number(iterator.value()), CTTypography::Body, true));
-            chipLayout->addWidget(ui::secondaryLabel(iterator.key()));
-            grid->addWidget(chip, index / 6, index % 6);
-            ++index;
-        }
-        grid->setColumnStretch(6, 1);
-        layout->addLayout(grid);
-    } else if (m_loadingCounts) {
-        auto* progress = new QProgressBar(panel);
-        progress->setRange(0, 0);
-        progress->setTextVisible(false);
-        progress->setFixedWidth(160);
-        progress->setFixedHeight(4);
-        layout->addWidget(progress);
-    } else if (m_countsError.has_value()) {
-        auto* error = ui::secondaryLabel(*m_countsError);
-        error->setWordWrap(true);
-        layout->addWidget(error);
-        layout->addWidget(ui::linkButton(QStringLiteral("重试"), [this] {
-            const quint64 token = m_loadToken;
-            detach(loadCountsAsync(token));
-        }), 0, Qt::AlignLeft);
-    }
-    return card(panel);
 }
 
 QWidget* ProfileView::buildRecordsSection()

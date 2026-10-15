@@ -18,8 +18,9 @@ CoverImage::CoverImage(QWidget* parent)
 void CoverImage::setCoverURL(const std::optional<QString>& url, int decodeWidth)
 {
     const auto normalized = url && url->isEmpty() ? std::nullopt : url;
+    const bool widthChanged = m_decodeWidth != decodeWidth;
     m_decodeWidth = decodeWidth;
-    if (m_url == normalized.value_or(QString()) && m_pixmap.isNull() == !normalized) {
+    if (!widthChanged && m_url == normalized.value_or(QString()) && m_pixmap.isNull() == !normalized) {
         // 同一地址重复设置：只有占位状态才需要重新加载。
         if (m_pixmap.isNull() && normalized) refresh();
         if (!normalized && !m_pixmap.isNull()) clearCover();
@@ -30,6 +31,8 @@ void CoverImage::setCoverURL(const std::optional<QString>& url, int decodeWidth)
         return;
     }
     m_url = *normalized;
+    m_pixmap = QPixmap();
+    update();
     refresh();
 }
 
@@ -98,7 +101,7 @@ void CoverImage::paintEvent(QPaintEvent* event)
         QFont font = painter.font();
         font.setPointSizeF(qMax(10.0, qMin(bounds.width(), bounds.height()) / 4.0));
         painter.setFont(font);
-        painter.drawText(bounds, Qt::AlignCenter, QStringLiteral("♪"));
+        painter.drawText(bounds, Qt::AlignCenter, m_placeholderText);
         return;
     }
 

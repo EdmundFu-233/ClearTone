@@ -109,7 +109,7 @@ Windows 侧使用独立 Rust 辅助进程（`windows/helper/`），不再打包 
 仍使用 `ClearTone/Resources/HelperRuntime/api`。差异：音频输出默认 libVLC
 （C API；无 SDK 时回退 Qt Multimedia），凭据用 DPAPI
 （`Core/Security/CredentialStore.cpp`），音频缓存不转码（无 `afconvert`），
-系统媒体控制（SMTC）只留接入点未接线。
+系统媒体控制（SMTC）已接线（有 Windows SDK 时优先使用；不可用时回退媒体键快捷键）。
 
 ```bash
 # 开发（macOS 也可直接构建运行，同一份源码；音频走 Qt Multimedia）

@@ -3,6 +3,7 @@
 #include "App/AppState.h"
 #include "Core/Models/MusicModels.h"
 #include "Core/Persistence/PersistenceStore.h"
+#include "Core/Updates/WindowsRelease.h"
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/L10n.h"
 #include "Features/Shared/PageFactory.h"
@@ -14,11 +15,15 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDoubleSpinBox>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStyleHints>
@@ -168,7 +173,7 @@ void SettingsView::buildSections(QWidget* body)
 
     m_themeBox = new QComboBox();
     m_themeBox->addItems({QStringLiteral("跟随系统"), QStringLiteral("深色"), QStringLiteral("浅色")});
-    m_resumeBox = new QCheckBox(QStringLiteral("启动时恢复上次播放"));
+    m_resumeBox = new QCheckBox(QStringLiteral("启动时保留上次播放进度"));
     m_cacheBox = new QCheckBox(QStringLiteral("缓存播放的音乐（128kbps OPUS）"));
     m_qualityBox = new QComboBox();
     m_closeBox = new QComboBox();
@@ -182,10 +187,6 @@ void SettingsView::buildSections(QWidget* body)
     for (const PerformanceMode mode :
         {PerformanceMode::Auto, PerformanceMode::Saver, PerformanceMode::Quality, PerformanceMode::Static}) {
         m_performanceBox->addItem(performanceMode::displayName(mode));
-    }
-    m_spectrumBox = new QComboBox();
-    for (const SpectrumMode mode : {SpectrumMode::Ambient, SpectrumMode::Off}) {
-        m_spectrumBox->addItem(spectrumMode::displayName(mode));
     }
     m_offsetBox = new QDoubleSpinBox();
     m_offsetBox->setRange(-10, 10);
@@ -212,7 +213,7 @@ void SettingsView::buildSections(QWidget* body)
     playbackLayout->setSpacing(CTSpacing::Md);
     playbackLayout->addWidget(m_resumeBox);
     playbackLayout->addWidget(
-        hint(QStringLiteral("启动时接着上次的位置继续播放，而不是从队列第一首开始。")));
+         hint(QStringLiteral("不会自动播放。点击播放后从上次的位置继续；关闭时从头播放。")));
     playbackLayout->addWidget(ui::separator());
     playbackLayout->addWidget(labeled(QStringLiteral("默认音质"), m_qualityBox));
     playbackLayout->addWidget(hint(QStringLiteral(
@@ -248,9 +249,7 @@ void SettingsView::buildSections(QWidget* body)
     performanceLayout->setContentsMargins(0, 0, 0, 0);
     performanceLayout->setSpacing(CTSpacing::Md);
     performanceLayout->addWidget(labeled(QStringLiteral("性能模式"), m_performanceBox));
-    performanceLayout->addWidget(labeled(QStringLiteral("频谱显示"), m_spectrumBox));
-    performanceLayout->addWidget(hint(QStringLiteral(
-        "背景呈现方式。真实频谱需要读取音频采样，当前播放链路拿不到，因此不提供真实频谱选项。")));
+    performanceLayout->addWidget(hint(QStringLiteral("调整背景动画的资源占用。")));
     bodyLayout->addWidget(section(QStringLiteral("性能"), performance));
 
     auto* lyrics = new QWidget();
@@ -287,10 +286,23 @@ void SettingsView::buildSections(QWidget* body)
     aboutLayout->setContentsMargins(0, 0, 0, 0);
     aboutLayout->setSpacing(CTSpacing::Xs);
     const QString version = QCoreApplication::applicationVersion();
-    auto* versionLabel = new QLabel(version.isEmpty() ? QStringLiteral("澄音 v0.1.0")
-                                                      : QStringLiteral("澄音 v%1").arg(version));
+    auto* versionLabel = new QLabel(version.isEmpty() ? QStringLiteral("澄音 v" CT_APP_VERSION)
+                                                       : QStringLiteral("澄音 v%1").arg(version));
     versionLabel->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::textPrimary().name()));
     aboutLayout->addWidget(versionLabel);
+    auto* updateRow = new QWidget(about);
+    auto* updateLayout = new QHBoxLayout(updateRow);
+    updateLayout->setContentsMargins(0, 0, 0, 0);
+    m_updateButton = ui::ghostButton(QStringLiteral("检查更新"));
+    m_updateButton->setObjectName(QStringLiteral("ctCheckUpdates"));
+    m_downloadButton = ui::accentButton(QStringLiteral("下载 Windows x64 版本"));
+    m_downloadButton->hide();
+    updateLayout->addWidget(m_updateButton);
+    updateLayout->addWidget(m_downloadButton);
+    updateLayout->addStretch(1);
+    aboutLayout->addWidget(updateRow);
+    m_updateHint = ui::secondaryLabel(QStringLiteral("从 GitHub Releases 手动检查 Windows x64 更新。"));
+    aboutLayout->addWidget(m_updateHint);
     aboutLayout->addWidget(hint(QStringLiteral("第三方网易云音乐客户端，与网易公司无关联")));
     bodyLayout->addWidget(section(QStringLiteral("关于"), about));
 
@@ -305,7 +317,6 @@ void SettingsView::buildSections(QWidget* body)
     connect(m_menuBarBox, &QCheckBox::toggled, this, [this] { save(); });
     connect(m_miniTopBox, &QCheckBox::toggled, this, [this] { save(); });
     connect(m_performanceBox, &QComboBox::currentIndexChanged, this, [this] { save(); });
-    connect(m_spectrumBox, &QComboBox::currentIndexChanged, this, [this] { save(); });
     connect(m_offsetBox, &QDoubleSpinBox::valueChanged, this, [this] {
         updateOffsetDescription();
         save();
@@ -315,6 +326,46 @@ void SettingsView::buildSections(QWidget* body)
         updateCacheSize();
     });
     connect(m_logoutButton, &QPushButton::clicked, this, [this] { detach(logoutAsync()); });
+    connect(m_updateButton, &QPushButton::clicked, this, [this] { checkForUpdates(); });
+}
+
+void SettingsView::checkForUpdates()
+{
+    if (!m_updateClient) m_updateClient = new QNetworkAccessManager(this);
+    m_updateButton->setEnabled(false);
+    m_downloadButton->hide();
+    m_updateHint->setText(QStringLiteral("正在检查 GitHub 更新…"));
+    QNetworkRequest request(QUrl(QStringLiteral("https://api.github.com/repos/EdmundFu-233/ClearTone/releases/latest")));
+    request.setRawHeader("User-Agent", "ClearTone-Windows");
+    request.setTransferTimeout(10000);
+    QNetworkReply* reply = m_updateClient->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_updateButton->setEnabled(true);
+        const QByteArray data = reply->read(128 * 1024);
+        const bool success = reply->error() == QNetworkReply::NoError
+            && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200
+            && reply->bytesAvailable() == 0;
+        reply->deleteLater();
+        const auto release = success ? updates::parseLatestRelease(data) : std::nullopt;
+        if (!release) {
+            m_updateHint->setText(QStringLiteral("检查更新失败，请稍后重试。"));
+            return;
+        }
+        const QString installed = QCoreApplication::applicationVersion().isEmpty()
+            ? QStringLiteral(CT_APP_VERSION) : QCoreApplication::applicationVersion();
+        if (!updates::isNewer(release->version, installed)) {
+            m_updateHint->setText(QStringLiteral("已是最新版本（%1）。").arg(installed));
+        } else if (release->downloadUrl.isEmpty()) {
+            m_updateHint->setText(QStringLiteral("发现 %1，但尚无 Windows x64 下载包。").arg(release->version));
+        } else {
+            m_updateHint->setText(QStringLiteral("发现新版本 %1。").arg(release->version));
+            m_downloadButton->show();
+            m_downloadButton->disconnect(this);
+            connect(m_downloadButton, &QPushButton::clicked, this, [url = release->downloadUrl] {
+                QDesktopServices::openUrl(url);
+            });
+        }
+    });
 }
 
 void SettingsView::loadSettings()
@@ -338,7 +389,6 @@ void SettingsView::loadSettings()
     m_menuBarBox->setChecked(m_settings.menuBarAlwaysVisible);
     m_miniTopBox->setChecked(m_settings.miniPlayerAlwaysOnTop);
     m_performanceBox->setCurrentIndex(qBound(0, static_cast<int>(m_settings.performanceMode), 3));
-    m_spectrumBox->setCurrentIndex(qBound(0, static_cast<int>(m_settings.spectrumMode), 1));
     m_offsetBox->setValue(m_settings.lyricOffset);
     m_loading = false;
 
@@ -362,7 +412,6 @@ void SettingsView::save()
     m_settings.miniPlayerAlwaysOnTop = m_miniTopBox->isChecked();
     m_settings.performanceMode =
         static_cast<PerformanceMode>(qBound(0, m_performanceBox->currentIndex(), 3));
-    m_settings.spectrumMode = static_cast<SpectrumMode>(qBound(0, m_spectrumBox->currentIndex(), 1));
     m_settings.lyricOffset = m_offsetBox->value();
 
     PersistenceStore::shared().saveSetting(QStringLiteral("appSettings"), m_settings.toJson());

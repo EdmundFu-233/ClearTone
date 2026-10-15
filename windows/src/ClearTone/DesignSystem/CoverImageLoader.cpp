@@ -5,11 +5,13 @@
 #include "Core/Persistence/StoragePaths.h"
 
 #include <QCryptographicHash>
+#include <QBuffer>
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QImageReader>
 #include <QSaveFile>
 #include <QTimer>
 #include <QUrl>
@@ -101,9 +103,20 @@ Task<std::optional<QImage>> CoverImageLoader::load(
 
     if (!m_pendingImages.contains(key)) {
         m_pendingImages.insert(key, QList<Callback<std::optional<QImage>>>{});
-        detach(loadCoreImage(key, url, decodeWidth, ct));
+        m_queuedImages.enqueue({key, url, decodeWidth});
+        pumpQueue();
     }
     co_return co_await waitForImage(key);
+}
+
+void CoverImageLoader::pumpQueue()
+{
+    while (m_activeLoads < MaxConcurrentLoads && !m_queuedImages.isEmpty()) {
+        const ImageRequest request = m_queuedImages.dequeue();
+        ++m_activeLoads;
+        // One widget being removed must not cancel a load shared by other covers.
+        detach(loadCoreImage(request.key, request.url, request.width, CancellationToken::none()));
+    }
 }
 
 Awaitable<std::optional<QImage>> CoverImageLoader::waitForImage(const QString& key)
@@ -126,11 +139,21 @@ Task<void> CoverImageLoader::loadCoreImage(
     try {
         auto bytes = co_await readBytes(url, ct);
         if (bytes && !bytes->isEmpty()) {
-            QImage image;
-            if (image.loadFromData(*bytes)) {
-                if (decodeWidth > 0 && image.width() != decodeWidth) {
+            QBuffer buffer(&*bytes);
+            buffer.open(QIODevice::ReadOnly);
+            QImageReader reader(&buffer);
+            reader.setAutoTransform(true);
+            // Decode at the display resolution instead of materializing every
+            // full-size cover when a playlist contains hundreds of songs.
+            const QSize source = reader.size();
+            if (decodeWidth > 0 && source.isValid() && source.width() > decodeWidth) {
+                reader.setScaledSize(QSize(decodeWidth,
+                    qMax(1, qRound(static_cast<double>(source.height()) * decodeWidth / source.width()))));
+            }
+            QImage image = reader.read();
+            if (!image.isNull()) {
+                if (decodeWidth > 0 && image.width() > decodeWidth)
                     image = image.scaledToWidth(decodeWidth, Qt::SmoothTransformation);
-                }
                 insertIntoMemory(key, image);
                 result = image;
             }
@@ -149,6 +172,8 @@ Task<void> CoverImageLoader::loadCoreImage(
     for (const auto& callback : callbacks) {
         callback(Result<std::optional<QImage>>::success(result));
     }
+    --m_activeLoads;
+    QTimer::singleShot(0, this, [this] { pumpQueue(); });
 }
 
 Task<std::optional<QByteArray>> CoverImageLoader::loadBytes(const QString& url, CancellationToken ct)

@@ -18,6 +18,8 @@ class CoverImage : public QWidget {
 public:
     explicit CoverImage(QWidget* parent = nullptr);
 
+    void setPlaceholderText(const QString& text) { m_placeholderText = text; update(); }
+
     void setCoverURL(const std::optional<QString>& url, int decodeWidth = 0);
     void setCoverURL(const QString& url, int decodeWidth = 0)
     {
@@ -41,6 +43,7 @@ private:
         CancellationToken token);
 
     QString m_url;
+    QString m_placeholderText = QStringLiteral("♪");
     QPixmap m_pixmap;
     int m_decodeWidth = 0;
     double m_cornerRadius = 0;

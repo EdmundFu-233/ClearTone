@@ -144,12 +144,15 @@ QIcon CTTheme::icon(const QString& glyph, const QColor& color)
     QIcon result;
     QFont font(QStringLiteral("lucide"));
     font.setPixelSize(20);
+    font.setStyleStrategy(QFont::PreferAntialias);
     for (auto mode : {QIcon::Normal, QIcon::Selected, QIcon::Disabled}) {
         for (int scale : {1, 2, 3}) {
             QPixmap image(24 * scale, 24 * scale);
             image.setDevicePixelRatio(scale);
             image.fill(Qt::transparent);
             QPainter painter(&image);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setRenderHint(QPainter::TextAntialiasing);
             painter.setFont(font);
             painter.setPen(mode == QIcon::Selected ? CTColors::accent()
                 : mode == QIcon::Disabled ? CTColors::textSecondary()

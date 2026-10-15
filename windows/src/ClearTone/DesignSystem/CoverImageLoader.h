@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QList>
 #include <QObject>
+#include <QQueue>
 #include <QString>
 
 #include <memory>
@@ -34,6 +35,7 @@ public:
     static QString diskCachePath(const QString& url);
 
     static constexpr int MemoryEntryLimit = 200;
+    static constexpr int MaxConcurrentLoads = 6;
     // 封面缓存上限：每首歌一张 600px 封面约 1.4MB，64MB 会让长时间切歌的
     // 内存平台期高得离谱；24MB 足够覆盖当前页面 + 最近若干首。
     static constexpr qint64 MemoryByteLimit = 24LL * 1024 * 1024;
@@ -48,6 +50,7 @@ private:
 
     std::optional<QImage> memoryLookup(const QString& key);
     void insertIntoMemory(const QString& key, const QImage& image);
+    void pumpQueue();
     Task<std::optional<QByteArray>> readBytes(const QString& url, CancellationToken ct);
     Task<void> loadCoreImage(QString key, QString url, int decodeWidth, CancellationToken ct);
     Awaitable<std::optional<QImage>> waitForImage(const QString& key);
@@ -58,6 +61,9 @@ private:
     QList<QString> m_lru;
     qint64 m_memoryBytes = 0;
     QHash<QString, QList<Callback<std::optional<QImage>>>> m_pendingImages;
+    struct ImageRequest { QString key; QString url; int width = 0; };
+    QQueue<ImageRequest> m_queuedImages;
+    int m_activeLoads = 0;
 };
 
 } // namespace ct

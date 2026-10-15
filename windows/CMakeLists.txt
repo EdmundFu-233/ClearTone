@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ClearTone VERSION 1.0.0 LANGUAGES CXX)
+project(ClearTone VERSION 1.0.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,6 +69,7 @@ file(GLOB_RECURSE CT_HEADERS CONFIGURE_DEPENDS
 # （静态库中无人引用的目标文件不会进可执行文件，页面会退化占位视图）。
 add_library(cleartone_lib OBJECT ${CT_SOURCES} ${CT_HEADERS})
 target_include_directories(cleartone_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/ClearTone")
+target_compile_definitions(cleartone_lib PUBLIC CT_APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(cleartone_lib PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
 
 if(CT_HAVE_LIBVLC)
@@ -84,6 +85,18 @@ endif()
 
 if(WIN32)
     target_link_libraries(cleartone_lib PRIVATE crypt32)
+    # C++/WinRT is supplied by the Windows SDK, not by the MinGW Qt kit.
+    file(GLOB CT_CPPWINRT_CANDIDATES "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
+    list(SORT CT_CPPWINRT_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+    foreach(candidate IN LISTS CT_CPPWINRT_CANDIDATES)
+        if(EXISTS "${candidate}/winrt/Windows.Media.h")
+            target_include_directories(cleartone_lib PRIVATE "${candidate}")
+            target_compile_definitions(cleartone_lib PRIVATE CT_HAS_SMTC)
+            target_link_libraries(cleartone_lib PRIVATE runtimeobject oleaut32)
+            message(STATUS "Windows media session: ${candidate}")
+            break()
+        endif()
+    endforeach()
 endif()
 
 # Resources (icons etc.) are compiled in through resources.qrc when present.

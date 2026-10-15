@@ -10,7 +10,7 @@ foreach(test_source ${CT_TEST_SOURCES})
     # 界面布局测试要真实平台字体/窗口度量；Windows 的 offscreen 插件没有系统字体。
     # 与应用保持同一 GDI 字体引擎，避免 DirectWrite 映射全部已安装字体。
     set(ct_test_platform "offscreen")
-    if(WIN32 AND test_name STREQUAL "tst_gui_layout")
+    if(WIN32 AND (test_name STREQUAL "tst_gui_layout" OR test_name STREQUAL "tst_media_keys"))
         set(ct_test_platform "windows:fontengine=gdi")
     endif()
     set_tests_properties("${test_name}" PROPERTIES

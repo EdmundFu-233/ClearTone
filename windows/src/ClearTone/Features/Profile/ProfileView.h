@@ -36,8 +36,6 @@ private:
     void scheduleAppChange();
     void handleAppChange();
 
-    Task<void> loadLevelAsync(quint64 token);
-    Task<void> loadCountsAsync(quint64 token);
     Task<void> loadRecordsAsync(quint64 token);
     Task<void> loadSubscriptionsAsync(quint64 token);
     Task<void> loadMyCommentsAsync(quint64 token);
@@ -48,9 +46,7 @@ private:
 
     QWidget* buildLoginRequired();
     QWidget* buildAccountCard();
-    QWidget* buildLevelCard();
     QWidget* buildSignInCard();
-    QWidget* buildCountsCard();
     QWidget* buildRecordsSection();
     QWidget* buildRecordList();
     QWidget* buildSubscriptionsSection();
@@ -62,10 +58,6 @@ private:
     QWidget* m_body = nullptr;
     QVBoxLayout* m_bodyLayout = nullptr;
 
-    std::optional<UserLevelInfo> m_level;
-    bool m_loadingLevel = false;
-    std::optional<QString> m_levelError;
-
     std::optional<SignInResult> m_signIn;
     bool m_signingIn = false;
 
@@ -73,10 +65,6 @@ private:
     bool m_loadingRecords = false;
     std::optional<QString> m_recordsError;
     bool m_recordsWeekly = false;
-
-    std::optional<QHash<QString, int>> m_counts;
-    bool m_loadingCounts = false;
-    std::optional<QString> m_countsError;
 
     QList<Artist> m_subArtists;
     QList<Album> m_subAlbums;
