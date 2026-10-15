@@ -100,10 +100,10 @@ private:
     QVBoxLayout* m_playlistLayout = nullptr;
     QHash<QString, QPushButton*> m_playlistButtons;
 
-    QPushButton* m_accountButton = nullptr;
+    QWidget* m_accountButton = nullptr;
     CoverImage* m_accountAvatar = nullptr;
     ui::ElidedLabel* m_accountName = nullptr;
-    QLabel* m_accountHint = nullptr;
+    ui::ElidedLabel* m_accountHint = nullptr;
 
     QPushButton* m_backButton = nullptr;
     QLabel* m_pageTitle = nullptr;

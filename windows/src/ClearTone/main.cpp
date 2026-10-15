@@ -2,6 +2,7 @@
 #include "Core/Logging/CTLog.h"
 #include "Core/Networking/HelperProcessManager.h"
 #include "MainWindow.h"
+#include "DesignSystem/SmoothMenuStyle.h"
 #include "Playback/PlayerController.h"
 
 #include <QApplication>
@@ -21,7 +22,7 @@ int main(int argc, char** argv)
     QApplication::setApplicationName(QStringLiteral("ClearTone"));
     QApplication::setApplicationVersion(QStringLiteral(CT_APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("ClearTone"));
-    QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+    QApplication::setStyle(new ct::ui::SmoothMenuStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
 
     // CI / 打包后的启动冒烟：正常建窗跑一段时间再退出；崩溃会以非 0 退出码暴露。
     int smokeSeconds = 0;

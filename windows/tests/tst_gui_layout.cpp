@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFontDatabase>
 #include <QLineEdit>
+#include <QMenu>
 #include <QListWidget>
 #include <QRawFont>
 #include <QScrollArea>
@@ -15,6 +16,7 @@
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/CoverImage.h"
 #include "DesignSystem/FlowLayout.h"
+#include "DesignSystem/SmoothMenuStyle.h"
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
 #include "MainWindow.h"
@@ -40,7 +42,7 @@ private slots:
         QDir().mkpath(missing);
         qputenv("CLEARTONE_HELPER_ROOT", missing.toUtf8());
         qputenv("CLEARTONE_HELPER_NODE", "/nonexistent/node");
-        QApplication::setStyle(QStyleFactory::create("Fusion"));
+        QApplication::setStyle(new ui::SmoothMenuStyle(QStyleFactory::create("Fusion")));
         AppState::shared().switchToTopLevel(Page::Recent);
         m_window = std::make_unique<MainWindow>();
         m_window->show();
@@ -71,7 +73,39 @@ private slots:
         QCOMPARE(avatar->size(), QSize(38, 38));
         auto* sidebar = m_window->findChild<QWidget*>(QStringLiteral("ctSidebar"));
         QVERIFY(sidebar);
-        QVERIFY(sidebar->rect().contains(QRect(avatar->mapTo(sidebar, QPoint()), avatar->size())));
+        const QRect avatarRect(avatar->mapTo(sidebar, QPoint()), avatar->size());
+        QVERIFY2(sidebar->rect().contains(avatarRect), qPrintable(QStringLiteral("sidebar=%1x%2 avatar=%3,%4 %5x%6 button=%7x%8")
+            .arg(sidebar->width()).arg(sidebar->height()).arg(avatarRect.x()).arg(avatarRect.y())
+            .arg(avatarRect.width()).arg(avatarRect.height())
+            .arg(avatar->parentWidget()->width()).arg(avatar->parentWidget()->height())));
+        auto* hint = m_window->findChild<ui::ElidedLabel*>(QStringLiteral("ctAccountHint"));
+        QVERIFY(hint);
+        QVERIFY(hint->isVisible());
+        QCOMPARE(hint->text(), hint->fullText());
+        QVERIFY(avatar->parentWidget()->rect().contains(avatar->geometry()));
+        QVERIFY(hint->parentWidget()->rect().contains(hint->geometry()));
+        auto* name = avatar->parentWidget()->findChild<ui::ElidedLabel*>();
+        QVERIFY(name);
+        name->setFullText(QStringLiteral("一位拥有非常非常非常非常长昵称的测试账号"));
+        m_window->resize(900, 560);
+        QTest::qWait(20);
+        QCOMPARE(avatar->size(), QSize(38, 38));
+        QVERIFY(!name->text().isEmpty());
+        QVERIFY(name->text().size() < name->fullText().size());
+        QVERIFY(name->parentWidget()->rect().contains(name->geometry()));
+        QVERIFY(avatar->parentWidget()->rect().contains(avatar->geometry()));
+        name->setFullText(QStringLiteral("未登录"));
+    }
+    void trayMenuTextUsesOutlinePainting()
+    {
+        QMenu menu;
+        menu.addAction(QStringLiteral("显示主窗口"));
+        menu.addAction(QStringLiteral("播放·暂停"));
+        QVERIFY(menu.style() != nullptr);
+        menu.popup(m_window->mapToGlobal(QPoint(36, 56)));
+        QTest::qWait(30);
+        capture(QStringLiteral("tray-menu"), &menu);
+        menu.close();
     }
     void cardsReflowWithoutHorizontalClipping()
     {

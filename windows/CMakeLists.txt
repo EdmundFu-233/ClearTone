@@ -85,6 +85,18 @@ endif()
 
 if(WIN32)
     target_link_libraries(cleartone_lib PRIVATE crypt32)
+    # C++/WinRT is supplied by the Windows SDK, not by the MinGW Qt kit.
+    file(GLOB CT_CPPWINRT_CANDIDATES "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
+    list(SORT CT_CPPWINRT_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+    foreach(candidate IN LISTS CT_CPPWINRT_CANDIDATES)
+        if(EXISTS "${candidate}/winrt/Windows.Media.h")
+            target_include_directories(cleartone_lib PRIVATE "${candidate}")
+            target_compile_definitions(cleartone_lib PRIVATE CT_HAS_SMTC)
+            target_link_libraries(cleartone_lib PRIVATE runtimeobject oleaut32)
+            message(STATUS "Windows media session: ${candidate}")
+            break()
+        endif()
+    endforeach()
 endif()
 
 # Resources (icons etc.) are compiled in through resources.qrc when present.

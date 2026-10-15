@@ -6,7 +6,8 @@ ClearTone 的 Windows 桌面版，**Qt 6 Widgets + C++20（CMake）**，功能�
 （听歌排行/签到/收藏）、设置（可检查 GitHub 最新 Windows x64 版本）、二维码登录、播放队列、播放栏与全屏正在
 播放页（YRC 逐字歌词、翻译/音译、偏移调节）、音质菜单与单曲音质覆盖、倍速菜单、
 睡眠定时、音频缓存、动态背景。启动时只恢复队列与上次播放状态，必须手动播放；
-Windows 媒体键支持播放/暂停、切歌与暂停（有歌曲时注册全局快捷键，前台另接收系统媒体命令）。
+Windows 优先注册系统媒体会话（SMTC）接收播放/暂停、切歌和停止指令；缺少 Windows SDK
+或系统会话不可用时，回退到有歌曲时的全局媒体快捷键和前台系统媒体命令。
 
 Windows 网易云接入由 **Rust 辅助进程**（`windows/helper/`）提供，不再打包 Node.js
 或 npm 依赖。Qt 客户端保持原有界面与播放逻辑。辅助进程仅监听 `127.0.0.1`，
@@ -96,7 +97,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Tests
 powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1
 ```
 
-23 个 Qt Test 可执行（包含界面布局、封面解码、启动静音与更新解析回归），全部离线（桩 provider / 桩音频引擎），
+24 个 Qt Test 可执行（包含界面布局、封面解码、启动静音、媒体键与更新解析回归），全部离线（桩 provider / 桩音频引擎），
 持久化由 CTest 逐用例重定向到临时目录。离线测试只能证明本地实现与接口约定一致，
 真实账号登录、在线播放与上游接口可用性需要实机验证。
 
@@ -202,7 +203,8 @@ windows/
 ## 与 macOS 的差异 / 已知限制
 
 - 音频输出默认 libVLC（无 SDK 时回退 Qt Multimedia）；
-- 系统媒体控制（SMTC）只保留接入点（`App/MediaSessionIntegration.h`），未接线；
+- Windows SDK 存在时，使用 SMTC 发布歌曲标题/歌手、进度和播放状态并接收媒体键；
+  缺少 SDK/无法创建会话时回退到快捷键。当前不发布封面缩略图；
 - 音频缓存不转码（macOS 用 `afconvert` 转 128kbps OPUS），直接缓存原始流；
 - 菜单栏形态为系统托盘 + 独立迷你播放器窗口；
 - 凭据非 Windows 平台回退到 0600 明文文件（仅开发用）。

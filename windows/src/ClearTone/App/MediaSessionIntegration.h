@@ -7,13 +7,16 @@
 #include <QString>
 
 #include <functional>
+#if defined(Q_OS_WIN) && defined(CT_HAS_SMTC)
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Media.h>
+#endif
 
 class QWidget;
 
 namespace ct {
 
-// Windows media keys (global hotkeys while a song is selected, plus foreground
-// WM_APPCOMMAND); SMTC metadata/timeline remains unavailable with MinGW.
+// Windows SMTC media session and a media-key fallback when the SDK/session is unavailable.
 class MediaSessionIntegration : public QAbstractNativeEventFilter {
 public:
     static MediaSessionIntegration& shared();
@@ -35,6 +38,7 @@ private:
     void onPlayerTimeUpdated(double seconds);
     void post(std::function<void()> action);
     void updateMediaHotkeys();
+    void handleMediaCommand(int command);
 
     QPointer<QWidget> m_window;
     bool m_active = false;
@@ -48,6 +52,9 @@ private:
     int m_durationSub = 0;
     int m_timeSub = 0;
     QSet<int> m_registeredHotkeys;
+#ifdef CT_HAS_SMTC
+    winrt::Windows::Media::SystemMediaTransportControls m_controls{nullptr};
+#endif
 #endif
 };
 

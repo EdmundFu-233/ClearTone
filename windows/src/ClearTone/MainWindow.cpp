@@ -14,6 +14,7 @@
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/CoverImage.h"
 #include "DesignSystem/L10n.h"
+#include "DesignSystem/SmoothNavigationDelegate.h"
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
 #include "Playback/PlayerController.h"
@@ -35,6 +36,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -203,6 +205,30 @@ MainWindow::MainWindow(QWidget* parent)
     subscribeEvents();
     if (QApplication::instance() != nullptr) QApplication::instance()->installEventFilter(this);
 }
+
+class AccountCard final : public QFrame {
+public:
+    std::function<void()> onActivated;
+protected:
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
+            if (onActivated) onActivated();
+            event->accept();
+            return;
+        }
+        QFrame::mouseReleaseEvent(event);
+    }
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Space) {
+            if (onActivated) onActivated();
+            event->accept();
+            return;
+        }
+        QFrame::keyPressEvent(event);
+    }
+};
 
 QWidget* MainWindow::buildTitleBar(QWidget* parent)
 {
@@ -377,6 +403,7 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     m_sidebarList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_sidebarList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_sidebarList->setObjectName(QStringLiteral("ctNavigation"));
+    m_sidebarList->setItemDelegate(new ui::SmoothNavigationDelegate(m_sidebarList));
     m_sidebarList->setIconSize(QSize(20, 20));
     m_sidebarList->setSpacing(2);
     m_sidebarList->setFocusPolicy(Qt::StrongFocus);
@@ -411,29 +438,27 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     auto* accountWrap = new QWidget(side);
     auto* accountWrapLayout = new QVBoxLayout(accountWrap);
     accountWrapLayout->setContentsMargins(12, 0, 12, 12);
-    auto* accountFrame = new QFrame(accountWrap);
+    auto* accountFrame = new AccountCard();
     accountFrame->setObjectName(QStringLiteral("ctAccount"));
     accountFrame->setStyleSheet(QStringLiteral("#ctAccount { background: %1; border-radius: 8px; }")
                                     .arg(CTColors::overlay().name()));
-    auto* accountFrameLayout = new QVBoxLayout(accountFrame);
-    accountFrameLayout->setContentsMargins(6, 6, 6, 6);
-
-    m_accountButton = new QPushButton(accountFrame);
-    m_accountButton->setFlat(true);
+    m_accountButton = accountFrame;
     m_accountButton->setCursor(Qt::PointingHandCursor);
-    m_accountButton->setFixedHeight(54);
-    m_accountButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: none; text-align: left; padding: 4px; }"));
-    auto* accountLayout = new QHBoxLayout(m_accountButton);
-    accountLayout->setContentsMargins(4, 4, 4, 4);
+    m_accountButton->setFixedHeight(62);
+    m_accountButton->setFocusPolicy(Qt::StrongFocus);
+    m_accountButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* accountLayout = new QHBoxLayout(accountFrame);
+    accountLayout->setContentsMargins(8, 10, 8, 10);
     accountLayout->setSpacing(8);
-    m_accountAvatar = new CoverImage(m_accountButton);
+    m_accountAvatar = new CoverImage(accountFrame);
     m_accountAvatar->setObjectName(QStringLiteral("ctAccountAvatar"));
     m_accountAvatar->setFixedSize(38, 38);
     m_accountAvatar->setCornerRadius(19);
     m_accountAvatar->setPlaceholderText(QStringLiteral("人"));
     accountLayout->addWidget(m_accountAvatar, 0, Qt::AlignVCenter);
-    auto* accountText = new QWidget(m_accountButton);
+    auto* accountText = new QWidget(accountFrame);
+    accountText->setMinimumWidth(0);
+    accountText->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* accountTextLayout = new QVBoxLayout(accountText);
     accountTextLayout->setContentsMargins(0, 0, 0, 0);
     accountTextLayout->setSpacing(1);
@@ -441,22 +466,22 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     m_accountName->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
                                      .arg(CTColors::textPrimary().name())
                                      .arg(CTTypography::Body));
-    m_accountHint = ui::secondaryLabel(QStringLiteral("点击扫码登录"));
-    m_accountHint->setTextFormat(Qt::PlainText);
+    m_accountHint = ui::secondaryElidedLabel(QStringLiteral("点击扫码登录"));
+    m_accountHint->setObjectName(QStringLiteral("ctAccountHint"));
     accountTextLayout->addWidget(m_accountName);
     accountTextLayout->addWidget(m_accountHint);
     accountLayout->addWidget(accountText, 1);
-    for (QWidget* child : m_accountButton->findChildren<QWidget*>()) child->setAttribute(Qt::WA_TransparentForMouseEvents);
+    for (QWidget* child : m_accountButton->findChildren<QWidget*>())
+        child->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_accountButton->setAccessibleName(QStringLiteral("账号与登录"));
-    QObject::connect(m_accountButton, &QPushButton::clicked, [] {
+    accountFrame->onActivated = [] {
         AppState& app = AppState::shared();
         if (!app.account()) {
             app.setIsLoginPresented(true);
         } else {
             app.switchToTopLevel(Page::Profile);
         }
-    });
-    accountFrameLayout->addWidget(m_accountButton);
+    };
     accountWrapLayout->addWidget(accountFrame);
     sideLayout->addWidget(accountWrap);
 
@@ -1114,7 +1139,7 @@ void MainWindow::updateAccountArea()
 {
     const std::optional<AccountInfo> account = AppState::shared().account();
     m_accountName->setFullText(account ? account->nickname : L10n::Common::NotLoggedIn);
-    m_accountHint->setText(!account ? QStringLiteral("点击扫码登录")
+    m_accountHint->setFullText(!account ? QStringLiteral("点击扫码登录")
                                     : (account->isVIP ? QStringLiteral("VIP 会员")
                                                       : QStringLiteral("已登录")));
     m_accountAvatar->setCoverURL(account ? account->avatarURL : std::nullopt, 76);
