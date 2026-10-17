@@ -30,6 +30,19 @@ $WindowsDir = Split-Path -Parent $ScriptDir
 
 # 交叉编译（x64 主机 → arm64 目标）时的运行库部署。
 # 清单与 x64 上 windeployqt 的输出保持一致（见 CI 的“列出产物内容”）。
+function Get-PeMachine {
+    param([string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40) { throw "无效 PE 文件：$Path" }
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($peOffset -le 0 -or ($peOffset + 6) -gt $bytes.Length -or
+        $bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) {
+        throw "无效 PE 文件：$Path"
+    }
+    return [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+}
+
 function Deploy-CrossRuntime {
     param([string]$TargetQt, [string]$Destination)
 
@@ -81,7 +94,18 @@ function Deploy-CrossRuntime {
                         Where-Object { $_.Name -like 'Microsoft.VC*.CRT' }
                 } | Select-Object -First 1
             if ($crt) {
-                Copy-Item (Join-Path $crt.FullName '*.dll') -Destination $Destination -Force
+                # Some VS redist directories also contain x64 helper DLLs (notably
+                # vcruntime140_1.dll). Never let them overwrite ARM64 Qt dependencies.
+                foreach ($file in Get-ChildItem $crt.FullName -Filter '*.dll' -File) {
+                    if ((Get-PeMachine -Path $file.FullName) -eq 0xAA64) {
+                        Copy-Item $file.FullName $Destination -Force
+                    }
+                }
+                foreach ($name in @('vcruntime140.dll', 'msvcp140.dll')) {
+                    if (-not (Test-Path (Join-Path $Destination $name))) {
+                        throw "缺少 ARM64 MSVC 运行库：$name"
+                    }
+                }
             } else {
                 $redistExe = Get-ChildItem $redistRoot -Recurse -Filter 'vc_redist.arm64.exe' -ErrorAction SilentlyContinue |
                     Select-Object -First 1
@@ -102,14 +126,7 @@ function Assert-PackageArchitecture {
     $expected = if ($TargetArch -eq 'arm64') { 0xAA64 } else { 0x8664 }
     foreach ($file in Get-ChildItem $Destination -Recurse -File |
         Where-Object { $_.Extension -in @('.dll', '.exe') }) {
-        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-        if ($bytes.Length -lt 0x40) { throw "无效 PE 文件：$($file.FullName)" }
-        $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
-        if ($peOffset -le 0 -or ($peOffset + 6) -gt $bytes.Length -or
-            $bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) {
-            throw "无效 PE 文件：$($file.FullName)"
-        }
-        $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+        $machine = Get-PeMachine -Path $file.FullName
         if ($machine -ne $expected) {
             throw ("发布包架构不匹配：{0} (machine=0x{1:X4}, expected=0x{2:X4})" -f $file.FullName, $machine, $expected)
         }
