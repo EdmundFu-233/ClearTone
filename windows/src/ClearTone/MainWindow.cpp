@@ -1074,11 +1074,11 @@ bool MainWindow::handleKeyPress(QKeyEvent* event)
         player.seekBy(15);
         return true;
     case Qt::Key_Up:
-        player.setVolume(std::min(1.0f, player.volume() + 0.1f));
+        player.setVolume((std::min)(1.0f, player.volume() + 0.1f));
         if (player.volume() > 0.001f) player.setMuted(false);
         return true;
     case Qt::Key_Down:
-        player.setVolume(std::max(0.0f, player.volume() - 0.1f));
+        player.setVolume((std::max)(0.0f, player.volume() - 0.1f));
         if (player.volume() > 0.001f) player.setMuted(false);
         return true;
     default:
