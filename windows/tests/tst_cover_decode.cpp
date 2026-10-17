@@ -15,6 +15,7 @@ class CoverDecodeTests : public QObject {
 
 private slots:
     void playlistCoverIsDecodedAtDisplaySize();
+    void neteaseCoverUrlRequestsCompressedSize();
 };
 
 void CoverDecodeTests::playlistCoverIsDecodedAtDisplaySize()
@@ -36,6 +37,14 @@ void CoverDecodeTests::playlistCoverIsDecodedAtDisplaySize()
     QVERIFY(large.has_value());
     QCOMPARE(large->width(), 144);
     QCOMPARE(large->height(), 96);
+}
+
+void CoverDecodeTests::neteaseCoverUrlRequestsCompressedSize()
+{
+    const QString raw = QStringLiteral("http://p3.music.126.net/abc/10995116.jpg");
+    const QString sized = CoverImageLoader::sizedUrl(raw, 64);
+    QVERIFY(sized.startsWith(QStringLiteral("https://p3.music.126.net/abc/10995116.jpg")));
+    QVERIFY(sized.contains(QStringLiteral("param=64y64")));
 }
 
 QTEST_GUILESS_MAIN(CoverDecodeTests)

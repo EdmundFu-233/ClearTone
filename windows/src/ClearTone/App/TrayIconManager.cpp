@@ -149,7 +149,7 @@ void TrayIconManager::initialize(QWidget* mainWindow)
                 showMainWindow();
             }
         });
-    m_tray->setVisible(false);
+    refreshVisibility();
 }
 
 void TrayIconManager::showTray()

@@ -3,7 +3,13 @@
 #include "App/AppState.h"
 #include "App/CloseBehaviorPolicy.h"
 #include "App/SidebarShortcuts.h"
+#include "App/TrayIconManager.h"
+#include "Core/Networking/HelperProcessManager.h"
 #include "Core/Persistence/AppSettings.h"
+#include "Core/Persistence/PersistenceStore.h"
+#include "MainWindow.h"
+
+#include <QDir>
 
 using namespace ct;
 
@@ -22,9 +28,10 @@ class ShortcutsCloseTests : public QObject {
 private slots:
     void quitIsTheOnlyBehaviorThatQuitsOnClose();
     void menuBarAlwaysVisibleWinsOverEveryBehaviorAndWindowState();
-    void minimizeToMenuBarShowsTrayOnlyWithoutVisibleWindows();
-    void keepPlayingKeepsTrayAvailableWithoutVisibleWindows();
-    void quitNeverShowsTrayWithoutAlwaysVisible();
+    void minimizeToMenuBarShowsTrayAtStartupAndWithoutVisibleWindows();
+    void keepPlayingShowsTrayAtStartupAndWithoutVisibleWindows();
+    void quitShowsTrayWhileWindowVisibleOnlyWithoutAlwaysVisible();
+    void closingMainWindowSuspendsUiAndTrayReopensIt();
 
     void firstNinePagesUseOneThroughNine();
     void tenthPageReusesZeroInsteadOfTen();
@@ -54,28 +61,60 @@ void ShortcutsCloseTests::menuBarAlwaysVisibleWinsOverEveryBehaviorAndWindowStat
     }
 }
 
-void ShortcutsCloseTests::minimizeToMenuBarShowsTrayOnlyWithoutVisibleWindows()
+void ShortcutsCloseTests::minimizeToMenuBarShowsTrayAtStartupAndWithoutVisibleWindows()
 {
     AppSettings settings;
     settings.closeBehavior = CloseBehavior::MinimizeToMenuBar;
-    QVERIFY(!CloseBehaviorPolicy::trayIconShouldBeVisible(settings, true));
+    QVERIFY(CloseBehaviorPolicy::trayIconShouldBeVisible(settings, true));
     QVERIFY(CloseBehaviorPolicy::trayIconShouldBeVisible(settings, false));
 }
 
-void ShortcutsCloseTests::keepPlayingKeepsTrayAvailableWithoutVisibleWindows()
+void ShortcutsCloseTests::keepPlayingShowsTrayAtStartupAndWithoutVisibleWindows()
 {
     AppSettings settings;
     settings.closeBehavior = CloseBehavior::KeepPlaying;
-    QVERIFY(!CloseBehaviorPolicy::trayIconShouldBeVisible(settings, true));
+    QVERIFY(CloseBehaviorPolicy::trayIconShouldBeVisible(settings, true));
     QVERIFY(CloseBehaviorPolicy::trayIconShouldBeVisible(settings, false));
 }
 
-void ShortcutsCloseTests::quitNeverShowsTrayWithoutAlwaysVisible()
+void ShortcutsCloseTests::quitShowsTrayWhileWindowVisibleOnlyWithoutAlwaysVisible()
 {
     AppSettings settings;
     settings.closeBehavior = CloseBehavior::Quit;
-    QVERIFY(!CloseBehaviorPolicy::trayIconShouldBeVisible(settings, true));
+    QVERIFY(CloseBehaviorPolicy::trayIconShouldBeVisible(settings, true));
     QVERIFY(!CloseBehaviorPolicy::trayIconShouldBeVisible(settings, false));
+}
+
+void ShortcutsCloseTests::closingMainWindowSuspendsUiAndTrayReopensIt()
+{
+    const QString emptyHelper = QDir::tempPath() + QStringLiteral("/cleartone-close-no-helper");
+    QDir().mkpath(emptyHelper);
+    qputenv("CLEARTONE_HELPER_ROOT", emptyHelper.toUtf8());
+
+    AppSettings settings;
+    settings.closeBehavior = CloseBehavior::KeepPlaying;
+    PersistenceStore::shared().saveSetting(QStringLiteral("appSettings"), settings.toJson());
+
+    MainWindow window;
+    TrayIconManager::shared().initialize(&window);
+    window.show();
+    QTest::qWait(20);
+    QVERIFY(!window.isUiSuspended());
+    QVERIFY(window.centralWidget() != nullptr);
+
+    window.close();
+    QTest::qWait(20);
+    QVERIFY(!window.isVisible());
+    QVERIFY(window.isUiSuspended());
+    QCOMPARE(window.centralWidget(), nullptr);
+
+    TrayIconManager::shared().showMainWindow();
+    QTest::qWait(20);
+    QVERIFY(window.isVisible());
+    QVERIFY(!window.isUiSuspended());
+    QVERIFY(window.centralWidget() != nullptr);
+
+    HelperProcessManager::shared().stop();
 }
 
 void ShortcutsCloseTests::firstNinePagesUseOneThroughNine()

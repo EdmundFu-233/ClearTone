@@ -570,6 +570,16 @@ void NowPlayingView::hideEvent(QHideEvent* event)
     QWidget::hideEvent(event);
     if (m_lyricsCts) m_lyricsCts->cancel();
     m_lyricsCts = nullptr;
+    if (m_cover) m_cover->clearCover();
+    while (QLayoutItem* item = m_lyricContainerLayout->takeAt(0)) {
+        if (QWidget* widget = item->widget()) widget->deleteLater();
+        delete item;
+    }
+    m_rows.clear();
+    m_rowIndex.clear();
+    m_currentLineIndex.reset();
+    m_lastWordIndex = -2;
+    m_loadedLyricsSongID.reset();
 }
 
 void NowPlayingView::resizeEvent(QResizeEvent* event)
@@ -608,25 +618,28 @@ bool NowPlayingView::eventFilter(QObject* watched, QEvent* event)
 
 void NowPlayingView::scheduleRender()
 {
+    if (!isVisible()) return;
     if (m_renderScheduled) return;
     m_renderScheduled = true;
     QMetaObject::invokeMethod(
         this,
         [this] {
             m_renderScheduled = false;
-            refresh();
+            if (isVisible()) refresh();
         },
         Qt::QueuedConnection);
 }
 
 void NowPlayingView::scheduleLyricsRender()
 {
+    if (!isVisible()) return;
     if (m_lyricsRenderScheduled) return;
     m_lyricsRenderScheduled = true;
     QMetaObject::invokeMethod(
         this,
         [this] {
             m_lyricsRenderScheduled = false;
+            if (!isVisible()) return;
             renderLyrics();
             renderLyricState();
         },
@@ -710,7 +723,7 @@ void NowPlayingView::refreshMuteGlyph()
 
 void NowPlayingView::handlePlayerTime(double time)
 {
-    if (!*m_alive) return;
+    if (!*m_alive || !isVisible()) return;
     PlayerController& player = PlayerController::shared();
     m_currentTimeText->setText(CTFormatting::time(time));
     m_durationText->setText(CTFormatting::time(player.duration()));

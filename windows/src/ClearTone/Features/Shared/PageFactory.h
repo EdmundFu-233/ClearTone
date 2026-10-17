@@ -31,6 +31,7 @@ public:
     static QWidget* resolveOverlay(OverlayKind kind);
     static void invalidate(Page page);
     static void invalidateOverlay(OverlayKind kind);
+    static void clearAll();
 
     // 内省（ViewSmoke 测试用）
     static QList<Page> registeredPages();

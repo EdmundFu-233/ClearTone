@@ -35,4 +35,30 @@ void SmoothMenuStyle::drawControl(ControlElement element, const QStyleOption* op
             Qt::AlignVCenter | Qt::AlignRight);
 }
 
+void SmoothMenuStyle::drawItemText(QPainter* painter, const QRect& rect, int flags,
+    const QPalette& pal, bool enabled, const QString& text, QPalette::ColorRole textRole) const
+{
+    if (!painter || text.isEmpty() || rect.isEmpty()) return;
+    const QFont& font = painter->font();
+    if (font.family().compare(QStringLiteral("lucide"), Qt::CaseInsensitive) == 0
+        || (flags & Qt::TextWordWrap) != 0 || text.contains(QLatin1Char('\n'))) {
+        QProxyStyle::drawItemText(painter, rect, flags, pal, enabled, text, textRole);
+        return;
+    }
+    const QColor color = textRole != QPalette::NoRole
+        ? pal.color(enabled ? QPalette::Active : QPalette::Disabled, textRole)
+        : painter->pen().color();
+    QString clean = text;
+    if ((flags & (Qt::TextShowMnemonic | Qt::TextHideMnemonic)) != 0 && clean.contains(QLatin1Char('&'))) {
+        clean = clean.replace(QStringLiteral("&&"), QStringLiteral("\x01"))
+                    .remove(QLatin1Char('&'))
+                    .replace(QLatin1Char('\x01'), QLatin1Char('&'));
+    }
+    Qt::Alignment align = static_cast<Qt::Alignment>(
+        flags & (Qt::AlignHorizontal_Mask | Qt::AlignVertical_Mask));
+    if ((align & Qt::AlignHorizontal_Mask) == 0) align |= Qt::AlignLeft;
+    if ((align & Qt::AlignVertical_Mask) == 0) align |= Qt::AlignTop;
+    drawSmoothText(painter, rect, clean, font, color, align);
+}
+
 } // namespace ct::ui

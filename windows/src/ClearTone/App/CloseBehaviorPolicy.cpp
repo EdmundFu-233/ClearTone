@@ -10,7 +10,8 @@ bool CloseBehaviorPolicy::shouldQuitOnClose(const AppSettings& settings)
 bool CloseBehaviorPolicy::trayIconShouldBeVisible(const AppSettings& settings, bool hasVisibleWindows)
 {
     if (settings.menuBarAlwaysVisible) return true;
-    return settings.closeBehavior != CloseBehavior::Quit && !hasVisibleWindows;
+    if (settings.closeBehavior != CloseBehavior::Quit) return true;
+    return hasVisibleWindows;
 }
 
 } // namespace ct

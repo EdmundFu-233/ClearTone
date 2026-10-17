@@ -33,12 +33,15 @@ void CoverImage::setCoverURL(const std::optional<QString>& url, int decodeWidth)
     m_url = *normalized;
     m_pixmap = QPixmap();
     update();
-    refresh();
+    if (isVisible()) {
+        refresh();
+    }
 }
 
 void CoverImage::clearCover()
 {
     if (m_cts) m_cts->cancel();
+    m_cts.reset();
     m_generation += 1;
     m_url.clear();
     m_pixmap = QPixmap();
@@ -52,10 +55,33 @@ void CoverImage::setCornerRadius(double radius)
     update();
 }
 
+void CoverImage::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (m_pixmap.isNull() && !m_url.isEmpty()) {
+        refresh();
+    }
+}
+
+void CoverImage::hideEvent(QHideEvent* event)
+{
+    QWidget::hideEvent(event);
+    if (m_cts) {
+        m_cts->cancel();
+        m_cts.reset();
+    }
+    ++m_generation;
+    m_pixmap = QPixmap();
+}
+
 void CoverImage::refresh()
 {
     if (m_cts) m_cts->cancel();
     const int generation = ++m_generation;
+    if (auto cached = CoverImageLoader::shared().peekMemory(m_url, m_decodeWidth)) {
+        applyImage(*cached, generation);
+        return;
+    }
     auto source = std::make_shared<CancellationTokenSource>();
     m_cts = source;
     const QString url = m_url;

@@ -4,8 +4,10 @@ function Resolve-ClearToneQtRoot {
 
     if ($Explicit) {
         $kit = (Resolve-Path $Explicit -ErrorAction Stop).Path
-        if (-not (Test-Path (Join-Path $kit 'bin\windeployqt.exe'))) {
-            throw "Qt kit 无效：$kit（缺少 bin\windeployqt.exe）"
+        # Cross-compiled ARM64 kits contain target libraries but may not ship runnable host tools.
+        $required = if ($Arch -eq 'arm64') { 'lib\cmake\Qt6\Qt6Config.cmake' } else { 'bin\windeployqt.exe' }
+        if (-not (Test-Path (Join-Path $kit $required))) {
+            throw "Qt kit 无效：$kit（缺少 $required）"
         }
         return $kit
     }
@@ -25,7 +27,8 @@ function Resolve-ClearToneQtRoot {
                 Sort-Object { if ($_.Name -match '^mingw') { 0 } else { 1 } }
         }
         foreach ($kit in $kits) {
-            if (Test-Path (Join-Path $kit.FullName 'bin\windeployqt.exe')) { return $kit.FullName }
+            $required = if ($Arch -eq 'arm64') { 'lib\cmake\Qt6\Qt6Config.cmake' } else { 'bin\windeployqt.exe' }
+            if (Test-Path (Join-Path $kit.FullName $required)) { return $kit.FullName }
         }
     }
     $command = Get-Command windeployqt.exe -ErrorAction SilentlyContinue

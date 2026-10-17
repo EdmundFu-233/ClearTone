@@ -38,6 +38,10 @@ public:
     PlayerBarModel& bar() { return m_bar; }
     const PlayerBarModel& bar() const { return m_bar; }
 
+    bool isUiSuspended() const { return m_uiSuspended; }
+    void suspendUiToBackground();
+    void restoreUiFromBackground();
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
@@ -48,6 +52,8 @@ protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
+    void buildUi();
+    void resetUiPointers();
     QWidget* buildSidebar(QWidget* parent);
     QWidget* buildTitleBar(QWidget* parent);
     QWidget* buildContentColumn(QWidget* parent);
@@ -88,6 +94,7 @@ private:
     QList<std::function<void()>> m_unsubscribers;
 
     bool m_startupCompleted = false;
+    bool m_uiSuspended = false;
     bool m_syncingSidebar = false;
     bool m_syncingVolume = false;
     bool m_progressDragging = false;

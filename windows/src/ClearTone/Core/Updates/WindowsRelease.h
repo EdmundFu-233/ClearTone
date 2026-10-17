@@ -13,7 +13,7 @@ struct WindowsRelease {
     QUrl downloadUrl;
 };
 
-// Accept only stable semantic versions and the repository's x64 release asset.
+// Accept stable two- or three-part versions and only this repository's asset for the current CPU.
 std::optional<WindowsRelease> parseLatestRelease(const QByteArray& response);
 bool isNewer(const QString& latest, const QString& installed);
 

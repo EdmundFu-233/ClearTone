@@ -21,7 +21,7 @@ CTThemeMode themeMode = CTThemeMode::System;
 QString applicationStyle()
 {
     return QStringLiteral(R"(
-        QWidget { color: %1; font-size: 13px; }
+        QWidget { color: %1; }
         QLabel { background: transparent; }
         QToolTip { color: %1; background: %2; border: 1px solid %3; padding: 6px; }
         QPushButton { min-height: 24px; border: 1px solid transparent; border-radius: 8px; }
@@ -77,11 +77,21 @@ void CTTheme::apply(CTThemeMode mode)
         QFont font = QApplication::font();
 #ifdef Q_OS_WIN
         // Windows 11 的界面字体：Segoe UI Variable（拉丁）+ 微软雅黑 UI（中文），
-        // Qt 按字体族列表逐字符回退；Win10 没有 Variable 时退回 Segoe UI。
-        font.setFamilies({QStringLiteral("Segoe UI Variable Text"), QStringLiteral("Segoe UI"),
-            QStringLiteral("Microsoft YaHei UI")});
+        // 附带日韩、符号与内置图标字体，避免缺字时扫描全系统第三方字库。
+        font.setFamilies({
+            QStringLiteral("Segoe UI Variable Text"),
+            QStringLiteral("Segoe UI"),
+            QStringLiteral("Microsoft YaHei UI"),
+            QStringLiteral("Yu Gothic UI"),
+            QStringLiteral("Malgun Gothic"),
+            QStringLiteral("Segoe UI Symbol"),
+            QStringLiteral("Segoe UI Emoji"),
+            QStringLiteral("lucide"),
+        });
 #endif
         font.setPixelSize(13);
+        font.setStyleStrategy(QFont::PreferAntialias);
+        font.setHintingPreference(QFont::PreferVerticalHinting);
         QApplication::setFont(font);
         return true;
     }();
@@ -141,12 +151,20 @@ void CTTheme::apply(CTThemeMode mode)
 
 QIcon CTTheme::icon(const QString& glyph, const QColor& color)
 {
+    static QHash<QString, QIcon> iconCache;
+    const QString cacheKey = QStringLiteral("%1|%2|%3|%4")
+                                 .arg(glyph, color.isValid() ? color.name() : QString(),
+                                     CTColors::accent().name(), CTColors::textSecondary().name());
+    if (const auto found = iconCache.constFind(cacheKey); found != iconCache.constEnd()) {
+        return *found;
+    }
+
     QIcon result;
     QFont font(QStringLiteral("lucide"));
     font.setPixelSize(20);
     font.setStyleStrategy(QFont::PreferAntialias);
     for (auto mode : {QIcon::Normal, QIcon::Selected, QIcon::Disabled}) {
-        for (int scale : {1, 2, 3}) {
+        for (int scale : {1, 2}) {
             QPixmap image(24 * scale, 24 * scale);
             image.setDevicePixelRatio(scale);
             image.fill(Qt::transparent);
@@ -162,6 +180,8 @@ QIcon CTTheme::icon(const QString& glyph, const QColor& color)
             result.addPixmap(image, mode);
         }
     }
+    if (iconCache.size() > 64) iconCache.clear();
+    iconCache.insert(cacheKey, result);
     return result;
 }
 

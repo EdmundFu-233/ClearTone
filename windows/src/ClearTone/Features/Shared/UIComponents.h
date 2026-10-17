@@ -1,16 +1,22 @@
 #pragma once
 
+#include "Core/Async.h"
 #include "Core/Models/MusicModels.h"
 #include "DesignSystem/CTTheme.h"
 
 #include <QFrame>
+#include <QHash>
 #include <QLabel>
 #include <QList>
+#include <QPixmap>
+#include <QPointer>
 #include <QPushButton>
+#include <QSet>
 #include <QString>
 #include <QWidget>
 
 #include <functional>
+#include <memory>
 
 class QListWidget;
 class QListWidgetItem;
@@ -100,30 +106,32 @@ public:
     void setEmptyText(const QString& text);
     QListWidget* listWidget() const { return m_list; }
 
-private:
-    struct Row {
-        QListWidgetItem* item = nullptr;
-        QWidget* widget = nullptr;
-        QLabel* index = nullptr;
-        QLabel* like = nullptr;
-        ui::ElidedLabel* title = nullptr;
-        ui::ElidedLabel* artist = nullptr;
-        QLabel* reason = nullptr;
-        QLabel* duration = nullptr;
-    };
+    bool showIndex() const { return m_showIndex; }
+    int rowHeight() const { return m_rowHeight; }
+    const QString& emptyText() const { return m_emptyText; }
+    QPixmap coverPixmapFor(const QString& url);
 
+protected:
+    void hideEvent(QHideEvent* event) override;
+
+private:
+    static Task<void> fetchCoverAsync(QPointer<SongListView> self, QString url, quint64 generation,
+        CancellationToken token);
+    void appendItem(int index);
     void rebuild();
     void refreshDynamic();
     void showContextMenu(const QPoint& position);
     void activateRow(int row);
 
-    QListWidget* m_list;
+    QListWidget* m_list = nullptr;
     QList<Song> m_songs;
-    QList<Row> m_rows;
-    QLabel* m_empty = nullptr;
     bool m_showIndex = true;
     int m_rowHeight = 64;
     QString m_emptyText;
+    QHash<QString, QPixmap> m_rowPixmaps;
+    QSet<QString> m_inFlightCovers;
+    quint64 m_coverGeneration = 0;
+    std::shared_ptr<CancellationTokenSource> m_coverCts;
     int m_appObserver = 0;
     int m_stateObserver = 0;
     int m_songObserver = 0;

@@ -38,6 +38,14 @@ void StartupPlaybackTests::restoredSongWaitsForUserAction()
     QVERIFY(player.engine() == nullptr);
     QCoreApplication::processEvents();
     QVERIFY(!player.isLoadInFlight());
+
+    // 恢复 VIP 账号或切换默认音质不得让静止恢复态的歌曲自动开始加载或播放。
+    player.setAccountIsVIP(true);
+    player.setRequestedQuality(QualityLevel::Lossless);
+    QCoreApplication::processEvents();
+    QCOMPARE(player.playbackState().kind, PlaybackState::Kind::Paused);
+    QVERIFY(!player.isLoadInFlight());
+    QVERIFY(player.engine() == nullptr);
 }
 
 QTEST_GUILESS_MAIN(StartupPlaybackTests)

@@ -817,6 +817,9 @@ QualityLevel PlayerController::effectiveQualityFor(const QString& songID) const
 void PlayerController::reloadCurrentSongForQualityChange()
 {
     if (!m_currentSong) return;
+    // 启动恢复的歌曲处于静止暂停态（尚未开始加载或创建播放引擎）时，
+    // 切换音质或恢复 VIP 状态不得提前发起加载或自动播放，必须等用户主动点击播放。
+    if (!m_hasActiveMedia && !m_isLoadInFlight && !m_pendingUrl) return;
     const double time = m_currentTime;
     const bool autoplay =
         m_playbackState.isPlaying() || m_playbackState.isBuffering() || m_pendingAutoplay;
@@ -937,6 +940,10 @@ void PlayerController::handlePlayError(const MusicException& error, const Song& 
     setPlaybackState(makeState(PlaybackState::Kind::Failed, song.id, message));
     CTLog::playback().error(QStringLiteral("播放失败 [%1]: %2").arg(song.title, message));
     if (onError) onError(song.id, message);
+
+    if (!m_pendingAutoplay) {
+        return;
+    }
 
     m_consecutiveFailures += 1;
     if (m_consecutiveFailures >= maxConsecutiveFailures) {

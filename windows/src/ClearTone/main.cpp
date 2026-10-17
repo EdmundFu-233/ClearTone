@@ -6,23 +6,27 @@
 #include "Playback/PlayerController.h"
 
 #include <QApplication>
+#include <QPixmapCache>
 #include <QStyleFactory>
 #include <QTimer>
 
 int main(int argc, char** argv)
 {
 #ifdef Q_OS_WIN
-    // DirectWrite maps the entire installed font collection on first text paint;
-    // on machines with many fonts this adds hundreds of MB to the working set.
-    // Keep an explicitly selected Qt platform/engine (e.g. offscreen in CI).
+    // DirectWrite maps the entire installed font collection on first text paint
+    // (~135MB private + ~300MB mapped on machines with many CJK fonts), while GDI
+    // disables antialiasing at small UI font sizes. FreeType keeps the ~26MB
+    // low-memory footprint and renders smooth antialiased text across the UI.
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
-        qputenv("QT_QPA_PLATFORM", "windows:fontengine=gdi");
+        qputenv("QT_QPA_PLATFORM", "windows:fontengine=freetype");
 #endif
     QApplication app(argc, argv);
+    QApplication::setQuitOnLastWindowClosed(false);
     QApplication::setApplicationName(QStringLiteral("ClearTone"));
     QApplication::setApplicationVersion(QStringLiteral(CT_APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("ClearTone"));
     QApplication::setStyle(new ct::ui::SmoothMenuStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
+    QPixmapCache::setCacheLimit(2048);
 
     // CI / 打包后的启动冒烟：正常建窗跑一段时间再退出；崩溃会以非 0 退出码暴露。
     int smokeSeconds = 0;

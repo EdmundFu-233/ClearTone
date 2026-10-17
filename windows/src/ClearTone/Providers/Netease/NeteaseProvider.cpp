@@ -24,10 +24,10 @@ namespace ct {
 
 namespace {
 
-constexpr int responseCacheEntryLimit = 128;
-constexpr qint64 responseCacheByteLimit = 32LL * 1024 * 1024;
-constexpr int playlistTrackCacheTtlSeconds = 600;
-constexpr int playlistTrackCacheLimit = 8;
+constexpr int responseCacheEntryLimit = 48;
+constexpr qint64 responseCacheByteLimit = 4LL * 1024 * 1024;
+constexpr int playlistTrackCacheTtlSeconds = 300;
+constexpr int playlistTrackCacheLimit = 3;
 constexpr int reachCacheTtlSeconds = 180;
 constexpr int detailBatchSize = 500;
 constexpr int requestTimeoutMs = 20000;

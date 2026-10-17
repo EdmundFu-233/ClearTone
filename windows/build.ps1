@@ -42,6 +42,16 @@ if (-not $Arch) {
 $Config = if ($Release) { 'Release' } else { 'Debug' }
 $vsArch = if ($Arch -eq 'arm64') { 'ARM64' } else { 'x64' }
 $QtRoot = Resolve-ClearToneQtRoot -Explicit $QtRoot -Arch $Arch
+$isCrossArm = $Arch -eq 'arm64' -and $env:PROCESSOR_ARCHITECTURE -ne 'ARM64'
+if ($isCrossArm -and -not $QtHostPath) {
+    $hostKit = Get-ChildItem (Split-Path -Parent $QtRoot) -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^msvc\d+_64$' -and
+            (Test-Path (Join-Path $_.FullName 'bin\windeployqt.exe')) } |
+        Select-Object -First 1
+    if (-not $hostKit) { throw 'ARM64 交叉编译需要同版本的 MSVC x64 主机 Qt kit（可用 -QtHostPath 指定）。' }
+    $QtHostPath = $hostKit.FullName
+    Write-Host "ARM64 交叉编译：使用主机 Qt $QtHostPath" -ForegroundColor Yellow
+}
 $isMinGW = Test-ClearToneMinGWKit -Kit $QtRoot
 if ($isMinGW -and $Arch -ne 'x64') { throw 'Qt MinGW kit 仅支持 x64；ARM64 需要 Qt ARM64 + MSVC 工具链。' }
 if (-not $Generator) { $Generator = if ($isMinGW) { 'Ninja' } else { 'Visual Studio 17 2022' } }
@@ -65,20 +75,6 @@ function Prepare-Helper {
 }
 
 function Invoke-Build {
-    # ARM64 交叉编译需要一份 x64 主机 Qt（moc/rcc/windeployqt）
-    if ($Arch -eq 'arm64' -and -not $QtHostPath) {
-        $hostKit = Get-ChildItem 'C:\Qt' -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^\d+\.\d+' } | Sort-Object Name -Descending |
-            ForEach-Object {
-                Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match 'msvc\d+_64$' } | Sort-Object Name -Descending
-            } | Where-Object { Test-Path (Join-Path $_.FullName 'bin\windeployqt.exe') } |
-            Select-Object -First 1
-        if ($hostKit) {
-            $QtHostPath = $hostKit.FullName
-            Write-Host "ARM64 交叉编译：使用主机 Qt $QtHostPath" -ForegroundColor Yellow
-        }
-    }
     Write-Host "=== [2/4] CMake 配置（Qt: $QtRoot，$Arch / $Config）===" -ForegroundColor Cyan
     if ($Clean -and (Test-Path $BuildDir)) { Remove-Item -Recurse -Force $BuildDir }
     $isNinja = $Generator -like 'Ninja*'

@@ -2,10 +2,13 @@
 
 #include "App/AppState.h"
 #include "DesignSystem/CoverImage.h"
+#include "DesignSystem/CoverImageLoader.h"
 #include "DesignSystem/L10n.h"
+#include "DesignSystem/SmoothText.h"
 #include "Playback/PlayerController.h"
 
 #include <QApplication>
+#include <QHideEvent>
 #include <QKeyEvent>
 #include "DesignSystem/FlowLayout.h"
 #include <QHBoxLayout>
@@ -13,9 +16,12 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPainterPath>
 #include <QProgressBar>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QStyledItemDelegate>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -401,9 +407,160 @@ QWidget* artistCard(const Artist& artist, std::function<void(const Artist&)> onC
 
 namespace ct {
 
+namespace {
+
+constexpr int rowCoverDecodeWidth = 64;
+constexpr int maxCachedRowPixmaps = 48;
+
+class SongRowDelegate final : public QStyledItemDelegate {
+public:
+    explicit SongRowDelegate(SongListView* view)
+        : QStyledItemDelegate(view)
+        , m_view(view)
+    {
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+        const QModelIndex& modelIndex) const override
+    {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setRenderHint(QPainter::TextAntialiasing, true);
+
+        const QRect rowRect = option.rect;
+        if (!modelIndex.data(Qt::UserRole).isValid()) {
+            painter->setPen(CTColors::textSecondary());
+            painter->setFont(option.font);
+            painter->drawText(rowRect, Qt::AlignCenter, m_view->emptyText());
+            painter->restore();
+            return;
+        }
+
+        const int index = modelIndex.data(Qt::UserRole).toInt();
+        const QList<Song>& songs = m_view->songs();
+        if (index < 0 || index >= songs.size()) {
+            painter->restore();
+            return;
+        }
+        const Song& song = songs.at(index);
+
+        if (option.state.testFlag(QStyle::State_Selected)
+            || option.state.testFlag(QStyle::State_MouseOver)) {
+            QPainterPath bgPath;
+            bgPath.addRoundedRect(rowRect.adjusted(0, 1, 0, -1), 8, 8);
+            painter->fillPath(bgPath, CTColors::overlay());
+        }
+
+        const QRect inner = rowRect.adjusted(8, 8, -16, -8);
+        int left = inner.left();
+
+        const auto currentSong = PlayerController::shared().currentSong();
+        const bool playing = currentSong.has_value() && currentSong->id == song.id;
+
+        const QRect indexRect(left, inner.top(), 30, inner.height());
+        left += 30 + 8;
+        if (playing || m_view->showIndex()) {
+            painter->setPen(playing ? CTColors::accent() : CTColors::textSecondary());
+            painter->setFont(option.font);
+            painter->drawText(indexRect, Qt::AlignCenter,
+                playing ? QStringLiteral("▶") : QString::number(index + 1));
+        }
+
+        const int coverSide = 42;
+        const QRectF coverRect(left, rowRect.top() + (rowRect.height() - coverSide) / 2.0,
+            coverSide, coverSide);
+        left += coverSide + 8;
+
+        {
+            painter->save();
+            QPainterPath clip;
+            clip.addRoundedRect(coverRect, 7, 7);
+            painter->setClipPath(clip);
+            painter->fillRect(coverRect, QColor(128, 128, 128, 0x33));
+            const QPixmap pixmap = m_view->coverPixmapFor(song.coverURL.value_or(QString()));
+            if (!pixmap.isNull() && !pixmap.size().isEmpty()) {
+                const QSizeF target = coverRect.size();
+                const QSizeF source = pixmap.size();
+                const double scale = qMax(target.width() / source.width(),
+                    target.height() / source.height());
+                const QSizeF scaled = source * scale;
+                const QRectF sourceRect(
+                    QPointF((scaled.width() - target.width()) / scale / 2.0,
+                        (scaled.height() - target.height()) / scale / 2.0),
+                    QSizeF(target.width() / scale, target.height() / scale));
+                painter->drawPixmap(coverRect, pixmap, sourceRect);
+            } else {
+                painter->setPen(CTColors::textSecondary());
+                QFont iconFont = option.font;
+                iconFont.setPointSizeF(10.5);
+                painter->setFont(iconFont);
+                painter->drawText(coverRect, Qt::AlignCenter, QStringLiteral("♪"));
+            }
+            painter->restore();
+        }
+
+        int right = inner.right() + 1;
+        const QRect durationRect(right - 48, inner.top(), 48, inner.height());
+        right -= 48 + 8;
+        ui::drawSmoothText(painter, durationRect, CTFormatting::time(song.duration), option.font,
+            CTColors::textSecondary(), Qt::AlignRight | Qt::AlignVCenter);
+
+        if (!song.isPlayable) {
+            const QString reason = song.unavailableReason.value_or(QString());
+            if (!reason.isEmpty()) {
+                const QFontMetrics metrics(option.font);
+                const QString elidedReason = metrics.elidedText(reason, Qt::ElideRight, 120);
+                const int reasonWidth = qBound(48, metrics.horizontalAdvance(elidedReason) + 8, 128);
+                const QRect reasonRect(right - reasonWidth, inner.top(), reasonWidth, inner.height());
+                right -= reasonWidth + 8;
+                ui::drawSmoothText(painter, reasonRect, elidedReason, option.font,
+                    CTColors::textSecondary(), Qt::AlignRight | Qt::AlignVCenter);
+            }
+        }
+
+        const QRect likeRect(right - 18, inner.top(), 18, inner.height());
+        right -= 18 + 8;
+        if (AppState::shared().isLiked(song.id)) {
+            painter->setPen(CTColors::accent());
+            painter->drawText(likeRect, Qt::AlignCenter, QStringLiteral("♥"));
+        }
+
+        const int textWidth = qMax(0, right - left);
+        if (textWidth > 0) {
+            QFont titleFont = option.font;
+            titleFont.setPixelSize(static_cast<int>(CTTypography::Body));
+            titleFont.setWeight(song.isPlayable ? QFont::DemiBold : QFont::Normal);
+            const QFontMetrics titleMetrics(titleFont);
+            const QFontMetrics artistMetrics(option.font);
+
+            const int totalTextHeight = titleMetrics.height() + 2 + artistMetrics.height();
+            const int textTop = rowRect.top() + (rowRect.height() - totalTextHeight) / 2;
+            const QRect titleRect(left, textTop, textWidth, titleMetrics.height());
+            const QRect artistRect(left, textTop + titleMetrics.height() + 2, textWidth,
+                artistMetrics.height());
+
+            ui::drawSmoothText(painter, titleRect,
+                titleMetrics.elidedText(song.title, Qt::ElideRight, textWidth), titleFont,
+                song.isPlayable ? CTColors::textPrimary() : CTColors::textSecondary(),
+                Qt::AlignLeft | Qt::AlignVCenter);
+            ui::drawSmoothText(painter, artistRect,
+                artistMetrics.elidedText(song.artistNames(), Qt::ElideRight, textWidth), option.font,
+                CTColors::textSecondary(), Qt::AlignLeft | Qt::AlignVCenter);
+        }
+
+        painter->restore();
+    }
+
+private:
+    SongListView* m_view = nullptr;
+};
+
+} // namespace
+
 SongListView::SongListView(QWidget* parent)
     : QWidget(parent)
     , m_list(new QListWidget(this))
+    , m_coverCts(std::make_shared<CancellationTokenSource>())
 {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -412,14 +569,13 @@ SongListView::SongListView(QWidget* parent)
     m_list->setFrameShape(QFrame::NoFrame);
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_list->setSpacing(2);
+    m_list->setUniformItemSizes(true);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_list->setItemDelegate(new SongRowDelegate(this));
     m_list->setStyleSheet(QStringLiteral("QListWidget { background: transparent; border: none; }"
-                                         "QListWidget::item { border: none; border-radius: 8px; }"
-                                         "QListWidget::item:hover { background: %1; }"
-                                         "QListWidget::item:selected { background: %1; }")
-                              .arg(CTColors::overlay().name()));
+                                         "QListWidget::item { border: none; border-radius: 8px; }"));
     layout->addWidget(m_list);
 
     QObject::connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
@@ -436,21 +592,87 @@ SongListView::SongListView(QWidget* parent)
 
 SongListView::~SongListView()
 {
+    if (m_coverCts) m_coverCts->cancel();
     AppState::shared().changed.unsubscribe(m_appObserver);
     PlayerController::shared().onStateChanged.unsubscribe(m_stateObserver);
     PlayerController::shared().onSongChanged.unsubscribe(m_songObserver);
 }
 
+void SongListView::hideEvent(QHideEvent* event)
+{
+    QWidget::hideEvent(event);
+    if (m_coverCts) m_coverCts->cancel();
+    m_coverCts = std::make_shared<CancellationTokenSource>();
+    ++m_coverGeneration;
+    m_inFlightCovers.clear();
+    m_rowPixmaps.clear();
+}
+
+QPixmap SongListView::coverPixmapFor(const QString& url)
+{
+    if (url.isEmpty()) return QPixmap();
+    if (const auto found = m_rowPixmaps.constFind(url); found != m_rowPixmaps.constEnd()) {
+        return *found;
+    }
+    if (const auto cached = CoverImageLoader::shared().peekMemory(url, rowCoverDecodeWidth)) {
+        if (m_rowPixmaps.size() >= maxCachedRowPixmaps) m_rowPixmaps.clear();
+        QPixmap pixmap = QPixmap::fromImage(*cached);
+        m_rowPixmaps.insert(url, pixmap);
+        return pixmap;
+    }
+    if (!m_inFlightCovers.contains(url)) {
+        m_inFlightCovers.insert(url);
+        if (!m_coverCts) m_coverCts = std::make_shared<CancellationTokenSource>();
+        detach(fetchCoverAsync(QPointer<SongListView>(this), url, m_coverGeneration, m_coverCts->token()));
+    }
+    return QPixmap();
+}
+
+Task<void> SongListView::fetchCoverAsync(
+    QPointer<SongListView> self, QString url, quint64 generation, CancellationToken token)
+{
+    const auto image = co_await CoverImageLoader::shared().load(url, rowCoverDecodeWidth, token);
+    if (!self || generation != self->m_coverGeneration) co_return;
+    self->m_inFlightCovers.remove(url);
+    if (!image) co_return;
+    if (self->m_rowPixmaps.size() >= maxCachedRowPixmaps) self->m_rowPixmaps.clear();
+    self->m_rowPixmaps.insert(url, QPixmap::fromImage(*image));
+    if (self->m_list && self->m_list->viewport()) {
+        self->m_list->viewport()->update();
+    }
+}
+
 void SongListView::setSongs(const QList<Song>& songs)
 {
+    bool isPrefixExtension = !m_songs.isEmpty() && songs.size() >= m_songs.size()
+        && m_list->count() == m_songs.size();
+    if (isPrefixExtension) {
+        for (int i = 0; i < m_songs.size(); ++i) {
+            if (m_songs.at(i).id != songs.at(i).id) {
+                isPrefixExtension = false;
+                break;
+            }
+        }
+    }
+    if (isPrefixExtension) {
+        const int previousSize = m_songs.size();
+        m_songs = songs;
+        for (int index = previousSize; index < m_songs.size(); ++index) {
+            appendItem(index);
+        }
+        refreshDynamic();
+        return;
+    }
+
     m_songs = songs;
     rebuild();
 }
 
 void SongListView::setShowIndex(bool showIndex)
 {
+    if (m_showIndex == showIndex) return;
     m_showIndex = showIndex;
-    rebuild();
+    refreshDynamic();
 }
 
 int SongListView::contentHeight() const
@@ -461,7 +683,9 @@ int SongListView::contentHeight() const
 
 void SongListView::setRowHeight(int height)
 {
-    m_rowHeight = qMax(64, height);
+    const int clamped = qMax(52, height);
+    if (m_rowHeight == clamped) return;
+    m_rowHeight = clamped;
     rebuild();
 }
 
@@ -471,101 +695,40 @@ void SongListView::setEmptyText(const QString& text)
     if (m_songs.isEmpty()) rebuild();
 }
 
+void SongListView::appendItem(int index)
+{
+    const Song& song = m_songs.at(index);
+    auto* item = new QListWidgetItem(m_list);
+    item->setSizeHint(QSize(0, m_rowHeight));
+    item->setData(Qt::UserRole, index);
+    item->setToolTip(QStringLiteral("%1 — %2").arg(song.title, song.artistNames()));
+    if (!song.isPlayable) {
+        item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+    }
+}
+
 void SongListView::rebuild()
 {
     m_list->clear();
-    m_rows.clear();
 
     if (m_songs.isEmpty()) {
         if (m_emptyText.isEmpty()) return;
         auto* item = new QListWidgetItem(m_list);
         item->setFlags(Qt::NoItemFlags);
         item->setSizeHint(QSize(0, 120));
-        auto* label = ui::secondaryLabel(m_emptyText);
-        label->setAlignment(Qt::AlignCenter);
-        m_list->setItemWidget(item, label);
         return;
     }
 
     for (int index = 0; index < m_songs.size(); ++index) {
-        const Song& song = m_songs[index];
-        Row row;
-        row.item = new QListWidgetItem(m_list);
-        row.item->setSizeHint(QSize(0, m_rowHeight));
-        row.item->setData(Qt::UserRole, index);
-        if (!song.isPlayable) {
-            row.item->setFlags(row.item->flags() & ~Qt::ItemIsEnabled);
-        }
-
-        auto* widget = new QWidget(m_list);
-        auto* layout = new QHBoxLayout(widget);
-        layout->setContentsMargins(8, 8, 16, 8);
-        layout->setSpacing(8);
-
-        row.index = ui::secondaryLabel(m_showIndex ? QString::number(index + 1) : QString());
-        row.index->setFixedWidth(30);
-        row.index->setAlignment(Qt::AlignCenter);
-        layout->addWidget(row.index);
-
-        auto* cover = new CoverImage(widget);
-        cover->setFixedSize(42, 42);
-        cover->setCornerRadius(7);
-        cover->setCoverURL(song.coverURL.value_or(QString()), 72);
-        layout->addWidget(cover);
-
-        auto* textColumn = new QWidget(widget);
-        auto* textLayout = new QVBoxLayout(textColumn);
-        textLayout->setContentsMargins(0, 0, 0, 0);
-        textLayout->setSpacing(2);
-        row.title = new ui::ElidedLabel(song.title, widget);
-        row.title->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: %3;")
-                                     .arg(song.isPlayable ? CTColors::textPrimary().name()
-                                                          : CTColors::textSecondary().name())
-                                     .arg(CTTypography::Body)
-                                     .arg(song.isPlayable ? 600 : 400));
-        textLayout->addWidget(row.title);
-        row.artist = ui::secondaryElidedLabel(song.artistNames());
-        textLayout->addWidget(row.artist);
-        layout->addWidget(textColumn, 1);
-
-        row.like = new QLabel(QStringLiteral("♥"), widget);
-        row.like->setStyleSheet(QStringLiteral("color: %1;").arg(CTColors::accent().name()));
-        row.like->setFixedWidth(18);
-        layout->addWidget(row.like);
-
-        row.reason = ui::secondaryElidedLabel(song.unavailableReason.value_or(QString()));
-        row.reason->setMaximumWidth(120);
-        row.reason->setVisible(!song.isPlayable);
-        layout->addWidget(row.reason);
-
-        row.duration = ui::secondaryLabel(CTFormatting::time(song.duration));
-        row.duration->setFixedWidth(48);
-        row.duration->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        layout->addWidget(row.duration);
-
-        m_list->setItemWidget(row.item, widget);
-        m_rows.append(row);
+        appendItem(index);
     }
     refreshDynamic();
 }
 
 void SongListView::refreshDynamic()
 {
-    const QString playingID = PlayerController::shared().currentSong()
-        ? PlayerController::shared().currentSong()->id
-        : QString();
-    const AppState& app = AppState::shared();
-    for (int index = 0; index < m_rows.size(); ++index) {
-        const Row& row = m_rows[index];
-        if (!row.index) continue;
-        const bool playing = !playingID.isEmpty() && m_songs[index].id == playingID;
-        row.index->setText(playing ? QStringLiteral("▶")
-                                   : (m_showIndex ? QString::number(index + 1) : QString()));
-        row.index->setStyleSheet(QStringLiteral("color: %1;").arg(
-            playing ? CTColors::accent().name() : CTColors::textSecondary().name()));
-        if (row.like) {
-            row.like->setVisible(app.isLiked(m_songs[index].id));
-        }
+    if (m_list && m_list->viewport()) {
+        m_list->viewport()->update();
     }
 }
 

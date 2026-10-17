@@ -85,6 +85,7 @@ void MediaSessionIntegration::initialize(QWidget* window)
     PlayerController& player = PlayerController::shared();
     m_songSub = player.onSongChanged.subscribe([this] { updateMediaHotkeys(); onPlayerSongChanged(); });
     m_stateSub = player.onStateChanged.subscribe([this] { onPlayerStateChanged(); });
+    m_queueSub = player.onQueueChanged.subscribe([this] { updateMediaHotkeys(); });
     m_durationSub = player.onDurationChanged.subscribe([this] { updateTimeline(); });
     m_timeSub = player.timeUpdated.subscribe([this](double seconds) { onPlayerTimeUpdated(seconds); });
 
@@ -98,19 +99,20 @@ void MediaSessionIntegration::initialize(QWidget* window)
 void MediaSessionIntegration::updateMediaHotkeys()
 {
 #ifdef Q_OS_WIN
-    const bool hasSong = PlayerController::shared().currentSong().has_value();
+    PlayerController& player = PlayerController::shared();
+    const bool hasSong = player.currentSong().has_value() || !player.queue().items.isEmpty();
 #ifdef CT_HAS_SMTC
     if (m_controls) {
         try {
             m_controls.IsEnabled(hasSong);
-            m_active = hasSong;
-            return;
         } catch (const winrt::hresult_error&) {
             CTLog::general().warn(QStringLiteral("Windows 媒体会话已失效，回退到媒体快捷键"));
             m_controls = nullptr;
         }
     }
 #endif
+    // 同时注册全局媒体键热键：Win32 下仅靠 GetForWindow 创建的 SMTC 在未进入
+    // WinRT MediaPlayer 会话或窗口失焦/挂起时不会转发硬件 VK_MEDIA_* 按键。
     constexpr int firstId = 0x4354;
     const UINT keys[] = {VK_MEDIA_PLAY_PAUSE, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK, VK_MEDIA_STOP};
     for (int i = 0; i < 4; ++i) {
@@ -130,11 +132,9 @@ bool MediaSessionIntegration::nativeEventFilter(const QByteArray& eventType, voi
 #ifdef Q_OS_WIN
     auto* msg = static_cast<MSG*>(message);
     int command = 0;
-    if (eventType == QByteArrayLiteral("windows_dispatcher_MSG") && msg->message == WM_HOTKEY
-        && m_registeredHotkeys.contains(static_cast<int>(msg->wParam))) {
+    if (msg->message == WM_HOTKEY && m_registeredHotkeys.contains(static_cast<int>(msg->wParam))) {
         command = static_cast<int>(msg->wParam) - 0x4354 + 1;
-    } else if (eventType == QByteArrayLiteral("windows_generic_MSG") && msg->message == WM_APPCOMMAND
-        && m_window && GetAncestor(msg->hwnd, GA_ROOT) == reinterpret_cast<HWND>(m_window->winId())) {
+    } else if (eventType == QByteArrayLiteral("windows_generic_MSG") && msg->message == WM_APPCOMMAND) {
         switch (GET_APPCOMMAND_LPARAM(msg->lParam)) {
         case APPCOMMAND_MEDIA_PLAY_PAUSE: command = 1; break;
         case APPCOMMAND_MEDIA_NEXTTRACK: command = 2; break;
@@ -144,10 +144,20 @@ bool MediaSessionIntegration::nativeEventFilter(const QByteArray& eventType, voi
         case APPCOMMAND_MEDIA_PAUSE: command = 6; break;
         default: break;
         }
+    } else if (eventType == QByteArrayLiteral("windows_generic_MSG") && msg->message == WM_KEYDOWN
+        && (msg->lParam & (1LL << 30)) == 0) {
+        switch (msg->wParam) {
+        case VK_MEDIA_PLAY_PAUSE: command = 1; break;
+        case VK_MEDIA_NEXT_TRACK: command = 2; break;
+        case VK_MEDIA_PREV_TRACK: command = 3; break;
+        case VK_MEDIA_STOP: command = 4; break;
+        default: break;
+        }
     }
-    if (command && PlayerController::shared().currentSong()) {
+    PlayerController& player = PlayerController::shared();
+    if (command && (player.currentSong() || !player.queue().items.isEmpty())) {
         handleMediaCommand(command);
-        *result = 0;
+        if (result) *result = 0;
         return true;
     }
 #else
@@ -160,8 +170,14 @@ bool MediaSessionIntegration::nativeEventFilter(const QByteArray& eventType, voi
 
 void MediaSessionIntegration::handleMediaCommand(int command)
 {
-    if (!PlayerController::shared().currentSong()) return;
     PlayerController& player = PlayerController::shared();
+    if (!player.currentSong() && player.queue().items.isEmpty()) return;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (command == m_lastCommand && nowMs - m_lastCommandMs < 120 && m_lastCommandMs > 0) {
+        return;
+    }
+    m_lastCommand = command;
+    m_lastCommandMs = nowMs;
     switch (command) {
     case 1: player.togglePlayPause(); break;
     case 2: player.next(); break;

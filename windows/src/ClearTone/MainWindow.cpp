@@ -13,12 +13,14 @@
 #include "Core/Persistence/PersistenceStore.h"
 #include "DesignSystem/CTTheme.h"
 #include "DesignSystem/CoverImage.h"
+#include "DesignSystem/CoverImageLoader.h"
 #include "DesignSystem/L10n.h"
 #include "DesignSystem/SmoothNavigationDelegate.h"
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
 #include "Playback/PlayerController.h"
 #include "Playback/SongQuality.h"
+#include "Providers/Netease/NeteaseProvider.h"
 
 #include <QAction>
 #include <QApplication>
@@ -37,6 +39,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPixmapCache>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -52,6 +55,7 @@
 #include <algorithm>
 #include <cmath>
 #ifdef Q_OS_WIN
+#include <malloc.h>
 #include <windows.h>
 #endif
 
@@ -129,7 +133,7 @@ QString playlistButtonStyle(bool active)
         "QPushButton { background: %1; border: none; text-align: left; padding: 5px 10px;"
         " color: %2; border-radius: 6px; }"
         "QPushButton:hover { background: %3; }")
-        .arg(active ? CTColors::overlay().name() : QStringLiteral("transparent"),
+        .arg(active ? CTColors::overlay().name() : CTColors::panel().name(),
             CTColors::textPrimary().name(), CTColors::overlay().name());
 }
 
@@ -164,6 +168,13 @@ MainWindow::MainWindow(QWidget* parent)
     }
     setWindowIcon(TrayIconManager::applicationIcon());
 
+    buildUi();
+    subscribeEvents();
+    if (QApplication::instance() != nullptr) QApplication::instance()->installEventFilter(this);
+}
+
+void MainWindow::buildUi()
+{
     auto* central = new QWidget(this);
     central->setObjectName(QStringLiteral("ctCentral"));
     central->setStyleSheet(
@@ -201,9 +212,91 @@ MainWindow::MainWindow(QWidget* parent)
     updateOverlays();
     updateOverlayGeometry();
     updateResponsiveGeometry();
+}
 
+void MainWindow::resetUiPointers()
+{
+    m_playlistButtons.clear();
+    m_playlistSignature.clear();
+    m_sidebarList = nullptr;
+    m_playlistPanel = nullptr;
+    m_playlistLayout = nullptr;
+    m_accountButton = nullptr;
+    m_accountAvatar = nullptr;
+    m_accountName = nullptr;
+    m_accountHint = nullptr;
+    m_backButton = nullptr;
+    m_pageTitle = nullptr;
+    m_settingsButton = nullptr;
+    m_titleBar = nullptr;
+    m_maximizeButton = nullptr;
+    m_content = nullptr;
+    m_barCover = nullptr;
+    m_barTitle = nullptr;
+    m_barArtist = nullptr;
+    m_expandButton = nullptr;
+    m_titleButton = nullptr;
+    m_likeButton = nullptr;
+    m_prevButton = nullptr;
+    m_playPauseButton = nullptr;
+    m_nextButton = nullptr;
+    m_currentTimeLabel = nullptr;
+    m_progressSlider = nullptr;
+    m_durationLabel = nullptr;
+    m_sleepButton = nullptr;
+    m_modeButton = nullptr;
+    m_queueButton = nullptr;
+    m_rateButton = nullptr;
+    m_qualityButton = nullptr;
+    m_muteButton = nullptr;
+    m_volumeSlider = nullptr;
+    m_nowPlayingOverlay = nullptr;
+    m_queueOverlay = nullptr;
+    m_loginOverlay = nullptr;
+    m_nowPlayingTitle = nullptr;
+}
+
+void MainWindow::suspendUiToBackground()
+{
+    if (m_uiSuspended) {
+        hide();
+        TrayIconManager::shared().refreshVisibility();
+        return;
+    }
+    m_uiSuspended = true;
+    m_bar.onChanged = nullptr;
+    for (const auto& unsubscribe : m_unsubscribers) unsubscribe();
+    m_unsubscribers.clear();
+
+    hide();
+
+    PageFactory::clearAll();
+    delete m_nowPlayingOverlay;
+    delete m_queueOverlay;
+    delete m_loginOverlay;
+    if (QWidget* central = takeCentralWidget()) {
+        delete central;
+    }
+    resetUiPointers();
+
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CoverImageLoader::shared().clearMemoryCache();
+    QPixmapCache::clear();
+    NeteaseProvider::shared().clearCache();
+#ifdef Q_OS_WIN
+    _heapmin();
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+#endif
+    TrayIconManager::shared().refreshVisibility();
+}
+
+void MainWindow::restoreUiFromBackground()
+{
+    if (!m_uiSuspended) return;
+    m_uiSuspended = false;
+    applyTheme();
+    buildUi();
     subscribeEvents();
-    if (QApplication::instance() != nullptr) QApplication::instance()->installEventFilter(this);
 }
 
 class AccountCard final : public QFrame {
@@ -244,10 +337,15 @@ QWidget* MainWindow::buildTitleBar(QWidget* parent)
     layout->addWidget(title);
     layout->addStretch(1);
     auto makeControl = [this, layout](const QString& glyph, const QString& tip, auto callback) {
-        auto* button = makeGlyphButton(glyph, tip, 15, m_titleBar);
+        auto* button = new QPushButton(glyph, m_titleBar);
+        button->setFlat(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(tip);
+        button->setAccessibleName(tip);
         button->setFixedSize(46, 34);
         button->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; color: %1; font-family: 'Segoe UI'; font-size: 17px; }"
+            "QPushButton { background: transparent; border: none; color: %1;"
+            " font-family: 'Segoe UI', 'Segoe UI Symbol', 'Microsoft YaHei UI'; font-size: 16px; }"
             "QPushButton:hover { background: %2; }")
                                   .arg(CTColors::textPrimary().name(), CTColors::overlay().name()));
         layout->addWidget(button);
@@ -260,7 +358,8 @@ QWidget* MainWindow::buildTitleBar(QWidget* parent)
     });
     auto* close = makeControl(QStringLiteral("×"), QStringLiteral("关闭"), [this] { this->close(); });
     close->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: none; color: %1; font-family: 'Segoe UI'; font-size: 20px; }"
+        "QPushButton { background: transparent; border: none; color: %1;"
+        " font-family: 'Segoe UI', 'Segoe UI Symbol', 'Microsoft YaHei UI'; font-size: 19px; }"
         "QPushButton:hover { background: #c42b32; color: white; }")
                              .arg(CTColors::textPrimary().name()));
     return m_titleBar;
@@ -312,6 +411,7 @@ MainWindow::~MainWindow()
     m_bar.onChanged = nullptr;
     for (const auto& unsubscribe : m_unsubscribers) unsubscribe();
     m_unsubscribers.clear();
+    PageFactory::clearAll();
 }
 
 void MainWindow::applyTheme()
@@ -321,6 +421,9 @@ void MainWindow::applyTheme()
 
 void MainWindow::subscribeEvents()
 {
+    for (const auto& unsubscribe : m_unsubscribers) unsubscribe();
+    m_unsubscribers.clear();
+
     AppState& app = AppState::shared();
     PlayerController& player = PlayerController::shared();
 
@@ -339,10 +442,11 @@ void MainWindow::subscribeEvents()
 
 void MainWindow::refreshAll()
 {
+    if (m_uiSuspended || m_content == nullptr) return;
     AppState& app = AppState::shared();
     if (app.currentPage() != m_shownPage) {
         showPage(app.currentPage());
-    } else {
+    } else if (m_backButton) {
         m_backButton->setVisible(app.canGoBack());
     }
     syncSidebarSelection();
@@ -357,10 +461,6 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     auto* side = new QFrame(parent);
     side->setObjectName(QStringLiteral("ctSidebar"));
     side->setFixedWidth(sidebarWidth);
-    QFont sidebarFont = QApplication::font();
-    sidebarFont.setStyleStrategy(QFont::PreferAntialias);
-    sidebarFont.setHintingPreference(QFont::PreferNoHinting);
-    side->setFont(sidebarFont);
     side->setStyleSheet(QStringLiteral("#ctSidebar { background: %1; border-right: 1px solid %2; }")
                             .arg(CTColors::panel().name(), CTColors::overlay().name()));
     auto* sideLayout = new QVBoxLayout(side);
@@ -369,10 +469,10 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
 
     auto* header = new QWidget(side);
     auto* headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(16, 16, 12, 12);
+    headerLayout->setContentsMargins(16, 12, 12, 8);
     headerLayout->setSpacing(2);
     auto* brand = new QLabel(header);
-    brand->setPixmap(QPixmap(QStringLiteral(":/Assets/appicon.png")).scaled(38, 38, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    brand->setPixmap(QPixmap(QStringLiteral(":/Assets/appicon.png")).scaled(36, 36, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     auto* brandRow = new QWidget(header);
     auto* brandLayout = new QHBoxLayout(brandRow);
     brandLayout->setContentsMargins(0, 0, 0, 0);
@@ -382,7 +482,7 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     auto* brandTextLayout = new QVBoxLayout(brandText);
     brandTextLayout->setContentsMargins(0, 0, 0, 0);
     brandTextLayout->setSpacing(0);
-    brandTextLayout->addWidget(ui::titleLabel(QStringLiteral("澄音"), 22, true));
+    brandTextLayout->addWidget(ui::titleLabel(QStringLiteral("澄音"), 20, true));
     brandTextLayout->addWidget(ui::secondaryElidedLabel(QStringLiteral("ClearTone")));
     brandLayout->addWidget(brandText, 1);
     headerLayout->addWidget(brandRow);
@@ -392,10 +492,14 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
+    scroll->setStyleSheet(
+        QStringLiteral("QScrollArea { background: %1; border: none; }").arg(CTColors::panel().name()));
     auto* scrollContent = new QWidget(scroll);
+    scrollContent->setObjectName(QStringLiteral("ctSidebarScrollContent"));
+    scrollContent->setStyleSheet(
+        QStringLiteral("#ctSidebarScrollContent { background: %1; }").arg(CTColors::panel().name()));
     auto* scrollLayout = new QVBoxLayout(scrollContent);
-    scrollLayout->setContentsMargins(8, 4, 8, 16);
+    scrollLayout->setContentsMargins(8, 2, 8, 12);
     scrollLayout->setSpacing(4);
 
     m_sidebarList = new QListWidget(scrollContent);
@@ -405,16 +509,16 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     m_sidebarList->setObjectName(QStringLiteral("ctNavigation"));
     m_sidebarList->setItemDelegate(new ui::SmoothNavigationDelegate(m_sidebarList));
     m_sidebarList->setIconSize(QSize(20, 20));
-    m_sidebarList->setSpacing(2);
+    m_sidebarList->setSpacing(1);
     m_sidebarList->setFocusPolicy(Qt::StrongFocus);
     m_sidebarList->setStyleSheet(QStringLiteral(
-        "QListWidget { background: transparent; border: none; outline: none; }"
-        "QListWidget::item { padding: 0 12px; border-radius: 8px; color: %1; }"
+        "QListWidget { background: %6; border: none; outline: none; }"
+        "QListWidget::item { padding: 0 12px; border-radius: 8px; color: %1; background: %6; }"
         "QListWidget::item:hover { background: %2; }"
         "QListWidget::item:selected { background: %3; color: %4; font-weight: 600; }"
-        "QListWidget::item:disabled { color: %5; background: transparent; }")
+        "QListWidget::item:disabled { color: %5; background: %6; }")
         .arg(CTColors::textPrimary().name(), CTColors::overlay().name(), CTColors::accentSoft().name(),
-            CTColors::accent().name(), CTColors::textSecondary().name()));
+            CTColors::accent().name(), CTColors::textSecondary().name(), CTColors::panel().name()));
     QObject::connect(m_sidebarList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (m_syncingSidebar || row < 0) return;
         QListWidgetItem* item = m_sidebarList->item(row);
@@ -431,46 +535,61 @@ QWidget* MainWindow::buildSidebar(QWidget* parent)
     scrollLayout->addWidget(m_playlistPanel);
     scrollLayout->addStretch(1);
     scroll->setWidget(scrollContent);
-    scrollContent->setAutoFillBackground(false);
-    scroll->viewport()->setAutoFillBackground(false);
     sideLayout->addWidget(scroll, 1);
 
-    auto* accountWrap = new QWidget(side);
+    auto* accountWrap = new QFrame(side);
+    accountWrap->setObjectName(QStringLiteral("ctAccountFooter"));
+    accountWrap->setStyleSheet(
+        QStringLiteral("#ctAccountFooter { background: transparent; border-top: 1px solid %1; }")
+            .arg(CTColors::overlay().name()));
     auto* accountWrapLayout = new QVBoxLayout(accountWrap);
-    accountWrapLayout->setContentsMargins(12, 0, 12, 12);
+    accountWrapLayout->setContentsMargins(10, 8, 10, 10);
+    accountWrapLayout->setSpacing(0);
+
     auto* accountFrame = new AccountCard();
     accountFrame->setObjectName(QStringLiteral("ctAccount"));
-    accountFrame->setStyleSheet(QStringLiteral("#ctAccount { background: %1; border-radius: 8px; }")
-                                    .arg(CTColors::overlay().name()));
+    accountFrame->setStyleSheet(QStringLiteral(
+        "#ctAccount { background: %1; border-radius: 10px; border: 1px solid %2; }"
+        "#ctAccount:hover { border-color: %3; }")
+                                    .arg(CTColors::overlay().name(), CTColors::border().name(),
+                                        CTColors::accent().name()));
     m_accountButton = accountFrame;
     m_accountButton->setCursor(Qt::PointingHandCursor);
-    m_accountButton->setFixedHeight(62);
+    m_accountButton->setFixedHeight(58);
     m_accountButton->setFocusPolicy(Qt::StrongFocus);
     m_accountButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
     auto* accountLayout = new QHBoxLayout(accountFrame);
-    accountLayout->setContentsMargins(8, 10, 8, 10);
-    accountLayout->setSpacing(8);
+    accountLayout->setContentsMargins(10, 8, 10, 8);
+    accountLayout->setSpacing(10);
+
     m_accountAvatar = new CoverImage(accountFrame);
     m_accountAvatar->setObjectName(QStringLiteral("ctAccountAvatar"));
     m_accountAvatar->setFixedSize(38, 38);
     m_accountAvatar->setCornerRadius(19);
     m_accountAvatar->setPlaceholderText(QStringLiteral("人"));
     accountLayout->addWidget(m_accountAvatar, 0, Qt::AlignVCenter);
+
     auto* accountText = new QWidget(accountFrame);
     accountText->setMinimumWidth(0);
     accountText->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* accountTextLayout = new QVBoxLayout(accountText);
     accountTextLayout->setContentsMargins(0, 0, 0, 0);
-    accountTextLayout->setSpacing(1);
+    accountTextLayout->setSpacing(2);
+    accountTextLayout->addStretch(1);
     m_accountName = new ui::ElidedLabel(QStringLiteral("未登录"), accountText);
     m_accountName->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; font-weight: 600;")
                                      .arg(CTColors::textPrimary().name())
                                      .arg(CTTypography::Body));
     m_accountHint = ui::secondaryElidedLabel(QStringLiteral("点击扫码登录"));
     m_accountHint->setObjectName(QStringLiteral("ctAccountHint"));
+    m_accountHint->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 11px;").arg(CTColors::textSecondary().name()));
     accountTextLayout->addWidget(m_accountName);
     accountTextLayout->addWidget(m_accountHint);
+    accountTextLayout->addStretch(1);
     accountLayout->addWidget(accountText, 1);
+
     for (QWidget* child : m_accountButton->findChildren<QWidget*>())
         child->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_accountButton->setAccessibleName(QStringLiteral("账号与登录"));
@@ -801,8 +920,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     const AppSettings settings = loadAppSettings();
     if (!CloseBehaviorPolicy::shouldQuitOnClose(settings)) {
         event->ignore();
-        hide();
-        TrayIconManager::shared().refreshVisibility();
+        suspendUiToBackground();
         return;
     }
     QMainWindow::closeEvent(event);
@@ -812,6 +930,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
 void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
+    if (m_uiSuspended) return;
     updateOverlayGeometry();
     updateResponsiveGeometry();
 }
@@ -825,6 +944,9 @@ void MainWindow::changeEvent(QEvent* event)
 
 void MainWindow::showEvent(QShowEvent* event)
 {
+    if (m_uiSuspended) {
+        restoreUiFromBackground();
+    }
     QMainWindow::showEvent(event);
     updateOverlayGeometry();
     TrayIconManager::shared().refreshVisibility();
@@ -867,6 +989,28 @@ bool MainWindow::handleKeyPress(QKeyEvent* event)
     const bool alt = modifiers.testFlag(Qt::AltModifier);
     PlayerController& player = PlayerController::shared();
 
+    if (modifiers == Qt::NoModifier) {
+        switch (event->key()) {
+        case Qt::Key_MediaTogglePlayPause:
+            player.togglePlayPause();
+            return true;
+        case Qt::Key_MediaPlay:
+            player.resume();
+            return true;
+        case Qt::Key_MediaPause:
+        case Qt::Key_MediaStop:
+            player.pause();
+            return true;
+        case Qt::Key_MediaNext:
+            player.next();
+            return true;
+        case Qt::Key_MediaPrevious:
+            player.previous();
+            return true;
+        default:
+            break;
+        }
+    }
     if (modifiers == Qt::NoModifier && event->key() == Qt::Key_Escape) {
         AppState& app = AppState::shared();
         if (app.isLoginPresented()) app.setIsLoginPresented(false);
@@ -1160,6 +1304,7 @@ void MainWindow::updateOverlays()
 
 void MainWindow::updateResponsiveGeometry()
 {
+    if (m_uiSuspended) return;
     const bool compact = height() < 680;
     if (auto* sidebar = findChild<QWidget*>(QStringLiteral("ctSidebar"))) {
         const int desiredWidth = qBound(184, width() / 6, 224);
@@ -1168,12 +1313,12 @@ void MainWindow::updateResponsiveGeometry()
             button->setText(button->fontMetrics().elidedText(button->toolTip(), Qt::ElideRight, desiredWidth - 44));
     }
     if (m_sidebarList) {
-        int totalHeight = 8;
+        int totalHeight = 6;
         for (int i = 0; i < m_sidebarList->count(); ++i) {
             auto* item = m_sidebarList->item(i);
-            const int rowHeight = item->data(Qt::UserRole).isValid() ? (compact ? 30 : 36) : 24;
+            const int rowHeight = item->data(Qt::UserRole).isValid() ? (compact ? 28 : 34) : (compact ? 22 : 26);
             item->setSizeHint(QSize(0, rowHeight));
-            totalHeight += rowHeight + 4;
+            totalHeight += rowHeight + 2;
         }
         m_sidebarList->setFixedHeight(totalHeight);
     }
@@ -1184,7 +1329,9 @@ void MainWindow::updateResponsiveGeometry()
 
 void MainWindow::updateOverlayGeometry()
 {
-    const QRect area = rect();
+    if (m_uiSuspended) return;
+    const int top = m_titleBar != nullptr ? m_titleBar->height() : 0;
+    const QRect area(0, top, width(), qMax(0, height() - top));
     if (m_nowPlayingOverlay != nullptr) m_nowPlayingOverlay->setGeometry(area);
     if (m_queueOverlay != nullptr) m_queueOverlay->setGeometry(area);
     if (m_loginOverlay != nullptr) m_loginOverlay->setGeometry(area);
@@ -1192,6 +1339,7 @@ void MainWindow::updateOverlayGeometry()
 
 void MainWindow::updateBarSong()
 {
+    if (m_uiSuspended || m_barCover == nullptr) return;
     m_barCover->setCoverURL(m_bar.coverUrl(), 92);
     m_barTitle->setFullText(m_bar.title());
     m_barArtist->setFullText(m_bar.artist());
@@ -1208,6 +1356,7 @@ void MainWindow::updateBarSong()
 
 void MainWindow::updateBarTransport()
 {
+    if (m_uiSuspended || m_playPauseButton == nullptr) return;
     m_playPauseButton->setText(m_bar.playPauseGlyph());
     m_playPauseButton->setToolTip(m_bar.playPauseTooltip());
     m_playPauseButton->setAccessibleName(m_bar.playPauseTooltip());
@@ -1217,6 +1366,7 @@ void MainWindow::updateBarTransport()
 
 void MainWindow::updateBarProgress()
 {
+    if (m_uiSuspended || m_progressSlider == nullptr) return;
     if (!m_progressDragging) {
         const int percent = static_cast<int>(std::lround(m_bar.progressPercent()));
         if (m_progressSlider->value() != percent) m_progressSlider->setValue(percent);
@@ -1228,6 +1378,7 @@ void MainWindow::updateBarProgress()
 
 void MainWindow::updateBarVolume()
 {
+    if (m_uiSuspended || m_volumeSlider == nullptr) return;
     if (!m_syncingVolume) {
         const int percent = static_cast<int>(std::lround(m_bar.volumePercent()));
         if (m_volumeSlider->value() != percent) {
@@ -1241,12 +1392,14 @@ void MainWindow::updateBarVolume()
 
 void MainWindow::updateBarRate()
 {
+    if (m_uiSuspended || m_rateButton == nullptr) return;
     m_rateButton->setText(m_bar.rateLabel());
     m_rateButton->setVisible(m_bar.isRateAdjusted());
 }
 
 void MainWindow::updateSleepButton()
 {
+    if (m_uiSuspended || m_sleepButton == nullptr) return;
     const double remaining = PlayerController::shared().sleepTimerRemaining();
     if (remaining > 0) {
         const QString text = QStringLiteral("%1 分钟")

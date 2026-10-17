@@ -295,13 +295,19 @@ void SettingsView::buildSections(QWidget* body)
     updateLayout->setContentsMargins(0, 0, 0, 0);
     m_updateButton = ui::ghostButton(QStringLiteral("检查更新"));
     m_updateButton->setObjectName(QStringLiteral("ctCheckUpdates"));
-    m_downloadButton = ui::accentButton(QStringLiteral("下载 Windows x64 版本"));
+#if defined(Q_PROCESSOR_ARM_64)
+    const QString architecture = QStringLiteral("ARM64");
+#else
+    const QString architecture = QStringLiteral("x64");
+#endif
+    m_downloadButton = ui::accentButton(QStringLiteral("下载 Windows %1 版本").arg(architecture));
     m_downloadButton->hide();
     updateLayout->addWidget(m_updateButton);
     updateLayout->addWidget(m_downloadButton);
     updateLayout->addStretch(1);
     aboutLayout->addWidget(updateRow);
-    m_updateHint = ui::secondaryLabel(QStringLiteral("从 GitHub Releases 手动检查 Windows x64 更新。"));
+    m_updateHint = ui::secondaryLabel(QStringLiteral("从 GitHub Releases 手动检查 Windows %1 更新。")
+                                          .arg(architecture));
     aboutLayout->addWidget(m_updateHint);
     aboutLayout->addWidget(hint(QStringLiteral("第三方网易云音乐客户端，与网易公司无关联")));
     bodyLayout->addWidget(section(QStringLiteral("关于"), about));
@@ -356,7 +362,11 @@ void SettingsView::checkForUpdates()
         if (!updates::isNewer(release->version, installed)) {
             m_updateHint->setText(QStringLiteral("已是最新版本（%1）。").arg(installed));
         } else if (release->downloadUrl.isEmpty()) {
+#if defined(Q_PROCESSOR_ARM_64)
+            m_updateHint->setText(QStringLiteral("发现 %1，但尚无 Windows ARM64 下载包。").arg(release->version));
+#else
             m_updateHint->setText(QStringLiteral("发现 %1，但尚无 Windows x64 下载包。").arg(release->version));
+#endif
         } else {
             m_updateHint->setText(QStringLiteral("发现新版本 %1。").arg(release->version));
             m_downloadButton->show();

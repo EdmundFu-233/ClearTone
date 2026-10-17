@@ -2,6 +2,8 @@
 
 #include "Features/Shared/PlaceholderView.h"
 
+#include <QPointer>
+
 namespace ct {
 
 namespace {
@@ -18,15 +20,15 @@ QHash<int, PageFactory::Factory>& overlayFactories()
     return factories;
 }
 
-QHash<int, QWidget*>& pageCache()
+QHash<int, QPointer<QWidget>>& pageCache()
 {
-    static QHash<int, QWidget*> cache;
+    static QHash<int, QPointer<QWidget>> cache;
     return cache;
 }
 
-QHash<int, QWidget*>& overlayCache()
+QHash<int, QPointer<QWidget>>& overlayCache()
 {
-    static QHash<int, QWidget*> cache;
+    static QHash<int, QPointer<QWidget>> cache;
     return cache;
 }
 
@@ -45,7 +47,7 @@ void PageFactory::registerOverlay(OverlayKind kind, Factory factory)
 QWidget* PageFactory::resolve(Page page)
 {
     const int key = static_cast<int>(page);
-    if (pageCache().contains(key)) return pageCache().value(key);
+    if (QWidget* cached = pageCache().value(key)) return cached;
     QWidget* widget = nullptr;
     const auto factory = pageFactories().constFind(key);
     if (factory != pageFactories().constEnd()) {
@@ -63,7 +65,7 @@ QWidget* PageFactory::resolve(Page page)
 QWidget* PageFactory::resolveOverlay(OverlayKind kind)
 {
     const int key = static_cast<int>(kind);
-    if (overlayCache().contains(key)) return overlayCache().value(key);
+    if (QWidget* cached = overlayCache().value(key)) return cached;
     QWidget* widget = nullptr;
     const auto factory = overlayFactories().constFind(key);
     if (factory != overlayFactories().constEnd()) {
@@ -118,6 +120,20 @@ void PageFactory::invalidateOverlay(OverlayKind kind)
     const int key = static_cast<int>(kind);
     if (QWidget* widget = overlayCache().take(key)) {
         widget->deleteLater();
+    }
+}
+
+void PageFactory::clearAll()
+{
+    auto pages = std::move(pageCache());
+    pageCache().clear();
+    for (const QPointer<QWidget>& widget : pages) {
+        if (widget) delete widget.data();
+    }
+    auto overlays = std::move(overlayCache());
+    overlayCache().clear();
+    for (const QPointer<QWidget>& widget : overlays) {
+        if (widget) delete widget.data();
     }
 }
 

@@ -3,7 +3,7 @@
 ClearTone 的 Windows 桌面版，**Qt 6 Widgets + C++20（CMake）**，功能与 macOS 版对齐：
 发现/每日推荐、搜索（联想/热搜/历史/分页）、歌单/专辑/歌手详情、排行榜、电台、
 私人 FM、我的音乐/喜欢的音乐/本地音乐/最近播放、评论、消息、个人资料
-（听歌排行/签到/收藏）、设置（可检查 GitHub 最新 Windows x64 版本）、二维码登录、播放队列、播放栏与全屏正在
+（听歌排行/签到/收藏）、设置（可检查 GitHub 最新对应架构版本）、二维码登录、播放队列、播放栏与全屏正在
 播放页（YRC 逐字歌词、翻译/音译、偏移调节）、音质菜单与单曲音质覆盖、倍速菜单、
 睡眠定时、音频缓存、动态背景。启动时只恢复队列与上次播放状态，必须手动播放；
 Windows 优先注册系统媒体会话（SMTC）接收播放/暂停、切歌和停止指令；缺少 Windows SDK
@@ -27,7 +27,8 @@ macOS 版仍使用原有的 Node 辅助进程，未受影响。
   `Build Tools` 下同时勾选 **MinGW 13.1.0 64-bit、CMake、Ninja**，若列出
   `Additional Libraries` 则勾选 **Qt Multimedia / Qt Shader Tools**。不需要 Qt WebEngine、Qt Creator、
   Sources、Debug Information Files、QML Live Preview 或 MSVC。默认装到 `C:\Qt`；
-- 仅 **ARM64 构建**仍需要 Qt ARM64 kit 和 MSVC 交叉编译器（MinGW kit 不支持 ARM64）；
+- **ARM64 构建**需要 Qt ARM64 交叉编译 kit、同版本 Qt MSVC x64 主机 kit 和
+  Visual Studio 2022 ARM64 C++ 工具链（MinGW kit 不支持 ARM64）；
 - **Rust stable + Cargo**（构建辅助进程；目标机器不必安装 Rust）。
 
 ```powershell
@@ -108,6 +109,10 @@ powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1 -Arch x64 -Release -Package `
   -QtRoot C:\Qt\6.12.0\mingw_64
+
+# 从 x64 主机交叉构建 ARM64 包（Qt 两个 kit 必须是同一版本）
+powershell -ExecutionPolicy Bypass -File build.ps1 -Arch arm64 -Release -Package `
+  -QtRoot C:\Qt\6.12.0\msvc2022_arm64 -QtHostPath C:\Qt\6.12.0\msvc2022_64
 ```
 
 等价的手动流程：
@@ -123,6 +128,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch x64 `
 - `publish\win-<arch>\`：`ClearTone.exe` + `windeployqt` 部署的 Qt 运行库 +
   `helper\cleartone-helper.exe`；
 - `publish\ClearTone-win-<arch>.zip`：可直接分发，解压后运行 `ClearTone.exe`。
+
+发布工作流先跑 x64 离线测试，再分别打包 x64 与 ARM64，并在 ARM64 runner 上
+校验 ARM64 包的架构和启动冒烟；两个包验证通过后才会创建 `v26.1` Release。
 
 说明：
 

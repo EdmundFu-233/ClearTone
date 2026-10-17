@@ -21,7 +21,7 @@ void SmoothNavigationDelegate::paint(QPainter* painter, const QStyleOptionViewIt
     const bool selected = option.state.testFlag(QStyle::State_Selected);
     const bool enabled = option.state.testFlag(QStyle::State_Enabled);
     const QPalette::ColorGroup group = enabled ? QPalette::Active : QPalette::Disabled;
-    drawSmoothText(painter, textRect, text, option.font,
+    drawSmoothText(painter, textRect, text, background.font,
         option.palette.color(group, selected ? QPalette::HighlightedText : QPalette::Text));
 }
 

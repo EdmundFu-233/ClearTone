@@ -34,9 +34,12 @@ function Deploy-CrossRuntime {
     param([string]$TargetQt, [string]$Destination)
 
     $targetBin = Join-Path $TargetQt 'bin'
-    $runtimeDlls = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Network.dll', 'Qt6Svg.dll')
-    if (Test-Path (Join-Path $targetBin 'Qt6Multimedia.dll')) {
-        $runtimeDlls += 'Qt6Multimedia.dll'
+    # Ship all target Qt libraries: Multimedia and its transitive Qt dependencies
+    # change between Qt versions, and host windeployqt cannot inspect ARM64 qtpaths.
+    $runtimeDlls = Get-ChildItem $targetBin -Filter 'Qt6*.dll' -File |
+        Where-Object { $_.Name -notmatch 'd\.dll$' } | Select-Object -ExpandProperty Name
+    foreach ($name in @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Network.dll', 'Qt6Svg.dll')) {
+        if ($runtimeDlls -notcontains $name) { throw "缺少目标 Qt 运行库：$name" }
     }
     foreach ($name in $runtimeDlls) {
         $source = Join-Path $targetBin $name
@@ -55,8 +58,7 @@ function Deploy-CrossRuntime {
             Copy-Item $source $target -Recurse -Force
             # 目标包同时带 debug 插件（qxxxd.dll），发布包只留 release
             foreach ($file in Get-ChildItem $target -Filter '*.dll' -File -ErrorAction SilentlyContinue) {
-                $releaseName = $file.Name -replace 'd\.dll$', '.dll'
-                if ($releaseName -ne $file.Name -and (Test-Path (Join-Path $target $releaseName))) {
+                if ($file.Name -match 'd\.dll$') {
                     Remove-Item $file.FullName -Force
                 }
             }
@@ -92,18 +94,24 @@ function Deploy-CrossRuntime {
         }
     }
 
-    # 交叉部署最容易出错的是把主机（x64）DLL 混进来：PE 机器类型不符的
-    # DLL 在 arm64 进程里加载即失败（表现为启动闪退）。逐个校验并剔除。
-    foreach ($file in Get-ChildItem $Destination -Filter '*.dll' -File -ErrorAction SilentlyContinue) {
+}
+
+function Assert-PackageArchitecture {
+    param([string]$Destination, [string]$TargetArch)
+
+    $expected = if ($TargetArch -eq 'arm64') { 0xAA64 } else { 0x8664 }
+    foreach ($file in Get-ChildItem $Destination -Recurse -File |
+        Where-Object { $_.Extension -in @('.dll', '.exe') }) {
         $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-        if ($bytes.Length -lt 0x40) { continue }
+        if ($bytes.Length -lt 0x40) { throw "无效 PE 文件：$($file.FullName)" }
         $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
-        if ($peOffset -le 0 -or ($peOffset + 6) -gt $bytes.Length) { continue }
-        if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) { continue }
+        if ($peOffset -le 0 -or ($peOffset + 6) -gt $bytes.Length -or
+            $bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) {
+            throw "无效 PE 文件：$($file.FullName)"
+        }
         $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-        if ($machine -ne 0xAA64) {
-            Write-Warning ("移除架构不匹配的 DLL：{0} (machine=0x{1:X4})" -f $file.Name, $machine)
-            Remove-Item $file.FullName -Force
+        if ($machine -ne $expected) {
+            throw ("发布包架构不匹配：{0} (machine=0x{1:X4}, expected=0x{2:X4})" -f $file.FullName, $machine, $expected)
         }
     }
 }
@@ -112,11 +120,18 @@ function Build-One {
     param([string]$TargetArch)
 
     $resolvedQt = Resolve-ClearToneQtRoot -Explicit $QtRoot -Arch $TargetArch
+    if ($TargetArch -eq 'arm64' -and $env:PROCESSOR_ARCHITECTURE -ne 'ARM64') {
+        if (-not $QtHostPath) { throw '从 x64 交叉构建 ARM64 需要 -QtHostPath（同版本 MSVC x64 Qt kit）。' }
+        $resolvedHost = Resolve-ClearToneQtRoot -Explicit $QtHostPath -Arch 'x64'
+        if ((Split-Path -Parent $resolvedHost) -ne (Split-Path -Parent $resolvedQt)) {
+            throw 'ARM64 目标 Qt 与 x64 主机 Qt 必须使用相同版本。'
+        }
+    }
     $isMinGW = Test-ClearToneMinGWKit -Kit $resolvedQt
     if ($isMinGW -and $TargetArch -ne 'x64') { throw 'Qt MinGW kit 仅支持 x64。' }
     $selectedGenerator = if ($Generator) { $Generator } elseif ($isMinGW) { 'Ninja' } else { 'Visual Studio 17 2022' }
     if ($isMinGW -and $selectedGenerator -ne 'Ninja') { throw 'Qt MinGW kit 请使用 Ninja 生成器。' }
-    Initialize-ClearToneQtTools -Kit $resolvedQt
+    Initialize-ClearToneQtTools -Kit $(if ($TargetArch -eq 'arm64' -and $QtHostPath) { $QtHostPath } else { $resolvedQt })
 
     $flavor = if ($isMinGW) { 'mingw' } else { 'msvc' }
     $buildDir = Join-Path $WindowsDir "build\win-$TargetArch-$flavor-$($BuildType.ToLower())"
@@ -200,6 +215,8 @@ function Build-One {
             Copy-Item (Join-Path $VlcRoot 'plugins') (Join-Path $vlcOut 'plugins') -Recurse -Force
         }
     }
+
+    Assert-PackageArchitecture -Destination $publishDir -TargetArch $TargetArch
 
     Write-Host "=== [$TargetArch] 5/5 打包 ==="
     $zipPath = Join-Path $WindowsDir "publish\ClearTone-win-$TargetArch.zip"

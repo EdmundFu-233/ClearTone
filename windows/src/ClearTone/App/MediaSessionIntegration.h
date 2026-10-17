@@ -43,11 +43,14 @@ private:
     QPointer<QWidget> m_window;
     bool m_active = false;
     QDateTime m_lastTimelineUpdate;
+    qint64 m_lastCommandMs = 0;
+    int m_lastCommand = 0;
 
 #ifdef Q_OS_WIN
     bool m_initialized = false;
     int m_songSub = 0;
     int m_stateSub = 0;
+    int m_queueSub = 0;
     int m_durationSub = 0;
     int m_timeSub = 0;
     QSet<int> m_registeredHotkeys;
