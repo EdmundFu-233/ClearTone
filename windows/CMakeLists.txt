@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
 
 if(MSVC)
     add_compile_options(/utf-8 /W2)
@@ -101,7 +100,10 @@ endif()
 
 # Resources (icons etc.) are compiled in through resources.qrc when present.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/ClearTone/resources.qrc")
-    target_sources(cleartone_lib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/ClearTone/resources.qrc")
+    # Visual Studio 17.14 + Qt 6.8+ can place AUTORCC objects in a different
+    # directory than the one used by the OBJECT-library linker (LNK1181).
+    qt_add_resources(CT_RESOURCE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ClearTone/resources.qrc")
+    target_sources(cleartone_lib PRIVATE ${CT_RESOURCE_SOURCES})
 endif()
 
 # ---------------------------------------------------------------------------
