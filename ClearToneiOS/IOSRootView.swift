@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct IOSRootView: View {
     @EnvironmentObject private var appState: AppState
@@ -11,7 +12,7 @@ struct IOSRootView: View {
             tab { IOSLibraryView() }.tabItem { Label("资料库", systemImage: "music.note.list") }
             tab { IOSSettingsView() }.tabItem { Label("设置", systemImage: "gearshape") }
         }
-        .sheet(isPresented: $showPlayer) { IOSNowPlayingView().presentationDragIndicator(.visible) }
+        .modifier(IOSPlayerPresentation(isPresented: $showPlayer))
         .sheet(isPresented: $appState.isLoginPresented) { IOSLoginView().presentationDragIndicator(.visible) }
         .alert("操作失败", isPresented: Binding(get: { appState.lastWriteError != nil }, set: { if !$0 { appState.clearWriteError() } })) {
             Button("好") { appState.clearWriteError() }
@@ -32,6 +33,19 @@ struct IOSRootView: View {
                     IOSMiniPlayer { showPlayer = true }.padding(.horizontal, 12).padding(.bottom, 6)
                 }
             }
+    }
+}
+
+private struct IOSPlayerPresentation: ViewModifier {
+    @Binding var isPresented: Bool
+    func body(content: Content) -> some View {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            content.fullScreenCover(isPresented: $isPresented) { IOSNowPlayingView() }
+        } else {
+            content.sheet(isPresented: $isPresented) {
+                IOSNowPlayingView().presentationDragIndicator(.visible)
+            }
+        }
     }
 }
 

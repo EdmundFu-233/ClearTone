@@ -123,6 +123,8 @@ public class AppState: ObservableObject {
     /// id 到位但详情失败时，心形已经可用，详情列表还得能重试 ——
     /// 早期共用一个标志，`fetchLikedSongs` 一次失败就让详情列表整场会话不再刷新。
     private var hasLoadedLikedSongs = false
+    private var likedWriteRevision = 0
+    private var likedLoadToken = UUID()
     private let provider: MusicProvider
     /// 会话闸门与账号缓存的复位。这两个是**网易云专属**的内存副作用，
     /// 不放进 `MusicProvider`：一是本地/桩实现根本没这两样东西，
@@ -411,8 +413,11 @@ public class AppState: ObservableObject {
     func isLiked(_ songID: String) -> Bool { likedIDs.contains(songID) }
 
     func loadLikedSongs(force: Bool = false) async {
-        guard isLoggedIn else { return }
+        guard isLoggedIn, likeRequestsInFlight.isEmpty else { return }
         if hasLoadedLikes && hasLoadedLikedSongs && !force { return }
+        let writeRevision = likedWriteRevision
+        let loadToken = UUID()
+        likedLoadToken = loadToken
         // 账号代次：切换账号/退出会自增。await 之后必须比对，
         // 否则「A 账号请求在途 → 退出 → B 账号登录 → A 的响应回来」
         // 会把 A 的收藏写进 B 的界面，并污染磁盘缓存。
@@ -421,14 +426,18 @@ public class AppState: ObservableObject {
         do {
             // 先取全量 id（约 60KB）—— 心形状态靠它判断，必须完整
             let ids = try await provider.fetchLikedSongIDs()
-            guard generation == accountGeneration, dataContext == dataContextKey else { return }
+            guard generation == accountGeneration, dataContext == dataContextKey,
+                  loadToken == likedLoadToken, writeRevision == likedWriteRevision,
+                  !Task.isCancelled else { return }
             applyLikedSongs(PersistenceStore.shared.loadCachedLikedSongs(), ids: ids)
             PersistenceStore.shared.saveCachedLikedSongIDs(ids)
             hasLoadedLikes = true
 
             // 详情列表随后加载，不阻塞心形状态
             let songs = try await provider.fetchLikedSongs()
-            guard generation == accountGeneration, dataContext == dataContextKey else { return }
+            guard generation == accountGeneration, dataContext == dataContextKey,
+                  loadToken == likedLoadToken, writeRevision == likedWriteRevision,
+                  !Task.isCancelled else { return }
             applyLikedSongs(songs, ids: ids)
             PersistenceStore.shared.saveCachedLikedSongs(songs)
             hasLoadedLikedSongs = true
@@ -503,8 +512,15 @@ public class AppState: ObservableObject {
         guard !isLikeWriteCoolingDown else { return likedIDs.contains(song.id) }
         // 在途：忽略连点，否则一次误操作会并发发好几个写请求
         guard !likeRequestsInFlight.contains(song.id) else { return likedIDs.contains(song.id) }
+        let generation = accountGeneration
         likeRequestsInFlight.insert(song.id)
-        defer { likeRequestsInFlight.remove(song.id) }
+        likedWriteRevision += 1
+        defer {
+            if generation == accountGeneration {
+                likeRequestsInFlight.remove(song.id)
+                likedWriteRevision += 1
+            }
+        }
 
         let wasLiked = likedIDs.contains(song.id)
 
@@ -516,11 +532,13 @@ public class AppState: ObservableObject {
 
         do {
             try await provider.likeSong(id: song.id, like: !wasLiked)
+            guard generation == accountGeneration else { return wasLiked }
             PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs))
             PersistenceStore.shared.saveCachedLikedSongs(likedSongs)
             likesWriteError = nil
             return !wasLiked
         } catch {
+            guard generation == accountGeneration else { return wasLiked }
             CTLog.general.error("收藏操作失败: \(CTLog.sanitize(error.localizedDescription))")
             // 只回滚**这一首**。早期把整份 likedIDs/likedSongs 快照下来、失败时整体
             // 还原：用户很快点了两个心形时，A 失败会把 B 已经成功的收藏一起抹掉，

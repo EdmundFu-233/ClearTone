@@ -119,7 +119,7 @@ final class WindowCloseInterceptor: NSObject, NSWindowDelegate {
 ///    在 `DispatchQueue.main.async` 里读 `view.window` —— 那个时机窗口通常
 ///    还没建好，读到 nil，置顶静默失效，且没有任何报错。
 @MainActor
-final class MiniPlayerWindowController {
+final class MiniPlayerWindowController: NSObject, NSWindowDelegate {
     static let shared = MiniPlayerWindowController()
 
     /// 迷你播放器的 Autosave 名字：记住上次的位置
@@ -128,7 +128,7 @@ final class MiniPlayerWindowController {
     private(set) var window: NSWindow?
     private var levelSubscription: AnyCancellable?
 
-    private init() {}
+    private override init() { super.init() }
 
     var isVisible: Bool { window?.isVisible ?? false }
 
@@ -150,6 +150,11 @@ final class MiniPlayerWindowController {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        // 自己持有并复用窗口，必须关掉「关闭时由 AppKit 释放」的默认行为。
+        // 否则这个 NSWindow 会同时被 AppKit 和 ARC 双方引用计数，
+        // 关闭后再开/退出时可能「released too many times」。
+        window.isReleasedWhenClosed = false
+        window.delegate = self
         // 上次的位置优先；没有存档才居中
         if !window.setFrameUsingName(Self.frameAutosaveName) {
             window.center()
@@ -165,6 +170,15 @@ final class MiniPlayerWindowController {
 
         window.makeKeyAndOrderFront(nil)
         resizeToFitContent()
+    }
+
+    /// 关闭即释放：原先 `window` 属性永远持有这个窗口（关闭后 `isVisible` 为假，
+    /// `show()` 又会把它原样拉回来），被关掉的迷你播放器一直活着 ——
+    /// SwiftUI 视图照常收 `PlayerController` 的发布，每次切歌都继续请求封面。
+    func windowWillClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSWindow, closed === window else { return }
+        window = nil
+        levelSubscription = nil
     }
 
     private func makeContent() -> some View {

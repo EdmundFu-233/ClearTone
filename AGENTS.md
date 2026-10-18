@@ -208,11 +208,12 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**52 个测试文件 / 521 项**，全部离线可跑且全绿）：
+当前覆盖（**57 个测试文件 / 560 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
 | 播放队列 | PlayQueueTests / ShuffleHistoryTests / DoubleClickPlaybackTests |
+| **启动恢复** | **PlaybackRestorePolicyTests**（「启动时保留上次播放进度」关闭必须从头播、开启才恢复保存位置、拒绝 NaN/负数）。启动本身**不拉流**（与 Windows 版对齐）：`PlayerController.init` 只恢复 UI 状态，点播放时 `resume()` 才重建播放源 |
 | 播放器异步状态 | PlayerControllerTests（停止作废在途请求、切歌停表、加载期暂停/续播、切音质保进度、**`resume()` 在 `.failed` 下必须重建播放源**：线控/控制中心直连 `resume()`，原先会把状态写成 `.playing` 却一声不响）、SeekTokenTests、PlaybackStateSemanticsTests |
 | 搜索状态机 | SearchSessionTests（分页不读草稿、清空作废在途请求、旧响应丢弃）/ SearchSessionPaginationTests（**四种类型都能翻页**、分页锁、**取消在途页码回滚**、**分页失败保留旧数据但置 `paginationError`**、**失败的查询不得留下旧 `result`**）/ SearchAssistStoreTests（联想节流、历史、**热搜请求被取消后 loading 必须复位**、历史读入即裁剪到 20、`removeHistory` 大小写不敏感） |
 | **会话失效判定** | **SessionExpiryGuardTests**（单次 301/403 不定罪、需 `/user/account` 旁证、探针在途不递归、复位） |

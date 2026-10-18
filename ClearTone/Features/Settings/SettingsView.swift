@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
@@ -8,6 +9,15 @@ struct SettingsView: View {
     @ObservedObject private var audioCache = AudioCacheManager.shared
     @Environment(\.colorScheme) var colorScheme
     @State private var showAPIConfig = false
+    @State private var isCheckingUpdates = false
+    @State private var updateMessage: String?
+    @State private var updatePageURL: URL?
+
+    /// 版本号读 Info.plist（project.yml 的 MARKETING_VERSION 是唯一来源），
+    /// 不再硬编码 —— 硬编码会随发布悄悄漂移，用户看到的版本就不是装的那个。
+    private var appVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "未知"
+    }
 
     /// 「自动」档位的标签里带上当前 VIP 状态解析出来的结果 ——
     /// 只写「自动」的话用户不知道开了 VIP 之后会变成什么。
@@ -217,8 +227,22 @@ struct SettingsView: View {
 
                 // 关于
                 SettingsSection(title: L10n.Settings.about) {
-                    Text("\(L10n.Common.appName) v0.1.0")
-                        .font(CTTypography.body)
+                    HStack(spacing: CTSpacing.md) {
+                        Text("\(L10n.Common.appName) v\(appVersion)")
+                            .font(CTTypography.body)
+                        Button(isCheckingUpdates ? "检查中…" : "检查更新") { checkForUpdates() }
+                            .buttonStyle(.borderless)
+                            .disabled(isCheckingUpdates)
+                        if let url = updatePageURL {
+                            Button("打开发布页") { NSWorkspace.shared.open(url) }
+                                .buttonStyle(.borderless)
+                        }
+                    }
+                    if let message = updateMessage {
+                        Text(message)
+                            .font(CTTypography.caption)
+                            .foregroundStyle(CTColors.textSecondary(for: colorScheme))
+                    }
                     Text("第三方网易云音乐客户端，与网易公司无关联")
                         .font(CTTypography.caption)
                         .foregroundStyle(CTColors.textSecondary(for: colorScheme))
@@ -236,6 +260,33 @@ struct SettingsView: View {
         return value > 0
             ? String(format: "提前 %.1f 秒", value)
             : String(format: "延后 %.1f 秒", -value)
+    }
+
+    /// 检查 GitHub Releases 最新稳定版（与 Windows 版同一套语义与文案）。
+    private func checkForUpdates() {
+        guard !isCheckingUpdates else { return }
+        isCheckingUpdates = true
+        updateMessage = "正在检查更新…"
+        updatePageURL = nil
+        Task {
+            defer { isCheckingUpdates = false }
+            do {
+                let release = try await ReleaseChecker.latestRelease()
+                guard ReleaseChecker.isNewer(release.version, than: appVersion) else {
+                    updateMessage = "已是最新版本（\(appVersion)）。"
+                    return
+                }
+                if let asset = ReleaseChecker.platformAsset(in: release) {
+                    updateMessage = "发现新版本 \(release.version)，可前往下载。"
+                    updatePageURL = asset.downloadURL
+                } else {
+                    updateMessage = "发现新版本 \(release.version)，但暂无 macOS 安装包。"
+                    updatePageURL = release.pageURL
+                }
+            } catch {
+                updateMessage = (error as? LocalizedError)?.errorDescription ?? "检查更新失败，请稍后重试。"
+            }
+        }
     }
 }
 

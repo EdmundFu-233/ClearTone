@@ -199,3 +199,35 @@ extension View {
     }
 }
 
+
+extension ArtworkPalette {
+    var swiftUIColors: [Color] {
+        colors.map { Color(.sRGB, red: $0.red, green: $0.green, blue: $0.blue, opacity: 1) }
+    }
+}
+
+struct CTTimedLyricText: View {
+    let line: LyricLine
+    let time: TimeInterval
+    let isCurrent: Bool
+    var active: Color = .primary
+    var inactive: Color = .secondary
+
+    var body: some View {
+        if isCurrent, let words = line.words, !words.isEmpty {
+            Text(attributedWords(words))
+        } else {
+            Text(line.text).foregroundStyle(isCurrent ? active : inactive)
+        }
+    }
+
+    private func attributedWords(_ words: [LyricWord]) -> AttributedString {
+        var text = AttributedString()
+        for word in words {
+            var fragment = AttributedString(word.text)
+            fragment.foregroundColor = word.time <= time ? active : inactive
+            text += fragment
+        }
+        return text
+    }
+}

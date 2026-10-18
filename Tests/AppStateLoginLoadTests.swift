@@ -43,15 +43,27 @@ final class AppStateLoginLoadTests: XCTestCase {
 
         /// 首次 fetchLikedSongs 抛错，用来验证「详情失败后仍能重试」
         private var failFirstLikedSongsFetch: Bool
+        private let holdLikedDetails: Bool
+        private var likedDetailsWaiter: CheckedContinuation<Void, Never>?
+        private var releasedLikedDetails = false
+
+        func isLikedDetailsHeld() -> Bool { likedDetailsWaiter != nil }
+        func releaseLikedDetails() {
+            releasedLikedDetails = true
+            likedDetailsWaiter?.resume()
+            likedDetailsWaiter = nil
+        }
 
         init(accountToReturn: AccountInfo? = nil,
              holdLikeIDs: Set<String> = [],
              failLikeIDs: Set<String> = [],
-             failFirstLikedSongsFetch: Bool = false) {
+             failFirstLikedSongsFetch: Bool = false,
+             holdLikedDetails: Bool = false) {
             self.accountToReturn = accountToReturn
             self.holdLikeIDs = holdLikeIDs
             self.failLikeIDs = failLikeIDs
             self.failFirstLikedSongsFetch = failFirstLikedSongsFetch
+            self.holdLikedDetails = holdLikedDetails
         }
 
         func isLikeHeld(_ id: String) -> Bool { likeWaiters[id] != nil }
@@ -98,6 +110,9 @@ final class AppStateLoginLoadTests: XCTestCase {
         }
         func fetchLikedSongs() async throws -> [Song] {
             likedSongCalls += 1
+            if holdLikedDetails, !releasedLikedDetails {
+                await withCheckedContinuation { likedDetailsWaiter = $0 }
+            }
             if failFirstLikedSongsFetch {
                 failFirstLikedSongsFetch = false
                 throw MusicError.networkUnavailable
@@ -286,4 +301,50 @@ final class AppStateLoginLoadTests: XCTestCase {
         await waitUntil("详情重试成功") { await provider.likedSongCalls >= 2 }
         XCTAssertFalse(state.likedSongs.isEmpty, "详情失败后再次加载必须能恢复")
     }
+    func testLateDetailsCannotOverwritePendingLike() async {
+        let provider = RecordingProvider(holdLikeIDs: ["a"], holdLikedDetails: true)
+        let state = AppState(provider: provider)
+        state.didLogin(account: AccountInfo(userID: "one", nickname: "测试"))
+        await waitUntil("收藏详情挂起") { await provider.isLikedDetailsHeld() }
+        let task = Task { await state.toggleLike(Song(id: "a", title: "A", artists: [], source: .netease)) }
+        await waitUntil("收藏写入挂起") { await provider.isLikeHeld("a") }
+        await provider.releaseLikedDetails()
+        await waitUntil("旧详情请求已结束") { await provider.playlistCalls > 0 }
+        XCTAssertTrue(state.isLiked("a"))
+        XCTAssertTrue(state.likedSongs.contains { $0.id == "a" })
+        await provider.releaseLike("a")
+        _ = await task.value
+    }
+
+    func testLateDetailsCannotOverwriteCompletedLike() async {
+        let provider = RecordingProvider(holdLikedDetails: true)
+        let state = AppState(provider: provider)
+        state.didLogin(account: AccountInfo(userID: "one", nickname: "测试"))
+        await waitUntil("收藏详情挂起") { await provider.isLikedDetailsHeld() }
+        let liked = await state.toggleLike(Song(id: "a", title: "A", artists: [], source: .netease))
+        XCTAssertTrue(liked)
+        await provider.releaseLikedDetails()
+        await waitUntil("旧详情请求已结束") { await provider.playlistCalls > 0 }
+        XCTAssertTrue(state.isLiked("a"))
+        XCTAssertTrue(state.likedSongs.contains { $0.id == "a" })
+    }
+
+    func testPreviousAccountLikeFailureCannotRollbackNewAccount() async {
+        let provider = RecordingProvider(holdLikeIDs: ["a"], failLikeIDs: ["a"])
+        let state = AppState(provider: provider)
+        state.didLogin(account: AccountInfo(userID: "one", nickname: "旧账号"))
+        await waitUntil("首次登录加载完成") { await provider.playlistCalls > 0 }
+        let task = Task { await state.toggleLike(Song(id: "a", title: "A", artists: [], source: .netease)) }
+        await waitUntil("旧账号收藏挂起") { await provider.isLikeHeld("a") }
+        await state.performLogout()
+        state.didLogin(account: AccountInfo(userID: "two", nickname: "新账号"))
+        await waitUntil("新账号加载完成") { await provider.playlistCalls > 1 }
+        await provider.releaseLike("a")
+        _ = await task.value
+        XCTAssertFalse(state.isLiked("a"))
+        XCTAssertTrue(state.isLiked("s1"))
+        XCTAssertFalse(state.isLikeWriteCoolingDown)
+        XCTAssertNil(state.lastWriteError)
+    }
+
 }

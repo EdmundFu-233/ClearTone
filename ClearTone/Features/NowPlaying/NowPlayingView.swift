@@ -1,497 +1,384 @@
 import SwiftUI
 
-/// 沉浸式正在播放页
 struct NowPlayingView: View {
-    @EnvironmentObject var player: PlayerController
-    @EnvironmentObject var settings: SettingsStore
-    @EnvironmentObject var appState: AppState
-
-    /// 歌词时间偏移（秒）。正数 = 歌词提前。
-    private var lyricOffsetSeconds: TimeInterval { settings.settings.lyricOffset }
-    /// 缓存状态变化（正在写 / 写完）要即时反映到音源胶囊上，
-    /// 而 PlayerController 不订阅 AudioCacheManager，所以由视图自己观察
+    @EnvironmentObject private var player: PlayerController
+    @EnvironmentObject private var settings: SettingsStore
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var audioCache = AudioCacheManager.shared
-    @Environment(\.colorScheme) var colorScheme
-    @Environment(\.dismiss) var dismiss
-
-    /// 歌词状态机在 Core 里（`LyricsSession`）—— 与 iOS 的正在播放页共用一份。
-    /// 原先两边各手写一份，而两个视图都不在测试 target 里，切歌清空 / 迟到响应
-    /// 丢弃 / 取消复位这些边界一条断言都写不了。
-    @StateObject private var lyrics = LyricsSession(resolve: NowPlayingView.lyricsResolver)
-    @State private var currentLineIndex: Int?
-    /// 逐字高亮要用的「当前播放位置」。跟着 0.1s 定时器一起更新，
-    /// 不单独订阅 —— 已经是 0.1s 一跳了，再加一路只是多一次 @Published。
-    @State private var wordClock: TimeInterval = 0
-    @State private var showTranslation = true
-    @State private var showRomanization = false
-    @State private var userScrolling = false
-
-    @State private var coverColors: [Color] = [
-        Color(hex: 0x1a1a2e), Color(hex: 0x16213e), Color(hex: 0x0f3460),
-        Color(hex: 0x533483), Color(hex: 0xe94560)
-    ]
-      @State private var spectrum: [Float] = Array(repeating: 0, count: SpectrumProcessor.bandCount)
-      @State private var isAnimating = true
-      @State private var lyricsTask: Task<Void, Never>?
-      /// App 是否在前台。原先 isAnimating 声明后从未被置为 false，
-      /// 导致打开正在播放页后即使 App 在后台 Metal 循环也不停
-      @Environment(\.scenePhase) private var scenePhase
-
-    // 歌词行高亮定时器：@State 保证视图身份内只创建一次，
-    // 由 SwiftUI 订阅生命周期管理，退出视图自动失效，避免 Timer 堆积
-    @State private var lyricTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // 底色：**不透明**的深色，永远在最下层。
-                //
-                // 这一层不是装饰，是可读性的保证。原来的写法把可读性押在
-                // Metal 背景「一定会画出来」上，但那条路有几种失败方式：
-                // 1. 无 Metal 设备 / pipelineState 创建失败 → 什么都没画；
-                // 2. view.isPaused 或首帧未提交 → 短暂空白；
-                // 3. 未来若真的按 spec 做封面取色，浅色封面会算出浅色背景。
-                // 任何一种情况下，页面里那些**硬编码的 .white 文字**就会变成
-                // 「白底白字」——用户在浅色主题下报告的正是这个。
-                // 有了这层不透明底色，文字对比度就不再依赖任何背景层的成败。
-                CTColors.immersiveBase
-                    .ignoresSafeArea()
-
-                // Metal 动态背景
-                if settings.settings.performanceMode != .static_ {
-                    MetalBackgroundView(
-                        colors: $coverColors,
-                        spectrum: $spectrum,
-                        isAnimating: $isAnimating,
-                        showSpectrum: .constant(settings.settings.spectrumMode != .off),
-                        renderScale: settings.settings.performanceMode == .saver ? 0.3 : 0.6
-                    )
-                    .ignoresSafeArea()
-                } else {
-                    // 静态背景
-                    LinearGradient(
-                        colors: coverColors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .ignoresSafeArea()
-                }
-
-                // 内容
-                HStack(spacing: 0) {
-                    // 左侧：封面与信息
-                    VStack(spacing: CTSpacing.xl) {
-                        Spacer()
-
-                        // 封面
-                        CoverImage(
-                            url: player.currentSong?.coverURL,
-                            size: min(geometry.size.width * 0.35, 400),
-                            contentMode: .fit
-                        ) {
-                            RoundedRectangle(cornerRadius: CTRadius.large)
-                                .fill(CTColors.overlay(for: colorScheme))
-                                .overlay(
-                                    Image(systemName: "music.note")
-                                        .font(.system(size: 60))
-                                        .foregroundStyle(CTColors.textSecondary(for: colorScheme))
-                                )
-                        }
-                        .frame(width: min(geometry.size.width * 0.35, 400))
-                        .aspectRatio(1, contentMode: .fit)
-                        .cornerRadius(CTRadius.large)
-                        .shadow(radius: 20)
-
-                        // 曲目信息
-                        VStack(spacing: CTSpacing.sm) {
-                            HStack(spacing: CTSpacing.md) {
-                                Text(player.currentSong?.title ?? "未知歌曲")
-                                    .font(.system(size: 28, weight: .bold))
-                                    .foregroundStyle(.white)
-
-                                if let song = player.currentSong, song.source == .netease {
-                                    Button(action: { Task { await appState.toggleLike(song) } }) {
-                                        Image(systemName: appState.isLiked(song.id) ? "heart.fill" : "heart")
-                                            .font(.title2)
-                                            .foregroundStyle(appState.isLiked(song.id) ? CTColors.accent(for: colorScheme) : .white.opacity(0.8))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(!appState.isLoggedIn)
-                                    .help(appState.isLiked(song.id) ? "取消收藏" : "收藏到喜欢的音乐")
-                                    .accessibilityLabel(appState.isLiked(song.id) ? "取消收藏" : "收藏")
-                                }
-                            }
-
-                            Text(player.currentSong?.artistNames ?? "未知艺术家")
-                                .font(.system(size: 18))
-                                .foregroundStyle(.white.opacity(0.8))
-
-                            // 音源信息：主文案是此刻真正在放的格式/码率，
-                            // 缓存状态只是旁边的弱化图标（第一次听的歌播的是在线流，
-                            // 此刻显示的码率必须和耳朵听到的一致）
-                            if let info = player.playingSourceInfo, let song = player.currentSong {
-                                let pill = HStack(spacing: 6) {
-                                    if info.isFromCache {
-                                        Image(systemName: "internaldrive.fill")
-                                    }
-                                    Text(info.text)
-                                        .lineLimit(1)
-                                    if !info.isFromCache {
-                                        switch info.cache {
-                                        case .cached: Image(systemName: "internaldrive")
-                                        case .caching: Image(systemName: "arrow.down.circle")
-                                        case .none: EmptyView()
-                                        }
-                                    }
-                                }
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 3)
-                                .background(.white.opacity(0.16), in: Capsule())
-
-                                if song.source == .netease {
-                                    // 同一首歌的音质入口：点胶囊选无损/Hi-Res → 走网易源、跳过缓存
-                                    SongQualityMenu(
-                                        songID: song.id,
-                                        help: info.detail + "\n\n点击为这首歌指定音质"
-                                    ) { pill }
-                                } else {
-                                    pill.help(info.detail)
-                                }
-                            }
-                        }
-
-                        // 控制
-                        HStack(spacing: CTSpacing.xl) {
-                            Button(action: { player.previous() }) {
-                                Image(systemName: "backward.fill")
-                                    .font(.title)
-                            }
-                            Button(action: { player.togglePlayPause() }) {
-                                Image(systemName: player.playbackState.isPlayIntentActive ? "pause.circle.fill" : "play.circle.fill")
-                                    .font(.system(size: 64))
-                            }
-                            Button(action: { player.next() }) {
-                                Image(systemName: "forward.fill")
-                                    .font(.title)
-                            }
-                        }
-                        .foregroundStyle(.white)
-
-                        // 进度。局部订阅播放进度，拖动中只预览、抬手才提交。
-                        //
-                        // 内容**只**放进 observingPlaybackTime 的闭包：那个函数会丢弃
-                        // 接收者 self，写在它前面的内容不会被替换掉，而是同时渲染 ——
-                        // 之前这里多写了一个 `nowPlayingProgress(time: 0)`，
-                        // 于是正在播放页有两条进度条，上面的时间恒为 0:00
-                        // 却仍是可拖动的真 Slider。
-                        observingPlaybackTime(player) { currentTime in
-                            VStack(spacing: CTSpacing.xs) {
-                                nowPlayingProgress(time: currentTime)
-                            }
-                            .frame(width: min(geometry.size.width * 0.35, 400))
-                        }
-                        .onChange(of: isProgressDragging) { _, dragging in
-                            if !dragging { player.commitSeek(to: player.currentTime) }
-                        }
-
-                        Spacer()
-                    }
-                    .frame(width: geometry.size.width * 0.45)
-                    .padding()
-
-                    // 右侧：歌词
-                    VStack {
-                        // 歌词工具栏
-                        HStack {
-                            Toggle("翻译", isOn: $showTranslation)
-                                .toggleStyle(.button)
-                                .font(CTTypography.caption)
-
-                            Toggle("音译", isOn: $showRomanization)
-                                .toggleStyle(.button)
-                                .font(CTTypography.caption)
-
-                            Spacer()
-
-                            // 歌词偏移。放在歌词页而不是设置页：
-                            // 「这首歌字幕早了 0.3 秒」这种调整几乎总是
-                            // 看着当前这首歌做的，放到设置里等于让人盲调。
-                            LyricOffsetControl()
-
-                            if userScrolling {
-                                Button(action: { userScrolling = false }) {
-                                    Label(L10n.Player.backToCurrent, systemImage: "arrow.down.circle")
-                                        .font(CTTypography.caption)
-                                }
-                            }
-                        }
-                        .padding()
-                        .foregroundStyle(.white)
-
-                        // 歌词列表
-                        //
-                        // 先判 loading / error：`lines.isEmpty` 既表示「还在加载」也表示
-                        // 「加载失败」也表示「确实没有」。原实现把三种都显示成「暂无歌词」，
-                        // 网络/辅助进程出问题时用户看到的是「这首歌没词」且没有任何重试入口。
-                        if lyrics.isLoading {
-                            Spacer()
-                            ProgressView(L10n.Player.loadingLyrics)
-                                .tint(.white)
-                            Spacer()
-                        } else if let lyricError = lyrics.errorMessage {
-                            Spacer()
-                            VStack(spacing: CTSpacing.sm) {
-                                Text(lyricError)
-                                    .font(CTTypography.caption)
-                                    .foregroundStyle(.white.opacity(0.7))
-                                    .multilineTextAlignment(.center)
-                                Button(L10n.Common.retry) { loadLyrics() }
-                                    .buttonStyle(.borderless)
-                            }
-                            Spacer()
-                        } else if lyrics.isPureMusic {
-                            Spacer()
-                            Text(L10n.Player.pureMusic)
-                                .font(CTTypography.sectionTitle)
-                                .foregroundStyle(.white.opacity(0.6))
-                            Spacer()
-                        } else if lyrics.lines.isEmpty {
-                            Spacer()
-                            Text(L10n.Player.noLyrics)
-                                .font(CTTypography.sectionTitle)
-                                .foregroundStyle(.white.opacity(0.6))
-                            Spacer()
-                        } else {
-                            LyricListView(
-                                lyrics: lyrics.lines,
-                                currentIndex: currentLineIndex,
-                                currentTime: wordClock,
-                                showTranslation: showTranslation,
-                                showRomanization: showRomanization,
-                                userScrolling: $userScrolling,
-                                // 高亮按 `播放位置 + 偏移` 计算，点某行要让它成为当前行，
-                                // 就得把播放位置 seek 到 `该行时间 - 偏移`。
-                                // 直接用行时间在偏移非零时会跳到错误的行。
-                                onSeek: { time in player.seek(to: max(0, time - lyricOffsetSeconds)) }
-                            )
-                        }
-                    }
-                    .frame(width: geometry.size.width * 0.55)
-                }
-            }
-        }
-        .frame(minWidth: 800, minHeight: 600)
-        // 强制深色外观：Slider / Toggle / Button 这些系统控件会跟着当前
-        // colorScheme 渲染，浅色主题下它们是深色控件，压在深色背景上同样看不见。
-        // 只靠「把文字设成白色」不够 —— 系统控件的配色不受我们控制。
-        .colorScheme(.dark)
-        .background(CTColors.immersiveBase)
-        // 关闭按钮放左上：左栏顶部是 Spacer 空区，而右上被歌词工具栏占着
-        // （翻译/音译开关 + 偏移控件）。
-        .overlay(alignment: .topLeading) {
-            CTCloseButton(onClose: { dismiss() }, onDarkBackground: true)
-                .padding(CTSpacing.lg)
-        }
-        .onAppear {
-            loadLyrics()
-        }
-        .onDisappear {
-            lyricsTask?.cancel()
-            lyricsTask = nil
-        }
-        // 视图不可见或 App 退到后台时停掉 Metal 渲染循环
-        .onChange(of: scenePhase) { _, phase in
-            isAnimating = phase == .active
-        }
-        .onChange(of: player.currentSong) { _, _ in
-            loadLyrics()
-        }
-        // 0.1s 轮询歌词行高亮（订阅制，视图销毁自动取消，不会泄漏）
-        .onReceive(lyricTimer) { _ in
-            // 偏移读全局设置而不是本地 @State —— 原先用 @State 恒为 0，
-            // 于是 `AppSettings.lyricOffset` 存了、设置页也准备加控件了，
-            // 但**没有任何代码读它**，用户调不动、存下来也没人用。
-            // 偏移后的播放位置，供逐字高亮与点击 seek 共用
-            wordClock = player.currentTime + lyricOffsetSeconds
-            let index = LRCParser.currentLineIndex(
-                in: lyrics.lines, at: player.currentTime, offset: lyricOffsetSeconds
-            )
-            if index != currentLineIndex {
-                currentLineIndex = index
-            }
-        }
-        // 注：频谱数据源（MTAudioProcessingTap）已移除 —— 它会让本地 OPUS 缓存
-        // 播放卡在「缓冲中」。spectrum 保持全零，Metal 走环境动画回退。
-    }
-
-    /// 按歌曲来源选择歌词 Provider（本地歌曲不应打到网易云接口）。
-    ///
-    /// 由调用点注入给 `LyricsSession`，而不是让 Core 去 `switch song.source`：
-    /// `Providers/Local` 没有编进 iOS target，把 `LocalProvider` 写死在
-    /// `Core/Lyrics` 里会直接打断 iOS 编译。
-    private static let lyricsResolver: LyricsProviderResolver = { song in
+    @StateObject private var lyrics = LyricsSession(resolve: { song in
         switch song.source {
         case .local: LocalProvider.shared
         case .netease: NeteaseProvider.shared
         }
-    }
+    })
+    @State private var refreshID = UUID()
+    @State private var palette = ArtworkPalette.fallback
+    @State private var showTranslation = true
+    @State private var showRomanization = false
 
-    private func loadLyrics() {
-        // 取消上一次歌词请求：快速切歌时旧响应用代次令牌丢弃（见 `LyricsSession`）
-        lyricsTask?.cancel()
-        // 同步清空：`Task { await lyrics.load(...) }` 的函数体要等下一次主线程调度
-        // 才执行，不在这里清的话，切歌的那一帧还会拿上一首的歌词配这一首的进度。
-        lyrics.reset()
-        currentLineIndex = nil
-        // 传 nil（没有正在播放的歌）会清空 —— 原先这里 `guard let song else { return }`，
-        // 停播后会把上一首的歌词留在页面上。
-        lyricsTask = Task { await lyrics.load(for: player.currentSong) }
-    }
+    private var songKey: String { "\(player.currentSong?.source.rawValue ?? ""):\(player.currentSong?.id ?? "")" }
 
-    /// 进度条是否正在被拖动
-    @State private var isProgressDragging = false
+    var body: some View {
+        GeometryReader { geometry in
+            let columnWidth = min(420, geometry.size.width * 0.43)
+            let coverSize = max(160, min(columnWidth - 56, geometry.size.height - 400))
+            ZStack {
+                background
+                HStack(spacing: 24) {
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            artwork(size: coverSize)
+                            songInformation
+                            playbackControls
+                            MacPlaybackProgress()
+                            playbackStatus
+                        }
+                        .frame(maxWidth: 360)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 24)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: max(0, geometry.size.height - 72))
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(width: columnWidth)
 
-    @ViewBuilder
-    private func nowPlayingProgress(time: TimeInterval) -> some View {
-        ProgressSlider(
-            value: Binding(
-                get: { time },
-                set: { newValue in
-                    isProgressDragging ? player.previewSeek(to: newValue) : player.commitSeek(to: newValue)
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(spacing: 10) {
+                            Text("歌词").font(.headline)
+                            Spacer(minLength: 8)
+                            Toggle("翻译", isOn: $showTranslation)
+                            Toggle("音译", isOn: $showRomanization)
+                            LyricOffsetControl()
+                        }
+                        .toggleStyle(.button)
+                        .font(.caption)
+                        .padding(.horizontal, 20)
+
+                        MacLyricsPane(lyrics: lyrics, showTranslation: showTranslation,
+                                      showRomanization: showRomanization,
+                                      retry: { refreshID = UUID() })
+                    }
+                    .padding(.vertical, 24)
+                    .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 24))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(0.08), lineWidth: 1)
+                    }
                 }
-            ),
-            maximum: max(player.duration, 1),
-            buffered: player.bufferedTime,
-            onEditingChanged: { isProgressDragging = $0 }
-        )
-        .frame(height: 4)
-
-        HStack {
-            Text(formatTime(time))
-            Spacer()
-            Text(formatTime(player.duration))
+                .padding(.top, 48)
+                .padding(.bottom, 24)
+                .padding(.trailing, 24)
+            }
         }
-        .font(CTTypography.caption)
-        .foregroundStyle(.white.opacity(0.7))
+        .frame(minWidth: 800, idealWidth: 1000, minHeight: 560, idealHeight: 680)
+        .colorScheme(.dark)
+        .foregroundStyle(.white)
+        .overlay(alignment: .topLeading) {
+            HStack(spacing: 10) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(.white.opacity(0.10), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("收起正在播放")
+                .help("收起正在播放")
+                Text("正在播放").font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.75))
+            }.padding(16)
+        }
+        .onChange(of: songKey) { _, _ in lyrics.reset() }
+        .task(id: "\(songKey):\(refreshID)") {
+            await lyrics.load(for: player.currentSong)
+        }
+        .task(id: player.currentSong?.coverURL) {
+            guard let url = player.currentSong?.coverURL else {
+                palette = .fallback
+                return
+            }
+            let image = await CoverLoader.shared.load(url: url, pointSize: 64)
+            guard !Task.isCancelled else { return }
+            var rect = CGRect.zero
+            let cgImage = image?.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+            let next = if let cgImage { await ArtworkPalette.extract(from: cgImage) } else { ArtworkPalette.fallback }
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.6)) { palette = next }
+        }
     }
 
-    private func formatTime(_ time: TimeInterval) -> String {
-        let minutes = Int(time) / 60
-        let seconds = Int(time) % 60
-        return String(format: "%d:%02d", minutes, seconds)
+    private var background: some View {
+        ZStack {
+            CTColors.immersiveBase
+            LinearGradient(colors: palette.swiftUIColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            if !reduceMotion && settings.settings.performanceMode != .static_ {
+                MetalBackgroundView(
+                    colors: .constant(palette.swiftUIColors), spectrum: .constant([]),
+                    isAnimating: .constant(scenePhase == .active),
+                    showSpectrum: .constant(false),
+                    renderScale: settings.settings.performanceMode == .saver ? 0.3 :
+                        (settings.settings.performanceMode == .auto ? 0.5 : 0.6)
+                )
+            }
+        }.ignoresSafeArea()
+    }
+
+    private func artwork(size: CGFloat) -> some View {
+        CoverImage(url: player.currentSong?.coverURL, size: size, contentMode: .fit)
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.12), lineWidth: 1) }
+            .shadow(color: .black.opacity(0.28), radius: 20, y: 12)
+            .scaleEffect(player.playbackState.isPlayIntentActive || reduceMotion ? 1 : 0.95)
+            .animation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.85), value: player.playbackState.isPlayIntentActive)
+            .accessibilityHidden(true)
+    }
+
+    private var songInformation: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(player.currentSong?.title ?? "选择一首音乐")
+                    .font(.system(size: 25, weight: .bold))
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                if let song = player.currentSong, song.source == .netease {
+                    Button { Task { await appState.toggleLike(song) } } label: {
+                        Image(systemName: appState.isLiked(song.id) ? "heart.fill" : "heart")
+                            .font(.title2)
+                            .foregroundStyle(appState.isLiked(song.id) ? Color(hex: 0xFF9A9D) : .white)
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!appState.canPerformWrite || appState.isLikeWriteCoolingDown)
+                    .accessibilityLabel(appState.isLiked(song.id) ? "取消收藏" : "收藏")
+                    .help(appState.isLoggedIn ? "收藏到喜欢的音乐" : "登录后收藏歌曲")
+                }
+            }
+            Text(player.currentSong?.artistNames ?? "让音乐陪你一会儿")
+                .font(.system(size: 15)).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+            if let info = player.playingSourceInfo, let song = player.currentSong {
+                let label = Label(info.text, systemImage: info.isFromCache ? "internaldrive" : "waveform")
+                    .font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(.white.opacity(0.08), in: Capsule())
+                if song.source == .netease {
+                    SongQualityMenu(songID: song.id, help: info.detail) { label }
+                } else { label.help(info.detail) }
+            }
+        }
+    }
+
+    private var playbackControls: some View {
+        HStack(spacing: 32) {
+            Button { player.previous() } label: {
+                Image(systemName: "backward.end.fill").font(.system(size: 24)).frame(width: 44, height: 44)
+            }.accessibilityLabel("上一首").help("上一首")
+            Button { player.togglePlayPause() } label: {
+                Image(systemName: player.playbackState.isPlayIntentActive ? "pause.fill" : "play.fill")
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(CTColors.immersiveBase)
+                    .frame(width: 64, height: 64)
+                    .background(.white, in: Circle())
+            }
+            .accessibilityLabel(player.playbackState.isPlayIntentActive ? "暂停" : "播放")
+            .help(player.playbackState.isPlayIntentActive ? "暂停" : "播放")
+            Button { player.next() } label: {
+                Image(systemName: "forward.end.fill").font(.system(size: 24)).frame(width: 44, height: 44)
+            }.accessibilityLabel("下一首").help("下一首")
+        }
+        .buttonStyle(PlaybackPressStyle())
+        .disabled(player.currentSong == nil)
+    }
+
+    @ViewBuilder private var playbackStatus: some View {
+        if case .failed(_, let reason) = player.playbackState {
+            VStack(spacing: 8) {
+                Text(reason).font(.caption).multilineTextAlignment(.center)
+                Button("重新播放", systemImage: "arrow.clockwise") { player.playCurrent() }
+                    .buttonStyle(.bordered)
+            }.foregroundStyle(.white.opacity(0.85))
+        } else if player.playbackState.isLoading || player.playbackState.isBuffering {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(player.playbackState.isLoading ? "正在加载歌曲…" : "正在缓冲…").font(.caption)
+            }.foregroundStyle(.white.opacity(0.75))
+        }
     }
 }
 
-// MARK: - 歌词列表
+private struct PlaybackPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
+    }
+}
+
+private struct MacPlaybackProgress: View {
+    @EnvironmentObject private var player: PlayerController
+    @State private var dragging = false
+    var body: some View {
+        PlaybackTimeObserver(player: player) { time in
+            VStack(spacing: 9) {
+                ProgressSlider(value: Binding(
+                    get: { PlaybackPresentation.position(time, duration: player.duration) },
+                    set: { dragging ? player.previewSeek(to: $0) : player.commitSeek(to: $0) }
+                ), maximum: PlaybackPresentation.seekLimit(player.duration), buffered: player.bufferedTime,
+                               onEditingChanged: { editing in
+                    dragging = editing
+                    if !editing { player.commitSeek(to: player.currentTime) }
+                })
+                .frame(height: 5)
+                .disabled(!player.duration.isFinite || player.duration <= 0)
+                HStack {
+                    Text(PlaybackPresentation.timeLabel(time))
+                    Spacer()
+                    Text(PlaybackPresentation.timeLabel(player.duration))
+                }.font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.75))
+            }
+        }
+    }
+}
+
+private struct MacLyricsPane: View {
+    @EnvironmentObject private var player: PlayerController
+    @EnvironmentObject private var settings: SettingsStore
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject var lyrics: LyricsSession
+    let showTranslation: Bool
+    let showRomanization: Bool
+    let retry: () -> Void
+    @State private var time: TimeInterval = 0
+    @State private var userScrolling = false
+
+    var body: some View {
+        Group {
+            if lyrics.isLoading {
+                ProgressView(L10n.Player.loadingLyrics)
+            } else if let error = lyrics.errorMessage {
+                VStack(spacing: 12) {
+                    Image(systemName: "wifi.exclamationmark").font(.largeTitle)
+                    Text(error).font(.callout).multilineTextAlignment(.center)
+                    Button(L10n.Common.retry, action: retry).buttonStyle(.bordered)
+                }.padding(24)
+            } else if lyrics.lines.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: lyrics.isPureMusic ? "waveform" : "text.quote").font(.system(size: 32))
+                    Text(lyrics.isPureMusic ? L10n.Player.pureMusic : L10n.Player.noLyrics).font(.headline)
+                }.foregroundStyle(.white.opacity(0.75))
+            } else {
+                LyricListView(lyrics: lyrics.lines,
+                              currentIndex: LRCParser.currentLineIndex(in: lyrics.lines, at: time, offset: settings.settings.lyricOffset),
+                              currentTime: time + settings.settings.lyricOffset,
+                              showTranslation: showTranslation, showRomanization: showRomanization,
+                              userScrolling: $userScrolling,
+                              onSeek: { player.commitSeek(to: max(0, $0 - settings.settings.lyricOffset)) })
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { time = player.currentTime }
+        .onChange(of: player.currentSong) { _, _ in time = player.currentTime; userScrolling = false }
+        .onReceive(player.timePublisher) { value in
+            guard scenePhase == .active else { return }
+            time = value
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { time = player.currentTime }
+        }
+    }
+}
+
 struct LyricListView: View {
     let lyrics: [LyricLine]
     let currentIndex: Int?
-    /// 已叠加偏移的播放位置，逐字高亮用它
     let currentTime: TimeInterval
     let showTranslation: Bool
     let showRomanization: Bool
     @Binding var userScrolling: Bool
     let onSeek: (TimeInterval) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: CTSpacing.lg) {
-                    ForEach(Array(lyrics.enumerated()), id: \.element.id) { index, line in
-                        LyricLineView(
-                            line: line,
-                            isCurrent: index == currentIndex,
-                            currentTime: currentTime,
-                            showTranslation: showTranslation,
-                            showRomanization: showRomanization,
-                            onTap: { onSeek(line.time) }
-                        )
-                        .id(index)
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(lyrics.indices, id: \.self) { index in
+                            LyricLineView(line: lyrics[index], isCurrent: index == currentIndex,
+                                          currentTime: index == currentIndex ? currentTime : 0,
+                                          showTranslation: showTranslation, showRomanization: showRomanization,
+                                          onTap: { onSeek(lyrics[index].time) })
+                                .id(index)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, max(24, geometry.size.height * 0.35))
+                }
+                .scrollIndicators(.hidden)
+                .background(LyricScrollActivity { userScrolling = true })
+                .onAppear { if let currentIndex { proxy.scrollTo(currentIndex, anchor: .center) } }
+                .onChange(of: currentIndex) { _, index in
+                    guard !userScrolling, let index else { return }
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.35)) { proxy.scrollTo(index, anchor: .center) }
+                }
+                .onChange(of: userScrolling) { _, scrolling in
+                    guard !scrolling else { return }
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { proxy.scrollTo(currentIndex ?? 0, anchor: .center) }
+                }
+                .simultaneousGesture(DragGesture().onChanged { _ in userScrolling = true })
+                .overlay(alignment: .bottom) {
+                    if userScrolling {
+                        Button { userScrolling = false } label: {
+                            Label(L10n.Player.backToCurrent, systemImage: "arrow.uturn.backward")
+                                .font(.caption.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 10)
+                                .background(CTColors.immersiveBase, in: Capsule())
+                                .overlay { Capsule().stroke(.white.opacity(0.2), lineWidth: 1) }
+                        }.buttonStyle(.plain).padding(.bottom, 12)
                     }
                 }
-                .padding()
             }
-            .onChange(of: currentIndex) { _, newIndex in
-                guard !userScrolling, let index = newIndex else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(index, anchor: .center)
-                }
-            }
-            .simultaneousGesture(
-                DragGesture().onChanged { _ in userScrolling = true }
-            )
         }
     }
 }
 
-
-
-// MARK: - 逐字（YRC）渲染
-
-/// 歌词行。
-///
-/// 有逐字时间（YRC）时把一行拆成若干片段，当前时刻之前的片段高亮。
-/// **只在真的拿到逐字时间时才这么做** —— 没有数据时用整行高亮，
-/// 绝不按字数平均分配时间「伪造」逐字效果（spec §3.4 明确禁止）。
 struct LyricLineView: View {
     let line: LyricLine
     let isCurrent: Bool
-    /// 已叠加偏移的播放位置
     let currentTime: TimeInterval
     let showTranslation: Bool
     let showRomanization: Bool
     let onTap: () -> Void
-
-    @Environment(\.colorScheme) var colorScheme
-
-    /// 逐字高亮是否可用：当前行 + 有逐字时间 + 至少一个字
-    private var supportsWordTiming: Bool {
-        isCurrent && !(line.words ?? []).isEmpty
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: CTSpacing.xs) {
-            if supportsWordTiming {
-                // 逐字：已唱过的部分实心，未唱的部分半透明
-                wordTimedText
-            } else {
-                Text(line.text)
-                    .font(isCurrent ? .system(size: 20, weight: .semibold) : .system(size: 16))
-                    .foregroundStyle(isCurrent ? .white : .white.opacity(0.5))
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 8) {
+                CTTimedLyricText(line: line, time: currentTime, isCurrent: isCurrent,
+                                 active: .white, inactive: .white.opacity(0.65))
+                    .font(.system(size: 23, weight: .semibold))
+                if showTranslation, let translation = line.translation, !translation.isEmpty {
+                    Text(translation).font(.system(size: 14)).foregroundStyle(.white.opacity(isCurrent ? 0.85 : 0.75))
+                }
+                if showRomanization, let romanization = line.romanization, !romanization.isEmpty {
+                    Text(romanization).font(.system(size: 13)).foregroundStyle(.white.opacity(0.75))
+                }
             }
-
-            if showTranslation, let translation = line.translation {
-                Text(translation)
-                    .font(.system(size: 14))
-                    .foregroundStyle(isCurrent ? .white.opacity(0.8) : .white.opacity(0.3))
-            }
-
-            if showRomanization, let romanization = line.romanization {
-                Text(romanization)
-                    .font(.system(size: 14))
-                    .foregroundStyle(isCurrent ? .white.opacity(0.8) : .white.opacity(0.3))
-            }
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(12)
+            .background(.white.opacity(isCurrent ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
-    }
-
-    /// 逐字高亮文本。
-    ///
-    /// 用 `HStack(spacing: 0)` 拼接而不是 `Text` 拼接：中文逐字之间
-    /// 不能有额外间距（`Text` + `+` 会按字体的 advance 走，中文里常常多出缝）。
-    private var wordTimedText: some View {
-        let words = line.words ?? []
-        return HStack(spacing: 0) {
-            ForEach(Array(words.enumerated()), id: \.offset) { _, word in
-                Text(word.text)
-                    .foregroundStyle(word.time <= currentTime ? .white : .white.opacity(0.4))
-            }
-        }
-        .font(.system(size: 20, weight: .semibold))
-        .fixedSize(horizontal: false, vertical: true)
+        .buttonStyle(.plain)
+        .accessibilityLabel(line.text)
+        .accessibilityValue(isCurrent ? "当前歌词" : "")
+        .accessibilityHint("跳转到 \(PlaybackPresentation.timeLabel(line.time))")
+        .help("点击跳转到 \(PlaybackPresentation.timeLabel(line.time))")
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: isCurrent)
     }
 }

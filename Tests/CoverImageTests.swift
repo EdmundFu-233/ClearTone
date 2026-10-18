@@ -53,4 +53,29 @@ final class CoverImageTests: XCTestCase {
         XCTAssertEqual(5000.clamped(to: 64...1200), 1200)
         XCTAssertEqual(300.clamped(to: 64...1200), 300)
     }
+
+    // MARK: - 尺寸量化
+    //
+    // 正在播放页封面尺寸随窗口实时变化；不量化时每个像素级变化都会生成一个
+    // 不同的 `?param=WxH`（一次窗口拖拽可产生上百次下载/解码/缓存条目）。
+
+    func testQuantizedPointSizeRoundsUpToGrid() {
+        XCTAssertEqual(CoverLoader.quantizedPointSize(64), 64, "网格点上保持不变")
+        XCTAssertEqual(CoverLoader.quantizedPointSize(65), 96, "向上量化到下一个 32pt 网格")
+        XCTAssertEqual(CoverLoader.quantizedPointSize(100), 128)
+        XCTAssertEqual(CoverLoader.quantizedPointSize(400), 416)
+    }
+
+    func testQuantizedPointSizeClampsBounds() {
+        XCTAssertEqual(CoverLoader.quantizedPointSize(10), 64, "低于下限取下限")
+        XCTAssertEqual(CoverLoader.quantizedPointSize(5000), 1200, "高于上限取上限")
+    }
+
+    func testQuantizedPointSizeIsStableWithinBucket() {
+        // 同一网格内的微小变化必须落到同一个桶，否则缓存会被尺寸抖动冲掉
+        XCTAssertEqual(
+            CoverLoader.quantizedPointSize(340),
+            CoverLoader.quantizedPointSize(352)
+        )
+    }
 }

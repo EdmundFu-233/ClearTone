@@ -255,7 +255,6 @@ public final class PlayerController: ObservableObject {
         #endif
         recentlyPlayed = PersistenceStore.shared.loadRecentSongs()
         songQualityOverrides = loadSongQualityOverrides()
-        let restored = loadPersistedState()
         // 设置页的音质是权威值：队列文件里的可能落后（例如先改设置、还没播放过）。
         //
         // 语义上要分清两件事：`loadPersistedState` 往 `requestedQuality` 里塞的
@@ -264,13 +263,20 @@ public final class PlayerController: ObservableObject {
         // 队列里那个值在下面被直接覆盖，不作为偏好的来源 ——
         // 拿它当偏好会把「上次因为是 VIP 才解析成无损」冻成永久显式选择。
         let settings = PersistenceStore.shared.loadSetting(forKey: "appSettings", as: AppSettings.self)
+        // 启动**只恢复 UI 状态，不拉流**（与 Windows 版对齐）：
+        // 原先这里会 startRestoredPlayback(autoplay:false) → beginPlay，
+        // 于是每次启动都发一次拉流请求、把 item 挂上并开始缓冲，甚至触发
+        // 整首缓存下载 —— 用户只是打开窗口就被消耗了流量、解码器与内存。
+        // 现在点播放时 `resume()` 会走 `player == nil` 分支重建播放源并按需恢复进度。
+        loadPersistedState(restorePosition: settings?.resumePlaybackOnLaunch == true)
         preferredQuality = settings?.preferredQuality ?? SongQualityPolicy.autoLevel
         requestedQuality = SongQualityPolicy.effectiveGlobalLevel(
             preference: preferredQuality, isVIP: isAccountVIP
         )
-        // 与设置说明一致：恢复上次播放位置，但不自动出声
-        if restored, settings?.resumePlaybackOnLaunch == true {
-            beginRestoredPlayback(autoplay: false)
+        // 系统媒体中心仍立即显示恢复的曲目（暂停态）。只写元数据、不加载封面：
+        // 启动路径保持零网络请求，封面在首次播放时才补上。
+        if currentSong != nil {
+            updateNowPlayingInfo(loadArtwork: false)
         }
     }
 
@@ -380,6 +386,11 @@ public final class PlayerController: ObservableObject {
         bufferedTime = 0
         pendingRestoreTime = restoreTime
         pendingAutoplay = autoplay
+
+        // 立刻把新歌写进系统媒体中心（暂停态，封面后台加载）。
+        // 原先只在 item readyToPlay 后才更新 —— 加载慢时锁屏/控制中心一直显示
+        // 上一首；加载失败则永远不会更新。与 Windows 版「切歌即刷新元数据」对齐。
+        updateNowPlayingInfo()
 
         persistState(structureChanged: true)
         isLoadInFlight = true
@@ -778,15 +789,10 @@ public final class PlayerController: ObservableObject {
         return isLoadInFlight || playbackState.isLoading
     }
 
-    /// 从持久化状态重建播放（重启后调用），恢复保存的进度
+    /// 从持久化状态重建播放（重启后首次点播放时调用），恢复保存的进度
     private func beginRestoredPlayback(autoplay: Bool) {
         guard let song = currentSong, player == nil else { return }
         beginPlay(song, restoreTime: currentTime > 0 ? currentTime : nil, autoplay: autoplay)
-    }
-
-    /// 重启后按需重建播放：恢复保存进度，默认不自动出声
-    public func resumeFromPersistence() {
-        beginRestoredPlayback(autoplay: false)
     }
 
     public func togglePlayPause() {
@@ -1182,7 +1188,12 @@ public final class PlayerController: ObservableObject {
         )
     }
 
-    private func loadPersistedState() -> Bool {
+    /// 从队列文件恢复队列、音量、倍速与「当前曲目」。
+    ///
+    /// `restorePosition` 对应设置页的「启动时保留上次播放进度」：
+    /// 关闭时进度从 0 开始（点播放即从头播），开启时记住上次位置。
+    @discardableResult
+    private func loadPersistedState(restorePosition: Bool) -> Bool {
         guard let data = PersistenceStore.shared.loadQueue() else { return false }
         queue.items = data.items
         // 上下限都要夹：items 为空时 count-1 == -1，原先只夹上限会得到 -2 之类的非法下标
@@ -1201,12 +1212,17 @@ public final class PlayerController: ObservableObject {
         playbackRate = Self.resolveRestoredPlaybackRate(data.playbackRate)
         currentSong = queue.currentItem?.song
         duration = currentSong?.duration ?? 0
-        currentTime = data.currentTime
+        currentTime = PlaybackRestorePolicy.restoredPosition(
+            saved: data.currentTime, restorePosition: restorePosition
+        )
 
-        // 恢复位置但不自动出声；实际重建播放器发生在用户点击播放（或启动时自动恢复）
+        // 恢复位置但不自动出声；实际重建播放器发生在用户点击播放
         if let song = currentSong {
             playbackState = .paused(songID: song.id)
         }
+        // 恢复态是「暂停」：显式关掉播放意图，否则此时的换音质/换歌等
+        // 重建路径会把 pendingAutoplay 的初值 true 当成「用户想播放」而突然出声
+        pendingAutoplay = false
         return currentSong != nil
     }
 
@@ -1259,6 +1275,10 @@ public final class PlayerController: ObservableObject {
         loadTask = nil
         isLoadInFlight = false
         seekTask?.cancel()
+        // 停止/清队列后系统媒体中心的封面任务没有意义：不取消的话它会在
+        // 停止之后继续下载、解码，并把大图写进封面缓存
+        artworkTask?.cancel()
+        artworkTask = nil
         isUserSeeking = false
         // 停止播放是彻底边界：销毁播放器实例，避免空转的解码器与音频会话
         teardownPlayer()
@@ -1352,7 +1372,11 @@ public final class PlayerController: ObservableObject {
         { _ in image }
     }
 
-    private func updateNowPlayingInfo() {
+    /// 刷新系统媒体中心（锁屏 / 控制中心 / 菜单栏）的曲目信息。
+    ///
+    /// - Parameter loadArtwork: 启动恢复时传 false：只写标题/歌手/专辑（纯内存），
+    ///   封面等首次播放时再加载 —— 启动路径不做任何网络请求。
+    private func updateNowPlayingInfo(loadArtwork: Bool = true) {
         guard let song = currentSong else { return }
         let info: [String: Any] = [
             MPMediaItemPropertyTitle: song.title,
@@ -1364,6 +1388,7 @@ public final class PlayerController: ObservableObject {
         ]
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
+          guard loadArtwork else { return }
           guard let coverURL = song.coverURL else { return }
           // 异步封面：仅在歌曲未变时写入，避免快速切歌时旧封面/旧信息覆盖新歌曲。
           // 复用 CoverLoader（已有 NSCache + 磁盘缓存 + 在途去重），
@@ -1373,7 +1398,10 @@ public final class PlayerController: ObservableObject {
           let generation = currentGeneration
           artworkTask?.cancel()
           artworkTask = Task { [weak self] in
-              guard let image = await CoverLoader.shared.load(url: coverURL, pointSize: 600),
+              // 400pt @2x=800px（iOS @3x=1200px）足够锁屏/控制中心使用。
+              // 原先 600pt 在 macOS 每张 1200px≈5.5MB、iOS 1800px≈13MB，
+              // 会把封面内存缓存顶满（Windows 版已把系统缩略图收敛到同量级）。
+              guard let image = await CoverLoader.shared.load(url: coverURL, pointSize: 400),
                     !Task.isCancelled else { return }
               guard let self,
                     self.currentSong?.id == songID,
@@ -1389,6 +1417,10 @@ public final class PlayerController: ObservableObject {
     }
 
     private func updateNowPlayingPlaybackState() {
+        // 写 rate 之前必须先把 elapsed 定位到当前进度：系统拿到 rate=0 时
+        // 会在**字典里的旧 elapsed** 上冻结时间轴，暂停/缓冲/切歌时进度会
+        // 回跳或冻结在错误位置（Windows 版每次状态变化都同步 Position）。
+        updateNowPlayingElapsedTime()
         let rate: Double = playbackState.isPlaying ? Double(playbackRate) : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] = rate
         #if os(macOS)

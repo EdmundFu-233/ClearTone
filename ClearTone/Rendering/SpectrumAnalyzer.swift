@@ -120,15 +120,19 @@ final class SpectrumProcessor: @unchecked Sendable {
 
         // 实数 FFT：把交织的 (x[2i], x[2i+1]) 打包成 DSPSplitComplex 后做 zrip
         windowed.withUnsafeBytes { raw in
-            var split = DSPSplitComplex(realp: &realp, imagp: &imagp)
-            let interleaved = raw.bindMemory(to: DSPComplex.self).baseAddress!
-            vDSP_ctoz(interleaved, 2, &split, 1, vDSP_Length(half))
-            vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-            // zrip 输出的幅度是真实值的 2 倍
-            var scale: Float = 0.5
-            vDSP_vsmul(split.realp, 1, &scale, split.realp, 1, vDSP_Length(half))
-            vDSP_vsmul(split.imagp, 1, &scale, split.imagp, 1, vDSP_Length(half))
-            vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(half))
+            realp.withUnsafeMutableBufferPointer { real in
+                imagp.withUnsafeMutableBufferPointer { imaginary in
+                    var split = DSPSplitComplex(realp: real.baseAddress!, imagp: imaginary.baseAddress!)
+                    let interleaved = raw.bindMemory(to: DSPComplex.self).baseAddress!
+                    vDSP_ctoz(interleaved, 2, &split, 1, vDSP_Length(half))
+                    vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                    // zrip 输出的幅度是真实值的 2 倍
+                    var scale: Float = 0.5
+                    vDSP_vsmul(split.realp, 1, &scale, split.realp, 1, vDSP_Length(half))
+                    vDSP_vsmul(split.imagp, 1, &scale, split.imagp, 1, vDSP_Length(half))
+                    vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(half))
+                }
+            }
         }
 
         // 频带聚合：指针偏移，无中间数组

@@ -173,6 +173,9 @@ private let cacheDirectory: URL
 
     private var pendingCaches: [PendingCache] = []
     private var isRunningCache = false
+    /// 在途的下载+转码任务句柄，`clearAll` 时取消 —— 否则清除缓存后
+    /// 它还会把整首歌下载并转码完再丢弃（几十 MB 磁盘/网络 + CPU 白耗）。
+    private var runningCacheTask: Task<Void, Never>?
 
     private func pumpCacheQueue() {
         guard !isRunningCache, !pendingCaches.isEmpty else { return }
@@ -180,7 +183,7 @@ private let cacheDirectory: URL
         let job = pendingCaches.removeFirst()
         let destination = fileURL(for: job.songID)
 
-        Task(priority: .utility) { [weak self] in
+        runningCacheTask = Task(priority: .utility) { [weak self] in
             // 无论成功失败都要清状态并推进队列，否则「缓存中」永久亮着、队列不再前进
             defer { Task { @MainActor in self?.finishCacheJob(job.songID) } }
 
@@ -226,6 +229,7 @@ private let cacheDirectory: URL
     private func finishCacheJob(_ songID: String) {
         cachingSongIDs.remove(songID)
         isRunningCache = false
+        runningCacheTask = nil
         pumpCacheQueue()
     }
 
@@ -235,6 +239,10 @@ private let cacheDirectory: URL
         // 但留着会让「缓存中」一直亮着
         pendingCaches.removeAll()
         cachingSongIDs.removeAll()
+        // 在途任务也取消：不取消的话它会继续下载+转码整首歌，
+        // 完成后才发现代次不匹配，白耗网络、CPU 与临时磁盘
+        runningCacheTask?.cancel()
+        runningCacheTask = nil
         // 正在播放的缓存文件必须留下：AVPlayer 还挂着它，删掉会让预缓冲窗口失败、
         // 播放中断。保留它的索引项，播放栏也才能继续显示「本地缓存」。
         let protectedID = currentCachedSongID
@@ -267,8 +275,17 @@ private let cacheDirectory: URL
         indexFlushTask?.cancel()
         indexFlushTask = nil
         indexDirty = false
-        guard let data = try? JSONEncoder().encode(index) else { return }
-        try? data.write(to: indexURL(), options: [.atomic])
+        // 写索引失败原先完全静默：下次启动会把所有文件当「索引外的孤儿」重扫一遍，
+        // 且没有任何线索。Windows 版为同类失败加了重试与日志，这里至少留下痕迹。
+        guard let data = try? JSONEncoder().encode(index) else {
+            CTLog.general.warning("缓存索引编码失败，保留盘上旧索引")
+            return
+        }
+        do {
+            try data.write(to: indexURL(), options: [.atomic])
+        } catch {
+            CTLog.general.warning("缓存索引写入失败: \(CTLog.sanitize(error.localizedDescription))")
+        }
     }
 
     /// 合并写：转码完成可能连续触发多次，避免每次都全量序列化索引
@@ -327,6 +344,9 @@ private let cacheDirectory: URL
         // 7 天规则只会等到「某首歌转码成功」才触发一次 ——
         // 一个长期不听的 App 可能永远不转码，过期文件就一直堆在盘上。
         purgeExpired()
+        // 超过容量的部分也要在启动时收一次：旧版本/手工拷贝可能留下超出
+        // 上限的缓存，而容量淘汰原先只在「下一次转码成功」时才发生
+        trimIfNeeded()
     }
 
     /// 清扫超过 `AudioCacheRetentionPolicy.maxAge`（7 天）的条目。

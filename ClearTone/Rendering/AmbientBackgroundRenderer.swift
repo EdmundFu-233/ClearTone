@@ -26,7 +26,6 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
     /// 目标帧率，由 SwiftUI 侧按性能模式设置
     public var targetFramesPerSecond: Int = 60
 
-    private var frameCount: UInt64 = 0
 
     /// draw 循环内零分配用的定长存储（定长元组不能用下标，改用固定结构体）
     private struct Palette {
@@ -59,6 +58,9 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
     }
 
     private var colorStorage = Palette()
+    private var targetColorStorage = Palette()
+    private var hasPalette = false
+    private var lastFrameTime: CFAbsoluteTime = 0
     private var spectrumStorage = [Float](repeating: 0, count: 64)
 
     /// 在途 GPU 帧的背压闸门。
@@ -69,12 +71,6 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
     /// 背压失效、command queue 无界堆积。判定与配对规则见 `InFlightGate`。
     private let inFlightGate = InFlightGate(maxInFlight: 2)
 
-    /// 按目标帧率算出跳帧间隔
-    private var frameInterval: Int {
-        let fps = max(1, min(targetFramesPerSecond, 120))
-        return max(1, 60 / fps)
-    }
-
     /// 由 SwiftUI 侧在 updateNSView 调用（不在 draw 线程）
     public func updateBuffers(colors: [SIMD3<Float>], spectrum: [Float]) {
         let palette: [SIMD3<Float>] = [
@@ -82,8 +78,9 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
             SIMD3(0.12, 0.12, 0.15), SIMD3(0.18, 0.18, 0.22),
         ]
         for i in 0..<5 {
-            if i < colors.count { colorStorage[i] = colors[i] } else { colorStorage[i] = palette[i] }
+            if i < colors.count { targetColorStorage[i] = colors[i] } else { targetColorStorage[i] = palette[i] }
         }
+        if !hasPalette { colorStorage = targetColorStorage; hasPalette = true }
         for i in 0..<64 {
             spectrumStorage[i] = i < spectrum.count ? spectrum[i] : 0
         }
@@ -173,12 +170,14 @@ public final class AmbientBackgroundRenderer: NSObject, MTKViewDelegate {
         // 几帧之后就被自己锁死。
         if inFlightGate.isFull { return }
 
-        frameCount += 1
-        let time = Float(CFAbsoluteTimeGetCurrent() - startTime)
-
-        // 真实降帧：原先这个 if 块是空的，降帧从未发生。
-        // 按 renderScale 降档，节能模式 20fps / 自动 30fps / 高质量 60fps。
-        if frameCount % UInt64(max(1, frameInterval)) != 0 { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let time = Float(now - startTime)
+        let delta = min(1.0 / 15, max(0, now - lastFrameTime))
+        lastFrameTime = now
+        let blend = Float(1 - exp(-delta * 4))
+        for index in 0..<5 {
+            colorStorage[index] += (targetColorStorage[index] - colorStorage[index]) * blend
+        }
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
@@ -282,6 +281,7 @@ public struct MetalBackgroundView: NSViewRepresentable {
         renderer.updateBuffers(colors: converted, spectrum: spectrum)
 
         let fps = targetFramesPerSecond
+        renderer.targetFramesPerSecond = fps
         if nsView.preferredFramesPerSecond != fps {
             nsView.preferredFramesPerSecond = fps
         }
@@ -301,6 +301,12 @@ public struct MetalBackgroundView: NSViewRepresentable {
         case ..<0.6: return 30
         default: return 60
         }
+    }
+
+    public static func dismantleNSView(_ nsView: MTKView, coordinator: AmbientBackgroundRenderer) {
+        nsView.isPaused = true
+        nsView.delegate = nil
+        nsView.releaseDrawables()
     }
 
     public func makeCoordinator() -> AmbientBackgroundRenderer {

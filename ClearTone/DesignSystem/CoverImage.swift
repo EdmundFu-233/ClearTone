@@ -17,10 +17,12 @@ struct CoverImage<Placeholder: View>: View {
     @ViewBuilder var placeholder: () -> Placeholder
 
     @State private var image: NSImage?
+    @State private var loadedURL: URL?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
-            if let image {
+            if let image, loadedURL == url {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.medium)
@@ -35,13 +37,17 @@ struct CoverImage<Placeholder: View>: View {
             // 旧请求可能在新请求**之后**才返回。写回前必须确认自己没被取消，
             // 否则上一首（慢 CDN）的封面会覆盖当前（命中缓存、快）的封面。
             guard !Task.isCancelled else { return }
-            image = loaded
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                loadedURL = url
+                image = loaded
+            }
         }
     }
 
-    /// 尺寸变化时需要重新取更合适的图，因此纳入 task id
+    /// 尺寸变化时需要重新取更合适的图，因此纳入 task id。
+    /// 与 `CoverLoader` 使用同一套量化：微小尺寸变化不会触发重新请求。
     private var taskKey: String {
-        "\(url?.absoluteString ?? "-")@\(Int(size.rounded()))"
+        "\(url?.absoluteString ?? "-")@\(Int(CoverLoader.quantizedPointSize(size).rounded()))"
     }
 }
 
@@ -83,14 +89,15 @@ final class CoverLoader {
     private let session: URLSession
 
     private init() {
-        memory.countLimit = 120
-        // 必须同时限体积：360×360 BGRA 约 0.5MB/张，只限条数时
-        // 120 张就是约 60MB 常驻；且 NSCache 在内存压力下会整体清空，
-        // 一次清空等于全列表封面重下。
-        memory.totalCostLimit = 64 * 1024 * 1024
+        memory.countLimit = 200
+        // 必须同时限体积：只限条数时 120 张 400pt 封面就是约 300MB 常驻；
+        // 且 NSCache 在内存压力下会整体清空，一次清空等于全列表封面重下。
+        // 32MB ≈ 10 张 400pt（系统媒体中心）或数百张列表小图 —— 足够覆盖
+        // 当前页面 + 最近若干首，与 Windows 版的 24MB 目标同一量级。
+        memory.totalCostLimit = 32 * 1024 * 1024
         // 原图动辄几百 KB，磁盘缓存给足，回滚/重进页面直接命中
         let cache = URLCache(
-            memoryCapacity: 64 * 1024 * 1024,
+            memoryCapacity: 8 * 1024 * 1024,
             diskCapacity: 512 * 1024 * 1024,
             diskPath: "com.cleartone.covercache"
         )
@@ -122,25 +129,35 @@ final class CoverLoader {
     /// 并按可达率排序，让最可靠的先试。
     private static let mirrorHosts = ["p1", "p4", "p2", "p3"]
 
+    /// 把显示尺寸量化到 32pt 网格（下限 64，上限 1200）。
+    ///
+    /// 不量化的后果：正在播放页封面随窗口实时变化，每个像素级变化都会生成
+    /// 一个不同的 `?param=WxH`，一次窗口拖拽可产生上百个 URL / 解码 / 缓存条目，
+    /// 既浪费网络又把真正有用的缓存冲掉。量化后同一档位共享下载与缓存。
+    static func quantizedPointSize(_ pointSize: CGFloat) -> CGFloat {
+        let step: CGFloat = 32
+        let clamped = pointSize.clamped(to: 64...1200)
+        return min(1200, (clamped / step).rounded(.up) * step)
+    }
+
     func load(url: URL?, pointSize: CGFloat) async -> NSImage? {
         guard let url else { return nil }
-        let sized = Self.sizedURL(url, pointSize: pointSize)
-        let key = sized.absoluteString
+        let quantized = Self.quantizedPointSize(pointSize)
+        let sized = Self.sizedURL(url, pointSize: quantized)
+        let key = CoverImageDecoder.cacheKey(url: sized, pixels: Int(quantized * 2))
 
         if let cached = memory.object(forKey: key as NSString) { return cached }
 
         if let existing = inFlight[key] { return await existing.value }
 
         let task = Task<NSImage?, Never> { [session] in
-            await Self.fetchImage(session: session, from: sized, pointSize: pointSize)
+            await Self.fetchImage(session: session, from: sized, pointSize: quantized)
         }
         inFlight[key] = task
         let result = await task.value
         inFlight[key] = nil
         if let result {
-            // 按实际像素数记账，供 totalCostLimit 淘汰
-            let cost = Int(result.size.width * result.size.height) * 4
-            memory.setObject(result, forKey: key as NSString, cost: cost)
+            memory.setObject(result, forKey: key as NSString, cost: Self.cacheCost(of: result))
         }
         return result
     }
@@ -155,23 +172,24 @@ final class CoverLoader {
     /// 只靠视图裁剪会露出方角。
     func avatar(url: URL?, pointSize: CGFloat) async -> NSImage? {
         guard let url else { return nil }
-        let sized = Self.sizedURL(url, pointSize: pointSize)
-        let key = "avatar:" + sized.absoluteString
+        let quantized = Self.quantizedPointSize(pointSize)
+        let sized = Self.sizedURL(url, pointSize: quantized)
+        let key = "avatar:" + CoverImageDecoder.cacheKey(url: sized, pixels: Int(quantized * 2))
 
         if let cached = memory.object(forKey: key as NSString) { return cached }
         if let existing = inFlight[key] { return await existing.value }
 
         let task = Task<NSImage?, Never> { [session] in
-            guard let raw = await Self.fetchImage(session: session, from: sized, pointSize: pointSize)
-            else { return nil }
-            return Self.bakeCircular(raw, pointSize: pointSize)
+            guard let raw = await Self.fetchImage(
+                session: session, from: sized, pointSize: Self.quantizedPointSize(pointSize)
+            ) else { return nil }
+            return Self.bakeCircular(raw, pointSize: quantized)
         }
         inFlight[key] = task
         let result = await task.value
         inFlight[key] = nil
         if let result {
-            let cost = Int(result.size.width * result.size.height) * 4
-            memory.setObject(result, forKey: key as NSString, cost: cost)
+            memory.setObject(result, forKey: key as NSString, cost: Self.cacheCost(of: result))
         }
         return result
     }
@@ -222,18 +240,19 @@ final class CoverLoader {
         pointSize: CGFloat
     ) async -> NSImage? {
         if let raw = await downloadOnce(session: session, from: url) {
-            return downsample(raw, to: pointSize)
+            return await decode(raw, pointSize: pointSize)
         }
         // 主 host 不可达：换镜像 host 重试
         return await retryWithMirrorHosts(session: session, from: url, pointSize: pointSize)
     }
 
     /// 单次下载；只发一个请求（data(from:) 同时返回 body 与 response）
-    private static func downloadOnce(session: URLSession, from url: URL) async -> NSImage? {
+    private static func downloadOnce(session: URLSession, from url: URL) async -> Data? {
         guard let (data, response) = try? await session.data(from: url),
               let http = response as? HTTPURLResponse,
-              (200...299).contains(http.statusCode) else { return nil }
-        return NSImage(data: data)
+              (200...299).contains(http.statusCode),
+              data.count < 15 * 1024 * 1024 else { return nil }
+        return data
     }
 
     private static func retryWithMirrorHosts(
@@ -255,7 +274,7 @@ final class CoverLoader {
             components?.host = "\(candidateHost).music.126.net"
             guard let candidate = components?.url else { continue }
             if let raw = await downloadOnce(session: session, from: candidate) {
-                return downsample(raw, to: pointSize)
+                return await decode(raw, pointSize: pointSize)
             }
         }
         return nil
@@ -289,57 +308,38 @@ final class CoverLoader {
         return components.url ?? url
     }
 
-    /// 在主线程把原图重绘到目标像素尺寸，顺带完成圆角外的裁剪基准
-    /// 缩放到目标像素尺寸并**立即栅格化**。
+    /// 位图的真实像素尺寸。
     ///
-    /// ## 为什么要立刻栅格化（这里曾崩过一次）
-    ///
-    /// 原实现返回 `NSImage(size:flipped:drawingHandler:)` —— 它是**惰性**的，
-    /// 闭包会在「任何线程请求绘制时」才执行。AppKit 不保证绘制发生在主线程，
-    /// 于是踩到了这个崩溃：
-    ///
-    ///     MPNowPlayingInfoCenter (后台队列 accessQueue)
-    ///       → MPArtworkImageJPEGRepresentation
-    ///       → NSImage.draw(in:) → 我们的 drawingHandler
-    ///       → CoverLoader 是 @MainActor → _swift_task_checkIsolatedSwift
-    ///       → dispatch_assert_queue_fail → SIGTRAP 闪退
-    ///
-    /// 触发路径是锁屏/控制中心/触控栏取封面图 —— 也就是「播放每日推荐的歌」
-    /// 之后系统自动拉取 artwork 时。NSImage 本身在多线程绘制是安全的，
-    /// 只要里面**没有闭包**。所以这里直接烘成位图。
-    private static func downsample(_ image: NSImage, to pointSize: CGFloat) -> NSImage {
-        let side = max(1, pointSize * 2)
-        guard image.size.width > side || image.size.height > side else { return image }
-
-        // 目标像素尺寸，2x 密度直接用像素点
-        let pixelSide = Int(side)
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: pixelSide,
-            pixelsHigh: pixelSide,
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else { return image }
-
-        rep.size = NSSize(width: side, height: side)
-        // 立刻绘制：此时仍在主线程（CoverLoader 是 @MainActor）
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        image.draw(in: NSRect(x: 0, y: 0, width: side, height: side),
-                   from: NSRect(origin: .zero, size: image.size),
-                   operation: .sourceOver,
-                   fraction: 1)
-        NSGraphicsContext.restoreGraphicsState()
-
-        let baked = NSImage(size: NSSize(width: side, height: side))
-        baked.addRepresentation(rep)
-        return baked
+    /// **不能用 `NSImage.size`**：那是 point 尺寸，受 DPI 元数据影响 ——
+    /// 300dpi 的 3000×3000 图会报告成 720pt，于是下采样判断（按 point 比较）
+    /// 认为"已经够小"而跳过，NSCache 计费也按 point 算成约 2MB（真实约 36MB），
+    /// 64MB 的体积上限形同虚设。取最大 representation 的像素数才是真实占用。
+    private static func pixelSize(of image: NSImage) -> CGSize {
+        let best = image.representations.max { lhs, rhs in
+            lhs.pixelsWide * lhs.pixelsHigh < rhs.pixelsWide * rhs.pixelsHigh
+        }
+        if let best, best.pixelsWide > 0, best.pixelsHigh > 0 {
+            return CGSize(width: best.pixelsWide, height: best.pixelsHigh)
+        }
+        return image.size
     }
+
+    /// NSCache 计费：真实像素 × 4 字节（BGRA）
+    private static func cacheCost(of image: NSImage) -> Int {
+        let pixels = pixelSize(of: image)
+        return Int(pixels.width * pixels.height) * 4
+    }
+
+    static func decode(_ data: Data, pointSize: CGFloat) async -> NSImage? {
+        guard let thumbnail = await CoverImageDecoder.decode(
+            data, maxPixelSize: Int(quantizedPointSize(pointSize) * 2)
+        ) else { return nil }
+        let rep = NSBitmapImageRep(cgImage: thumbnail)
+        let image = NSImage(size: NSSize(width: thumbnail.width, height: thumbnail.height))
+        image.addRepresentation(rep)
+        return image
+    }
+
 }
 
 extension Comparable {
