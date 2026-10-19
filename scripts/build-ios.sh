@@ -50,7 +50,7 @@ assert not list(app.rglob('*.entitlements'))
 assert not list(app.rglob('*.appex'))
 
 # 版本号必须来自 build setting，而不是 XcodeGen 的 `1.0` 默认值
-assert info.get('CFBundleShortVersionString') == '27.0.0', info.get('CFBundleShortVersionString')
+assert info.get('CFBundleShortVersionString') == '27.0.1', info.get('CFBundleShortVersionString')
 assert info.get('CFBundleVersion') == '1', info.get('CFBundleVersion')
 
 # **iOS 不得申请任何需要付费开发者账号的 entitlement。**
