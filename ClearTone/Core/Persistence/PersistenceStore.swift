@@ -5,9 +5,23 @@ public final class PersistenceStore: Sendable {
     public static let shared = PersistenceStore()
 
     private let queueKey = "cleartone.persisted.queue"
-    private let settingsKey = "cleartone.persisted.settings"
+    private var settingsKey: String { Self.settingsKeyPrefix }
 
-    private init() {}
+    private init() {
+        Self.purgeLegacyAccountCaches()
+    }
+
+    /// 旧版本的账号缓存是**全局键**（不带 owner）。升级后不再读取它们，
+    /// 顺手清掉：留在 UserDefaults 里既占空间（收藏详情可达数 MB），
+    /// 「这份数据属于谁」也已经无从判断 —— 那正是换号串数据的根源。
+    private static func purgeLegacyAccountCaches() {
+        let defaults = UserDefaults.standard
+        for key in ["cachedLikedSongs", "cachedLikedSongIDs", "cachedUserPlaylists"] {
+            defaults.removeObject(forKey: "\(settingsKeyPrefix).\(key)")
+        }
+    }
+
+    private static let settingsKeyPrefix = "cleartone.persisted.settings"
 
     /// 建目录只做一次：原先是计算属性，每次访问都执行一次 mkdir 系统调用，
     /// 而 saveQueue 每 5 秒就会被调用一次。
@@ -106,8 +120,13 @@ public final class PersistenceStore: Sendable {
     }
 
     public func clearQueue() {
-        try? FileManager.default.removeItem(at: queueFileURL)
-        Task { await PersistenceWriter.shared.reset() }
+        // 先作废待写快照并**等在途落盘结束**，再删文件 ——
+        // 顺序反了的话，旧快照可能在 removeItem 之后才 rename 到位，
+        // 「清空队列」被覆盖，退出后旧队列复活。
+        Task {
+            await PersistenceWriter.shared.reset()
+            try? FileManager.default.removeItem(at: queueFileURL)
+        }
     }
 
     // MARK: - 后台合并写
@@ -142,11 +161,13 @@ public final class PersistenceStore: Sendable {
             scheduleFlush()
         }
 
-        /// 退出/切歌等需要立即落盘时调用
+        /// 退出/切歌等需要立即落盘时调用。
+        ///
+        /// 它现在是完整屏障：会先等在途的那一轮落盘结束，再写 pending。
         func flushNow() async {
             flushTask?.cancel()
             flushTask = nil
-            try? await writePending()
+            await writePending()
         }
 
         /// 排入快照并**在同一 actor 上立刻落盘**。
@@ -160,15 +181,17 @@ public final class PersistenceStore: Sendable {
             flushTask = nil
             if let queue { pendingQueue = queue }
             if let recentSongs { pendingRecent = recentSongs }
-            try? await writePending()
+            await writePending()
         }
 
-        /// 「清空队列」用：丢弃所有待写内容，避免清空后又被旧快照写回来
-        func reset() {
+        /// 「清空队列」用：丢弃所有待写内容，并等在途落盘结束 ——
+        /// 避免清空之后旧快照才落盘、把「清空」覆盖回去。
+        func reset() async {
             flushTask?.cancel()
             flushTask = nil
             pendingQueue = nil
             pendingRecent = nil
+            await writeInFlight?.value
         }
 
         private func scheduleFlush() {
@@ -176,11 +199,29 @@ public final class PersistenceStore: Sendable {
             flushTask = Task {
                 try? await Task.sleep(for: Self.debounce)
                 guard !Task.isCancelled else { return }
-                try? await writePending()
+                await writePending()
             }
         }
 
-        private func writePending() async throws {
+        /// 一次落盘的结果。写失败不再向调用方抛错（调用点全是 `try?`，
+        /// 错误只能变成「静默丢弃」）；改为在这里决定补回 pending 与重试。
+        private struct WriteOutcome: Sendable {
+            var queueFailed = false
+            var recentFailed = false
+        }
+
+        /// 在途的整批落盘任务。`writePending` 开头先 await 它。
+        ///
+        /// actor 在 `await` 处可重入：没有这道门闩时，两次 `writePending`
+        /// 会各自启动一个 detached 写任务并发 rename 到同一路径，
+        /// **旧快照可能后到、把新快照覆盖掉**（退出前的最终进度就这样丢的）。
+        /// detached 任务从不回调本 actor，等它不会死锁。
+        private var writeInFlight: Task<WriteOutcome, Never>?
+
+        private func writePending() async {
+            // 上一轮必须先结束，本轮的快照才谈得上「最新」
+            await writeInFlight?.value
+
             let queue = pendingQueue
             let recent = pendingRecent
             pendingQueue = nil
@@ -194,33 +235,42 @@ public final class PersistenceStore: Sendable {
             // 的快照被永久丢弃（不是延后重试）。后果是：切歌之后的所有队列变更
             // （清空、加歌、拖动排序、播放模式、音量、音质、播放进度）
             // 一律不落盘，⌘Q 退出时也一样。
-            //
-            // 同样的道理，**写出失败**也必须把取走的快照补回来：
-            // 上面两行已经把它从 pending 摘走了，一抛就等于永久丢掉这一轮。
-            // 两条链路各自独立，一条失败不能连坐另一条。
-            var firstError: Error?
-            if let queue {
-                do {
-                    try await Task.detached(priority: .utility) {
+            guard queue != nil || recent != nil else { return }
+
+            // 编码 + 落盘整体放进一个 detached 任务：既离开主 actor，
+            // 又保证同一时刻只有一轮 I/O 在跑（两轮各自 stat/encode/write
+            // 交错也会互相拖慢）。
+            let task = Task.detached(priority: .utility) { () -> WriteOutcome in
+                var outcome = WriteOutcome()
+                if let queue {
+                    do {
                         try Self.writeQueueSnapshot(queue)
-                    }.value
-                } catch {
-                    // 期间若已有更新的一轮进来，保留新的那份
-                    if pendingQueue == nil { pendingQueue = queue }
-                    firstError = error
+                    } catch {
+                        outcome.queueFailed = true
+                        CTLog.general.error("队列落盘失败: \(CTLog.sanitize(error.localizedDescription))")
+                    }
                 }
-            }
-            if let recent {
-                do {
-                    try await Task.detached(priority: .utility) {
+                if let recent {
+                    do {
                         try Self.writeRecentSnapshot(recent)
-                    }.value
-                } catch {
-                    if pendingRecent == nil { pendingRecent = recent }
-                    firstError = firstError ?? error
+                    } catch {
+                        outcome.recentFailed = true
+                        CTLog.general.error("最近播放落盘失败: \(CTLog.sanitize(error.localizedDescription))")
+                    }
                 }
+                return outcome
             }
-            if firstError != nil {
+            writeInFlight = task
+            let outcome = await task.value
+            // 期间可能有新的一轮写任务接管了 writeInFlight，不能把它清掉
+            if writeInFlight == task { writeInFlight = nil }
+
+            // 写出失败必须把取走的快照补回来：上面已经把它从 pending 摘走了，
+            // 不补就等于永久丢掉这一轮。两条链路各自独立，一条失败不能连坐另一条；
+            // 期间若有更新的一轮进来（pending 非空），保留新的那份。
+            if outcome.queueFailed, pendingQueue == nil { pendingQueue = queue }
+            if outcome.recentFailed, pendingRecent == nil { pendingRecent = recent }
+            if outcome.queueFailed || outcome.recentFailed {
                 consecutiveWriteFailures += 1
                 // 磁盘满时不能无限重试（每次都是真 I/O）。停手之后，
                 // 用户下次改队列 / 退出时的 `flushNow` 会重新开始尝试。
@@ -231,7 +281,6 @@ public final class PersistenceStore: Sendable {
             } else {
                 consecutiveWriteFailures = 0
             }
-            if let firstError { throw firstError }
         }
 
         private static func writeQueueSnapshot(_ queue: PersistedQueue) throws {
@@ -299,42 +348,54 @@ public final class PersistenceStore: Sendable {
         removeSetting(forKey: "cachedAccount")
     }
 
+    // MARK: 账号维度的用户数据缓存
+    //
+    // 全部键都带 `owner`（账号 userID）。会话失效时磁盘缓存是刻意保留的
+    // （同一账号重新登录不用把 2808 首收藏重拉一遍），但**不隔离**的话，
+    // 下一个登录的账号在拉取失败时会把上一个账号的缓存当自己的数据渲染出来
+    // （红心集合、歌单、曲目数全是别人的）。按 owner 命名空间天然隔离，
+    // 且不会丢掉原账号的缓存。
+
     /// 缓存喜欢的歌曲，离线也能立即渲染红心状态与列表
-    public func saveCachedLikedSongs(_ songs: [Song]) {
-        saveSetting(songs, forKey: "cachedLikedSongs")
+    public func saveCachedLikedSongs(_ songs: [Song], owner: String) {
+        saveSetting(songs, forKey: ownerScopedKey("cachedLikedSongs", owner: owner))
     }
 
-    public func loadCachedLikedSongs() -> [Song] {
-        (loadSetting(forKey: "cachedLikedSongs", as: [Song].self) ?? [])
+    public func loadCachedLikedSongs(owner: String) -> [Song] {
+        (loadSetting(forKey: ownerScopedKey("cachedLikedSongs", owner: owner), as: [Song].self) ?? [])
             .filter { Self.isNotLegacyDemoSong($0) }
     }
 
     /// 全量收藏 id（约 60KB）。心形状态的判断依据，必须与详情列表分开存：
     /// 详情列表可能因分页/失败而不完整，id 集合不能受它影响。
-    public func saveCachedLikedSongIDs(_ ids: [String]) {
-        saveSetting(ids, forKey: "cachedLikedSongIDs")
+    public func saveCachedLikedSongIDs(_ ids: [String], owner: String) {
+        saveSetting(ids, forKey: ownerScopedKey("cachedLikedSongIDs", owner: owner))
     }
 
-    public func loadCachedLikedSongIDs() -> [String] {
-        loadSetting(forKey: "cachedLikedSongIDs", as: [String].self) ?? []
+    public func loadCachedLikedSongIDs(owner: String) -> [String] {
+        loadSetting(forKey: ownerScopedKey("cachedLikedSongIDs", owner: owner), as: [String].self) ?? []
     }
 
-    public func clearCachedLikedSongs() {
-        removeSetting(forKey: "cachedLikedSongs")
-        removeSetting(forKey: "cachedLikedSongIDs")
+    public func clearCachedLikedSongs(owner: String) {
+        removeSetting(forKey: ownerScopedKey("cachedLikedSongs", owner: owner))
+        removeSetting(forKey: ownerScopedKey("cachedLikedSongIDs", owner: owner))
     }
 
     /// 缓存用户歌单，冷启动时侧栏先渲染再后台刷新
-    public func saveCachedUserPlaylists(_ playlists: [Playlist]) {
-        saveSetting(playlists, forKey: "cachedUserPlaylists")
+    public func saveCachedUserPlaylists(_ playlists: [Playlist], owner: String) {
+        saveSetting(playlists, forKey: ownerScopedKey("cachedUserPlaylists", owner: owner))
     }
 
-    public func loadCachedUserPlaylists() -> [Playlist] {
-        loadSetting(forKey: "cachedUserPlaylists", as: [Playlist].self) ?? []
+    public func loadCachedUserPlaylists(owner: String) -> [Playlist] {
+        loadSetting(forKey: ownerScopedKey("cachedUserPlaylists", owner: owner), as: [Playlist].self) ?? []
     }
 
-    public func clearCachedUserPlaylists() {
-        removeSetting(forKey: "cachedUserPlaylists")
+    public func clearCachedUserPlaylists(owner: String) {
+        removeSetting(forKey: ownerScopedKey("cachedUserPlaylists", owner: owner))
+    }
+
+    private func ownerScopedKey(_ base: String, owner: String) -> String {
+        "\(base).\(owner)"
     }
 
     /// 本地音乐库（文件路径列表，启动时重新解析元数据）

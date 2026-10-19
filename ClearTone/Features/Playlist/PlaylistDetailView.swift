@@ -185,16 +185,32 @@ struct PlaylistDetailView: View {
         errorMessage = nil
         // 切歌单时先清空上一个歌单的内容，避免新旧混排
         detail = nil
-        do {
-            if let cached = await provider.cachedPlaylistTracks(id: playlistID) {
+
+        let cached = await provider.cachedPlaylistTracks(id: playlistID)
+        guard loadToken == token, !Task.isCancelled else { return }
+
+        if let cached {
+            // 缓存内容先上屏（瞬时可见），随后视新鲜度决定要不要校准。
+            do {
                 var loaded = try await provider.fetchPlaylistDetail(id: playlistID)
                 guard loadToken == token, !Task.isCancelled else { return }
-                loaded.tracks = cached
+                loaded.tracks = cached.songs
                 detail = loaded
+                isLoading = false
+            } catch {
+                guard loadToken == token else { return }
+                errorMessage = error.ctUserMessage
                 isLoading = false
                 return
             }
+            guard !cached.isFresh else { return }
+            // 已过可信窗口（最长 10 分钟的旧清单）：静默重拉最新曲目。
+            // 在校准完成前，屏幕上一直是缓存内容，不闪加载态。
+            await revalidatePlaylistTracks(token: token)
+            return
+        }
 
+        do {
             // 1. 先只取详情并立即渲染（标题/封面/首屏曲目），不再等全部分页结束
             let loaded = try await provider.fetchPlaylistDetail(id: playlistID)
             guard loadToken == token, !Task.isCancelled else { return }
@@ -229,5 +245,45 @@ struct PlaylistDetailView: View {
         }
         guard loadToken == token else { return }
         isLoading = false
+    }
+
+    /// 缓存未过期时的静默校准：重拉 `playlist/detail` 与全部曲目分页，**绕过响应缓存**。
+    ///
+    /// 校准结果不逐页追加，而是全部到齐后一次性替换 —— 直接增量替换会让
+    /// 列表先缩回首屏再逐页长回去，用户会看到明显的闪动。失败保持现状：
+    /// 屏幕上还有缓存内容，不该因为后台校准失败弹错或清空。
+    private func revalidatePlaylistTracks(token: UUID) async {
+        do {
+            let fresh = try await provider.fetchPlaylistDetail(id: playlistID, forceRefresh: true)
+            guard loadToken == token, !Task.isCancelled else { return }
+            // 总数与首屏都缺席时无法判断这次响应是否完整（上游偶发异常），
+            // 保留缓存不替换：宁可持续显示旧清单，也不要清成空页。
+            guard fresh.totalTrackCount > 0 || !fresh.tracks.isEmpty else { return }
+            var accumulated = fresh.tracks
+            var seenIDs = Set(accumulated.map(\.id))
+            if fresh.totalTrackCount > accumulated.count {
+                for try await batch in await provider.streamPlaylistTracks(
+                    id: playlistID,
+                    totalCount: fresh.totalTrackCount,
+                    forceRefresh: true
+                ) {
+                    guard loadToken == token, !Task.isCancelled else { return }
+                    let newTracks = batch.filter { seenIDs.insert($0.id).inserted }
+                    guard !newTracks.isEmpty else { continue }
+                    accumulated.append(contentsOf: newTracks)
+                }
+            }
+            guard loadToken == token, !Task.isCancelled else { return }
+            // 回写缓存并刷新时间戳：小歌单（详情已含全部曲目、没有分页可拉）
+            // 的分支不会经过 streamPlaylistTracks 的自动落缓存，
+            // 不补这一笔的话它每次进入都会重新校准。
+            await provider.storePlaylistTracks(accumulated, for: playlistID)
+            var updated = fresh
+            updated.tracks = accumulated
+            detail = updated
+        } catch {
+            guard loadToken == token else { return }
+            CTLog.general.error("歌单曲目校准失败: \(CTLog.sanitize(error.localizedDescription))")
+        }
     }
 }

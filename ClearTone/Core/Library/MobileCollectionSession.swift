@@ -23,7 +23,9 @@ final class MobileCollectionSession: ObservableObject {
 
     init(provider: any MusicProvider = NeteaseProvider.shared) { self.provider = provider }
 
-    func load(_ kind: Kind) async {
+    /// 初次加载。`forceRefresh` 由下拉刷新传入：绕过响应缓存，
+    /// 否则 300 秒内再拉会由缓存直接作答，手势看起来毫无反应。
+    func load(_ kind: Kind, forceRefresh: Bool = false) async {
         generation += 1
         let token = generation
         self.kind = kind
@@ -33,24 +35,26 @@ final class MobileCollectionSession: ObservableObject {
         do {
             switch kind {
             case .playlist(let id):
-                let detail = try await provider.fetchPlaylistDetail(id: id)
+                let detail = try await provider.fetchPlaylistDetail(id: id, forceRefresh: forceRefresh)
                 guard token == generation, !Task.isCancelled else { return }
                 title = detail.playlist.name; descriptionText = detail.playlist.descriptionText
                 coverURL = detail.playlist.coverURL; total = detail.totalTrackCount
                 // detail 中的 seed 与第 1 页重叠，必须替换而非追加。
-                let first = try await provider.fetchPlaylistTracks(id: id, page: 1, limit: pageSize)
+                let first = try await provider.fetchPlaylistTracks(
+                    id: id, page: 1, limit: pageSize, forceRefresh: forceRefresh
+                )
                 guard token == generation, !Task.isCancelled else { return }
                 songs = unique(first)
                 hasMore = morePages(pageCount: first.count, total: total, page: 1)
             case .album(let id):
-                let detail = try await provider.fetchAlbumDetail(id: id)
+                let detail = try await provider.fetchAlbumDetail(id: id, forceRefresh: forceRefresh)
                 guard token == generation, !Task.isCancelled else { return }
                 title = detail.playlist.name; descriptionText = detail.playlist.descriptionText
                 // 专辑 / 歌手页一次给全，不分页 —— 但同样要过一遍去重，
                 // 否则上游返回重复 id 时 SwiftUI 的 ForEach 会直接崩。
                 coverURL = detail.playlist.coverURL; songs = unique(detail.tracks)
             case .artist(let id):
-                let detail = try await provider.fetchArtistDetail(id: id)
+                let detail = try await provider.fetchArtistDetail(id: id, forceRefresh: forceRefresh)
                 guard token == generation, !Task.isCancelled else { return }
                 title = detail.artist.name; coverURL = detail.artist.avatarURL
                 songs = unique(detail.hotSongs); albums = detail.albums

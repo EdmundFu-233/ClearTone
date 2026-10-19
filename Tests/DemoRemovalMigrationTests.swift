@@ -62,10 +62,12 @@ final class DemoRemovalMigrationTests: XCTestCase {
 
     /// 演示歌曲不得残留在 liked 缓存里
     func testLikedCacheDropsLegacyDemoSongs() {
+        // 收藏缓存按账号隔离（键带 owner），这里用一个测试专属 owner，避免碰真实账号的键
+        let owner = "demo-migration-test"
         assertLegacyDemoSongsAreDropped(
-            key: "cachedLikedSongs",
-            save: { PersistenceStore.shared.saveCachedLikedSongs($0) },
-            load: { PersistenceStore.shared.loadCachedLikedSongs() }
+            key: "cachedLikedSongs.\(owner)",
+            save: { PersistenceStore.shared.saveCachedLikedSongs($0, owner: owner) },
+            load: { PersistenceStore.shared.loadCachedLikedSongs(owner: owner) }
         )
     }
 

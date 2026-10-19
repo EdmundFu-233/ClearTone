@@ -100,9 +100,21 @@ private let cacheDirectory: URL
     private var indexDirty = false
     private var indexFlushTask: Task<Void, Never>?
 
-    private init() {
+    /// 下载 + 转码实现。生产走系统转码器；测试可注入桩，
+    /// 以便离线驱动缓存队列（清除竞态、标记归属这类状态机只有真跑才测得到）。
+    typealias CacheBuilder = @Sendable (URL, URL, Int) async throws -> (bitrateKbps: Int, sizeBytes: Int64)
+    private let buildCache: CacheBuilder
+
+    /// 生产实例：缓存落在系统 Caches 目录
+    private convenience init() {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        cacheDirectory = base.appendingPathComponent("ClearTone/AudioCache", isDirectory: true)
+        self.init(cacheDirectory: base.appendingPathComponent("ClearTone/AudioCache", isDirectory: true))
+    }
+
+    /// 指定缓存目录（测试注入临时目录，不碰真实的缓存目录）。
+    init(cacheDirectory: URL, buildCache: CacheBuilder? = nil) {
+        self.cacheDirectory = cacheDirectory
+        self.buildCache = buildCache ?? Self.downloadAndTranscode
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         refreshIndex()
     }
@@ -115,7 +127,13 @@ private let cacheDirectory: URL
         // 可能已被系统清理、或内容早已过期的文件。
         guard !AudioCacheRetentionPolicy.isExpired(cachedAt: meta.cachedAt) else { return nil }
         let url = fileURL(for: songID)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            // 文件被外部清理（系统回收缓存目录 / 用户手删）：索引项必须一起剔除。
+            // 留着的话容量统计会虚高（设置页显示一个磁盘上不存在的占用），
+            // 淘汰还会拿真实文件去凑一个永远降不下来的「超量」。
+            dropIndexEntry(songID)
+            return nil
+        }
         touchAccess(songID: songID)
         return CachedAudio(url: url, formatName: meta.formatName, bitrateKbps: meta.bitrateKbps)
     }
@@ -165,7 +183,10 @@ private let cacheDirectory: URL
     /// 之前每首歌各自 `Task(priority: .utility)`：连续切 30 首歌就会同时跑
     /// 30 个下载 + 30 个 afconvert 进程，既抢播放的连接与 CPU，也可能把盘写满。
     /// 串行化之后一次只处理一首。
+    ///
+    /// 带 `id` 是因为「完成状态」不能按歌曲 id 认领（见 `finishCacheJob`）。
     private struct PendingCache {
+        let id = UUID()
         let songID: String
         let sourceURL: URL
         let generation: Int
@@ -173,6 +194,9 @@ private let cacheDirectory: URL
 
     private var pendingCaches: [PendingCache] = []
     private var isRunningCache = false
+    /// 当前在跑的任务 id。`clearAll` 后同一首歌可能立刻重新入队，
+    /// 收尾时靠它区分「我是不是正在跑的那个」。
+    private var runningJobID: UUID?
     /// 在途的下载+转码任务句柄，`clearAll` 时取消 —— 否则清除缓存后
     /// 它还会把整首歌下载并转码完再丢弃（几十 MB 磁盘/网络 + CPU 白耗）。
     private var runningCacheTask: Task<Void, Never>?
@@ -181,19 +205,17 @@ private let cacheDirectory: URL
         guard !isRunningCache, !pendingCaches.isEmpty else { return }
         isRunningCache = true
         let job = pendingCaches.removeFirst()
+        runningJobID = job.id
         let destination = fileURL(for: job.songID)
+        let builder = buildCache
 
         runningCacheTask = Task(priority: .utility) { [weak self] in
             // 无论成功失败都要清状态并推进队列，否则「缓存中」永久亮着、队列不再前进
-            defer { Task { @MainActor in self?.finishCacheJob(job.songID) } }
+            defer { Task { @MainActor in self?.finishCacheJob(job.id, songID: job.songID) } }
 
             let result: (bitrateKbps: Int, sizeBytes: Int64)
             do {
-                result = try await Self.downloadAndTranscode(
-                    sourceURL: job.sourceURL,
-                    destination: destination,
-                    targetBitrate: Self.defaultTargetBitrate
-                )
+                result = try await builder(job.sourceURL, destination, Self.defaultTargetBitrate)
             } catch {
                 CTLog.general.warning("音频缓存失败 [\(job.songID)]: \(CTLog.sanitize(error.localizedDescription))")
                 return
@@ -225,9 +247,17 @@ private let cacheDirectory: URL
         }
     }
 
-    /// 一首缓存任务结束（成功 / 失败 / 被丢弃）：清状态并推进队列
-    private func finishCacheJob(_ songID: String) {
-        cachingSongIDs.remove(songID)
+    /// 一首缓存任务结束（成功 / 失败 / 被丢弃）：清状态并推进队列。
+    ///
+    /// 清除标记只在「正在跑的还是这个任务」时移除。`clearAll` 之后同一首歌
+    /// 会立刻重新入队并立起自己的「缓存中」标记，旧任务的收尾绝不能把它抹掉 ——
+    /// 抹掉的话界面显示「未缓存」，同曲再次入队可以通过去重守卫，
+    /// 同一首歌会被重复下载、转码两遍。
+    private func finishCacheJob(_ jobID: UUID, songID: String) {
+        if runningJobID == jobID {
+            cachingSongIDs.remove(songID)
+            runningJobID = nil
+        }
         isRunningCache = false
         runningCacheTask = nil
         pumpCacheQueue()
@@ -243,20 +273,31 @@ private let cacheDirectory: URL
         // 完成后才发现代次不匹配，白耗网络、CPU 与临时磁盘
         runningCacheTask?.cancel()
         runningCacheTask = nil
+        runningJobID = nil
         // 正在播放的缓存文件必须留下：AVPlayer 还挂着它，删掉会让预缓冲窗口失败、
         // 播放中断。保留它的索引项，播放栏也才能继续显示「本地缓存」。
         let protectedID = currentCachedSongID
-        if let protectedID, let meta = index[protectedID] {
-            index = [protectedID: meta]
-            cachedSongIDs = [protectedID]
-        } else {
-            index.removeAll()
-            cachedSongIDs.removeAll()
+        let previousIndex = index
+        var keptIndex: [String: CacheMeta] = [:]
+        if let protectedID, let meta = previousIndex[protectedID] {
+            keptIndex[protectedID] = meta
         }
         let files = (try? FileManager.default.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
         for file in Self.cacheClearDeletionTargets(in: files, protecting: protectedID) {
-            try? FileManager.default.removeItem(at: file)
+            guard removeCacheFile(at: file) else {
+                // 删不掉的（被占用 / 权限）保留索引项：否则它会变成「无索引的
+                // 孤儿文件」，下次启动被 refreshIndex 当新文件收养 ——
+                // 用户刚点的「清除缓存」在重启后自己长回来，容量也不对。
+                // 留着条目，下一轮清理/淘汰还会再试。
+                let id = file.deletingPathExtension().lastPathComponent
+                if Self.isCacheFile(file), let meta = previousIndex[id] {
+                    keptIndex[id] = meta
+                }
+                continue
+            }
         }
+        index = keptIndex
+        cachedSongIDs = Set(keptIndex.keys)
         // 删完再落盘：目标里包含 index.json，先写会被随后的删除抹掉
         persistIndex()
     }
@@ -265,6 +306,32 @@ private let cacheDirectory: URL
 
     private func fileURL(for songID: String) -> URL {
         cacheDirectory.appendingPathComponent("\(songID).\(Self.cacheFileExtension)")
+    }
+
+    /// 从索引里剔除一条并调度落盘（文件已确认不存在时用）
+    private func dropIndexEntry(_ songID: String) {
+        guard index.removeValue(forKey: songID) != nil else { return }
+        cachedSongIDs.remove(songID)
+        persistIndexSoon()
+    }
+
+    /// 删除一个缓存文件。返回文件是否已不存在（删除成功，或本来就没有）。
+    ///
+    /// 删除失败（文件被占用 / 权限）必须返回 false —— 所有调用点都靠它决定
+    /// 是否保留索引项。删不掉却把索引项拿掉的话，文件会变成「孤儿」，
+    /// 下次启动被 `refreshIndex` 当新文件收养（`cachedAt` 重置为当时），
+    /// 过期条目于是拿到新的 7 天租约、容量统计也跟着失真。
+    private func removeCacheFile(at url: URL) -> Bool {
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // 本来就不在：视作已删除
+            return true
+        } catch {
+            CTLog.general.warning("缓存文件删除失败: \(CTLog.sanitize(error.localizedDescription))")
+            return false
+        }
     }
 
     private func indexURL() -> URL {
@@ -359,17 +426,22 @@ private let cacheDirectory: URL
             cachedAtByID: index.mapValues(\.cachedAt)
         )
         guard !expired.isEmpty else { return 0 }
+        var removed = 0
         for songID in expired {
             // 正在播的先留着：文件删了 AVPlayer 会立刻中断
             guard songID != currentCachedSongID else { continue }
-            try? FileManager.default.removeItem(at: fileURL(for: songID))
+            // 删不掉就保留索引项（原因见 `removeCacheFile`），下一轮再试
+            guard removeCacheFile(at: fileURL(for: songID)) else { continue }
             if index.removeValue(forKey: songID) != nil {
                 cachedSongIDs.remove(songID)
+                removed += 1
             }
         }
         persistIndex()
-        CTLog.general.info("音频缓存过期清理: \(expired.count) 条超过 \(Int(AudioCacheRetentionPolicy.maxAge / 86400)) 天")
-        return expired.count
+        if removed > 0 {
+            CTLog.general.info("音频缓存过期清理: \(removed) 条超过 \(Int(AudioCacheRetentionPolicy.maxAge / 86400)) 天")
+        }
+        return removed
     }
 
     private func touchAccess(songID: String) {
@@ -407,7 +479,9 @@ private let cacheDirectory: URL
             guard totalCacheBytes > maxCacheBytes else { break }
             // 正在播放的文件不能删：APFS 上已开 fd 可继续读，但预缓冲窗口会失败
             guard entry.id != currentCachedSongID else { continue }
-            try? FileManager.default.removeItem(at: entry.url)
+            // 删不掉就保留索引项（原因见 `removeCacheFile`）；总量降不下来时
+            // 循环会继续尝试其它条目，不会死循环（迭代有界）
+            guard removeCacheFile(at: entry.url) else { continue }
             if index.removeValue(forKey: entry.id) != nil {
                 cachedSongIDs.remove(entry.id)
             }

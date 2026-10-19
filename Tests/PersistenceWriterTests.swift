@@ -106,7 +106,7 @@ final class PersistenceWriterTests: XCTestCase {
     /// 退出走 `persistAndFlush`：`schedule` + `flush` 合成一个 actor 方法。
     /// 分成两个 Task 时它们在 actor 上的先后没有保证，flush 完全可能先跑而刷了个空。
     func testPersistAndFlushWritesSnapshotGivenAsArgument() async throws {
-        try await PersistenceStore.PersistenceWriter.shared.persistAndFlush(
+        await PersistenceStore.PersistenceWriter.shared.persistAndFlush(
             queue: makeQueue(itemIDs: ["quit-1"]),
             recentSongs: [Self.song("quit-recent")]
         )
@@ -116,10 +116,10 @@ final class PersistenceWriterTests: XCTestCase {
 
     /// 参数为 nil 时不该把已有内容清掉
     func testPersistAndFlushWithNilArgumentsKeepsExistingData() async throws {
-        try await PersistenceStore.PersistenceWriter.shared.persistAndFlush(
+        await PersistenceStore.PersistenceWriter.shared.persistAndFlush(
             queue: makeQueue(itemIDs: ["keep"]), recentSongs: [Self.song("keep-recent")]
         )
-        try await PersistenceStore.PersistenceWriter.shared.persistAndFlush(queue: nil, recentSongs: nil)
+        await PersistenceStore.PersistenceWriter.shared.persistAndFlush(queue: nil, recentSongs: nil)
         XCTAssertEqual(PersistenceStore.shared.loadQueue()?.items.map(\.song.id), ["keep"])
         XCTAssertEqual(PersistenceStore.shared.loadRecentSongs().map(\.id), ["keep-recent"])
     }

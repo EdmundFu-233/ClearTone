@@ -30,20 +30,10 @@ struct MiniPlayerView: View {
                 Spacer()
             }
 
-            // 进度条。局部订阅播放进度，拖动中只预览、抬手才提交。
-            ProgressSlider(
-                value: Binding(
-                    get: { player.currentTime },
-                    set: { newValue in
-                        isDragging ? player.previewSeek(to: newValue) : player.commitSeek(to: newValue)
-                    }
-                ),
-                maximum: max(player.duration, 1),
-                buffered: player.bufferedTime,
-                onEditingChanged: { isDragging = $0 }
-            )
-            .frame(height: 3)
-            .observingPlaybackTime(player) { currentTime in
+            // 进度条。用 observingPlaybackTime 局部订阅播放进度，拖动中只预览、
+            // 抬手才提交。内容**只**放进闭包：`observingPlaybackTime` 返回的是
+            // 全新视图，写在接收者位置上的内容会被丢弃（不渲染、纯死代码）。
+            observingPlaybackTime(player) { currentTime in
                 ProgressSlider(
                     value: Binding(
                         get: { currentTime },

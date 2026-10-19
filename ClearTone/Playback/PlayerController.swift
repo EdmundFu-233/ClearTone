@@ -833,9 +833,19 @@ public final class PlayerController: ObservableObject {
         // 否则重启后恢复的暂停态按上一首处理；
         // 换歌加载窗口内（实例复用、item 已摘除）currentTime 还是上一首的，
         // 此时必须按上一首处理，不能被 seek(0) 吃掉。
-        if player?.currentItem != nil, currentTime > 3 {
-            seek(to: 0)
-            return
+        //
+        // `.idle`（顺序播放最后一首自然结束）与 `.failed` 必须排除在外：
+        // 这两种状态下 item 与大于 3 秒的 currentTime 都还在，但播放已经停了 ——
+        // seek(0) 提交给 AVPlayer 后一声不响，用户按「上一首」等于白按一次
+        // （`.failed` 还会让排队中的自动续播去放**下一首**，与用户意图相反）。
+        switch playbackState {
+        case .idle, .failed:
+            break
+        default:
+            if player?.currentItem != nil, currentTime > 3 {
+                seek(to: 0)
+                return
+            }
         }
         guard let item = queue.previous() else { return }
         play(song: item.song)
@@ -1051,8 +1061,14 @@ public final class PlayerController: ObservableObject {
             songQualityOverrides.removeAll { $0.songID == songID }
         }
         saveSongQualityOverrides()
-        // 当前这首立刻按新音质重拉（保留进度与播放状态）
-        if let song = currentSong, song.id == songID {
+        // 当前这首立刻按新音质重拉（保留进度与播放状态）。
+        //
+        // 必须同时要求 `playbackState.songID` 仍指向它：顺序播放最后一首自然
+        // 结束后状态是 `.idle`（`currentSong` 还留着），而 `pendingAutoplay`
+        // 自上一次 beginPlay 起一直为 true —— 只比较 `currentSong` 的话，
+        // 这里会把「换音质」执行成 `beginPlay(autoplay: true)`，已经停下的歌
+        // 自己重新响起来。设置音质是偏好，不是播放命令。
+        if let song = currentSong, song.id == songID, playbackState.songID == song.id {
             reloadCurrentSongForQualityChange()
         }
     }
@@ -1075,6 +1091,15 @@ public final class PlayerController: ObservableObject {
     /// 换音质后重拉当前这首：进度与播放状态都保住
     private func reloadCurrentSongForQualityChange() {
         guard let song = currentSong else { return }
+        // 播放源不存在时什么都不做。
+        //
+        // 冷启动恢复出的暂停态就是这种形态：`player == nil`、UI 上有
+        // `currentSong`。若在这里 beginPlay，会真的去拉流、甚至启动整首歌的
+        // 缓存下载 —— 而启动路径承诺「不点播放不拉流」；VIP 用户恢复登录态时
+        // `setAccountIsVIP` → 档位从极高解析成无损，恰好每此都踩中。
+        // 新音质不会丢：用户点播放时 `resume()` → `beginRestoredPlayback`
+        // 会按当前的 `requestedQuality` 重建播放源。
+        guard player != nil else { return }
         let time = currentTime
         let autoplay = playbackState.isPlaying || playbackState.isBuffering || pendingAutoplay
         beginPlay(song, restoreTime: time > 0 ? time : nil, autoplay: autoplay)
@@ -1125,14 +1150,18 @@ public final class PlayerController: ObservableObject {
             if refreshURL {
                 self.sameSongRetries += 1
                 try? await Task.sleep(for: .seconds(0.8))
-                guard generation == self.currentGeneration else { return }
+                // `try?` 会吞掉 CancellationError，必须显式检查取消标志：
+                // `pause()`（线控 / 中断 / 拔耳机 / 睡眠定时都会走它）通过
+                // `cancelAutoAdvance()` 取消本任务，若这里不认取消，
+                // 暂停 0.8 秒后它照旧 beginPlay(autoplay: true) —— 音乐自己响起来。
+                guard !Task.isCancelled, generation == self.currentGeneration else { return }
                 let resumeTime = self.currentTime > 3 ? self.currentTime : nil
                 self.beginPlay(song, restoreTime: resumeTime, autoplay: true)
                 return
             }
 
             try? await Task.sleep(for: .seconds(1.5))
-            guard generation == self.currentGeneration else { return }
+            guard !Task.isCancelled, generation == self.currentGeneration else { return }
             guard self.consecutiveFailures < self.maxConsecutiveFailures else { return }
             guard let item = self.queue.next() else {
                 self.playbackState = .idle

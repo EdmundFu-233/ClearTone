@@ -178,10 +178,13 @@ public class AppState: ObservableObject {
         // 否则冷启动的第一首歌会按「非 VIP → 极高」拉流，
         // 等 /user/account 回来再切成无损，用户听到的是先差后好的一小段。
         PlayerController.shared.setAccountIsVIP(account?.isVIP ?? false)
-        if likedSongs.isEmpty {
-            let cachedSongs = PersistenceStore.shared.loadCachedLikedSongs()
-            // 优先用全量 id 缓存；没有（旧版本遗留）才从列表推导
-            let cachedIDs = PersistenceStore.shared.loadCachedLikedSongIDs()
+        // 种子数据必须有归属：磁盘缓存按账号隔离存放（见 PersistenceStore），
+        // 没有缓存账号时宁可空着等 /user/account 回来 —— 上一版读的是全局键，
+        // 会话失效后另一账号冷启动会把前一个账号的收藏当自己的渲染出来。
+        if likedSongs.isEmpty, let owner = account?.userID {
+            let cachedSongs = PersistenceStore.shared.loadCachedLikedSongs(owner: owner)
+            // 全量 id 缓存与详情列表分开存；缺 id 时从列表推导会漏掉未展开的收藏
+            let cachedIDs = PersistenceStore.shared.loadCachedLikedSongIDs(owner: owner)
             applyLikedSongs(cachedSongs, ids: cachedIDs.isEmpty ? nil : cachedIDs)
         }
 
@@ -196,10 +199,16 @@ public class AppState: ObservableObject {
             isLoggedIn = true
         }
 
+        // 代次快照：`fetchAccountInfo` 在途期间用户可能退出登录、换号，
+        // 或会话失效。迟到的响应不得把旧身份写回来（曾经会把刚登录的 B
+        // 覆盖成 A；若 A 的 cookie 已死还会走 else 分支把 B 的会话清掉）。
+        let generation = accountGeneration
         do {
             if let info = try await provider.fetchAccountInfo() {
+                guard generation == accountGeneration else { return }
                 applyAccount(info)
             } else {
+                guard generation == accountGeneration else { return }
                 clearSession(clearLikedCache: true)
                 return
             }
@@ -246,9 +255,16 @@ public class AppState: ObservableObject {
     }
 
     private func applyAccount(_ info: AccountInfo) {
+        // 身份真的变了才递增代次。
+        //
+        // 冷启动「先用磁盘缓存把账号立起来，再由 /user/account 确认同一个人」
+        // 不是账号变化：原先无条件递增，`dataContextKey` 随之改变，
+        // iOS 上正在浏览的快照页（「喜欢的音乐」「最近播放」）会被自己
+        // 的 onChange 关掉，各页 `.task(id: dataContextKey)` 也白白重启一轮。
+        let identityChanged = account?.userID != info.userID
         account = info
         isLoggedIn = true
-        accountGeneration += 1
+        if identityChanged { accountGeneration += 1 }
         // 会话失效后重新登录成功，必须把 `needsReLogin` 放下来。
         //
         // `handleSessionExpired` 会置位它来禁用写操作，但**没有任何地方复位**：
@@ -276,6 +292,8 @@ public class AppState: ObservableObject {
     }
 
     private func clearSession(clearLikedCache: Bool) {
+        // 退登要清的是**这个账号**的磁盘缓存；`account` 马上就被清掉，先留一份归属
+        let owner = account?.userID
         account = nil
         isLoggedIn = false
         // 冷却是**按账号**的：退登后新账号不该继承上一个账号的限流倒计时
@@ -302,10 +320,29 @@ public class AppState: ObservableObject {
         // 注意这里**不动 pageHistory**：掉线与「用户在哪一页」无关，
         // 重置导航栈会把用户从详情页里踹出来，重新登录后还要再点回去。
         PersistenceStore.shared.clearCachedAccount()
-        if clearLikedCache {
-            PersistenceStore.shared.clearCachedLikedSongs()
-            PersistenceStore.shared.clearCachedUserPlaylists()
+        if clearLikedCache, let owner {
+            PersistenceStore.shared.clearCachedLikedSongs(owner: owner)
+            PersistenceStore.shared.clearCachedUserPlaylists(owner: owner)
         }
+    }
+
+    // MARK: - 用户数据磁盘缓存（账号维度）
+
+    /// 当前账号的缓存归属。账号未定时返回 nil —— 此时读写用户数据缓存
+    /// 都会串号，一律跳过（磁盘上的键按 owner 隔离，见 `PersistenceStore`）。
+    private var cacheOwnerID: String? { account?.userID }
+
+    /// 把内存里的用户歌单按当前账号落盘
+    private func persistUserPlaylistsCache() {
+        guard let owner = cacheOwnerID else { return }
+        PersistenceStore.shared.saveCachedUserPlaylists(userPlaylists, owner: owner)
+    }
+
+    /// 把内存里的收藏（id 集合 + 详情列表）按当前账号落盘
+    private func persistLikedCache() {
+        guard let owner = cacheOwnerID else { return }
+        PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs), owner: owner)
+        PersistenceStore.shared.saveCachedLikedSongs(likedSongs, owner: owner)
     }
 
     // MARK: - 社交能力入口
@@ -322,10 +359,14 @@ public class AppState: ObservableObject {
     @discardableResult
     func createPlaylist(name: String, isPrivate: Bool) async -> Playlist? {
         guard canPerformWrite else { return nil }
+        let generation = accountGeneration
         do {
             let created = try await social.createPlaylist(name: name, isPrivate: isPrivate)
+            // 请求在途期间退出/换号：不得把上一个账号的歌单插进新账号的列表
+            // 并落盘（否则 B 会看到 A 的「Road Trip」，重启也还在）。
+            guard generation == accountGeneration else { return nil }
             userPlaylists.insert(created, at: 0)
-            PersistenceStore.shared.saveCachedUserPlaylists(userPlaylists)
+            persistUserPlaylistsCache()
             return created
         } catch {
             CTLog.general.error("创建歌单失败: \(CTLog.sanitize(error.localizedDescription))")
@@ -337,10 +378,13 @@ public class AppState: ObservableObject {
     /// 删除歌单（仅限自己创建的）
     func deletePlaylist(_ playlist: Playlist) async -> Bool {
         guard canPerformWrite else { return false }
+        let generation = accountGeneration
         do {
             try await social.deletePlaylist(id: playlist.id)
+            // 服务端删除已完成；本地列表属于另一个账号时不动它
+            guard generation == accountGeneration else { return true }
             userPlaylists.removeAll { $0.id == playlist.id }
-            PersistenceStore.shared.saveCachedUserPlaylists(userPlaylists)
+            persistUserPlaylistsCache()
             // 正在看被删的歌单就退回列表
             if selectedPlaylistID == playlist.id { currentPage = .myMusic }
             return true
@@ -353,12 +397,14 @@ public class AppState: ObservableObject {
 
     func renamePlaylist(_ playlist: Playlist, to name: String) async -> Bool {
         guard canPerformWrite else { return false }
+        let generation = accountGeneration
         do {
             try await social.updatePlaylistName(id: playlist.id, name: name)
+            guard generation == accountGeneration else { return true }
             if let index = userPlaylists.firstIndex(where: { $0.id == playlist.id }) {
                 userPlaylists[index].name = name
             }
-            PersistenceStore.shared.saveCachedUserPlaylists(userPlaylists)
+            persistUserPlaylistsCache()
             return true
         } catch {
             CTLog.general.error("重命名歌单失败: \(CTLog.sanitize(error.localizedDescription))")
@@ -373,6 +419,7 @@ public class AppState: ObservableObject {
     /// —— `PlaylistDetailView` 优先读 `cachedPlaylistTracks`。
     func modifyPlaylist(_ playlist: Playlist, songIDs: [String], add: Bool) async -> Bool {
         guard canPerformWrite, !songIDs.isEmpty else { return false }
+        let generation = accountGeneration
         do {
             if add {
                 try await social.addSongsToPlaylist(playlistID: playlist.id, songIDs: songIDs)
@@ -380,11 +427,13 @@ public class AppState: ObservableObject {
                 try await social.removeSongsFromPlaylist(playlistID: playlist.id, songIDs: songIDs)
             }
             await social.clearCache()
+            // 在途期间退出/换号：不得改新账号列表里同 id 歌单的曲目数并落盘
+            guard generation == accountGeneration else { return true }
             if let index = userPlaylists.firstIndex(where: { $0.id == playlist.id }) {
                 userPlaylists[index].trackCount = max(0, userPlaylists[index].trackCount + (add ? songIDs.count : -songIDs.count))
                 // 与 create/delete/rename 一致：改了就要落盘，否则加删歌后
                 // 在下次整表刷新前重启，曲目数会退回旧值。
-                PersistenceStore.shared.saveCachedUserPlaylists(userPlaylists)
+                persistUserPlaylistsCache()
             }
             return true
         } catch {
@@ -423,14 +472,19 @@ public class AppState: ObservableObject {
         // 会把 A 的收藏写进 B 的界面，并污染磁盘缓存。
         let generation = accountGeneration
         let dataContext = dataContextKey
+        // 磁盘缓存按账号隔离读写；账号未定时只走内存
+        let owner = cacheOwnerID
         do {
             // 先取全量 id（约 60KB）—— 心形状态靠它判断，必须完整
             let ids = try await provider.fetchLikedSongIDs()
             guard generation == accountGeneration, dataContext == dataContextKey,
                   loadToken == likedLoadToken, writeRevision == likedWriteRevision,
                   !Task.isCancelled else { return }
-            applyLikedSongs(PersistenceStore.shared.loadCachedLikedSongs(), ids: ids)
-            PersistenceStore.shared.saveCachedLikedSongIDs(ids)
+            applyLikedSongs(
+                owner.map { PersistenceStore.shared.loadCachedLikedSongs(owner: $0) } ?? [],
+                ids: ids
+            )
+            if let owner { PersistenceStore.shared.saveCachedLikedSongIDs(ids, owner: owner) }
             hasLoadedLikes = true
 
             // 详情列表随后加载，不阻塞心形状态
@@ -439,7 +493,7 @@ public class AppState: ObservableObject {
                   loadToken == likedLoadToken, writeRevision == likedWriteRevision,
                   !Task.isCancelled else { return }
             applyLikedSongs(songs, ids: ids)
-            PersistenceStore.shared.saveCachedLikedSongs(songs)
+            if let owner { PersistenceStore.shared.saveCachedLikedSongs(songs, owner: owner) }
             hasLoadedLikedSongs = true
         } catch {
             CTLog.general.error("加载喜欢的歌曲失败: \(CTLog.sanitize(error.localizedDescription))")
@@ -463,8 +517,8 @@ public class AppState: ObservableObject {
             userPlaylists = []
             return
         }
-        if userPlaylists.isEmpty {
-            let cached = PersistenceStore.shared.loadCachedUserPlaylists()
+        if userPlaylists.isEmpty, let owner = cacheOwnerID {
+            let cached = PersistenceStore.shared.loadCachedUserPlaylists(owner: owner)
             guard userPlaylistsToken == token, !Task.isCancelled else { return }
             userPlaylists = cached
         }
@@ -477,7 +531,9 @@ public class AppState: ObservableObject {
             guard userPlaylistsToken == token, generation == accountGeneration,
                   !Task.isCancelled else { return }
             userPlaylists = loaded
-            PersistenceStore.shared.saveCachedUserPlaylists(loaded)
+            if let owner = cacheOwnerID {
+                PersistenceStore.shared.saveCachedUserPlaylists(loaded, owner: owner)
+            }
         } catch {
             guard userPlaylistsToken == token else { return }
             // 失败时保留缓存内容，避免侧栏闪空
@@ -533,8 +589,7 @@ public class AppState: ObservableObject {
         do {
             try await provider.likeSong(id: song.id, like: !wasLiked)
             guard generation == accountGeneration else { return wasLiked }
-            PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs))
-            PersistenceStore.shared.saveCachedLikedSongs(likedSongs)
+            persistLikedCache()
             likesWriteError = nil
             return !wasLiked
         } catch {
@@ -547,8 +602,7 @@ public class AppState: ObservableObject {
             var reverted = likedSongs.filter { $0.id != song.id }
             if wasLiked { reverted.insert(song, at: 0) }
             likedSongs = reverted
-            PersistenceStore.shared.saveCachedLikedSongIDs(Array(likedIDs))
-            PersistenceStore.shared.saveCachedLikedSongs(likedSongs)
+            persistLikedCache()
             // 失败必须让用户看见。原来只写日志，界面表现是「心形弹回去、
             // 什么都不说」，用户只会以为 App 卡了。
             lastWriteError = error.ctUserMessage

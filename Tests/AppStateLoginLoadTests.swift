@@ -41,6 +41,9 @@ final class AppStateLoginLoadTests: XCTestCase {
         private var likeWaiters: [String: CheckedContinuation<Void, Never>] = [:]
         private var releasedLikeIDs: Set<String> = []
 
+        /// 歌单列表拉取总是失败（用来验证「新账号拉取失败时看不到上一个账号的磁盘缓存」）
+        private let failUserPlaylists: Bool
+
         /// 首次 fetchLikedSongs 抛错，用来验证「详情失败后仍能重试」
         private var failFirstLikedSongsFetch: Bool
         private let holdLikedDetails: Bool
@@ -54,16 +57,32 @@ final class AppStateLoginLoadTests: XCTestCase {
             likedDetailsWaiter = nil
         }
 
+        /// 让 fetchAccountInfo 挂起：构造「账号确认在途时退出/换号」的时序
+        private let holdAccountInfo: Bool
+        private var accountInfoWaiter: CheckedContinuation<Void, Never>?
+        private var releasedAccountInfo = false
+
+        func isAccountInfoHeld() -> Bool { accountInfoWaiter != nil }
+        func releaseAccountInfo() {
+            releasedAccountInfo = true
+            accountInfoWaiter?.resume()
+            accountInfoWaiter = nil
+        }
+
         init(accountToReturn: AccountInfo? = nil,
              holdLikeIDs: Set<String> = [],
              failLikeIDs: Set<String> = [],
              failFirstLikedSongsFetch: Bool = false,
-             holdLikedDetails: Bool = false) {
+             holdLikedDetails: Bool = false,
+             holdAccountInfo: Bool = false,
+             failUserPlaylists: Bool = false) {
             self.accountToReturn = accountToReturn
             self.holdLikeIDs = holdLikeIDs
             self.failLikeIDs = failLikeIDs
             self.failFirstLikedSongsFetch = failFirstLikedSongsFetch
             self.holdLikedDetails = holdLikedDetails
+            self.holdAccountInfo = holdAccountInfo
+            self.failUserPlaylists = failUserPlaylists
         }
 
         func isLikeHeld(_ id: String) -> Bool { likeWaiters[id] != nil }
@@ -82,6 +101,9 @@ final class AppStateLoginLoadTests: XCTestCase {
         func logout() async throws {}
         func fetchAccountInfo() async throws -> AccountInfo? {
             accountCalls += 1
+            if holdAccountInfo, !releasedAccountInfo {
+                await withCheckedContinuation { accountInfoWaiter = $0 }
+            }
             return accountToReturn
         }
 
@@ -106,6 +128,7 @@ final class AppStateLoginLoadTests: XCTestCase {
         }
         func fetchUserPlaylists() async throws -> [Playlist] {
             playlistCalls += 1
+            if failUserPlaylists { throw MusicError.networkUnavailable }
             return [Playlist(id: "p1", name: "我喜欢的音乐", source: .netease)]
         }
         func fetchLikedSongs() async throws -> [Song] {
@@ -345,6 +368,130 @@ final class AppStateLoginLoadTests: XCTestCase {
         XCTAssertTrue(state.isLiked("s1"))
         XCTAssertFalse(state.isLikeWriteCoolingDown)
         XCTAssertNil(state.lastWriteError)
+    }
+
+    // MARK: - 迟到账号确认 / 同账号确认
+
+    /// 冷启动的 `/user/account` 在途期间退出登录：迟到的响应不得把会话
+    /// 恢复回来（旧实现在 await 之后无条件 `applyAccount`，用户刚退出就
+    /// 会被重新「登录」；若旧 cookie 已死还会走 else 分支把新会话清掉）。
+    func testLateAccountConfirmationCannotResurrectLoggedOutSession() async {
+        try? KeychainStore.shared.save("MUSIC_U=unit-test", for: .neteaseCookie)
+        defer { try? KeychainStore.shared.delete(for: .neteaseCookie) }
+        PersistenceStore.shared.saveCachedAccount(AccountInfo(userID: "one", nickname: "旧账号"))
+        defer { PersistenceStore.shared.clearCachedAccount() }
+
+        let provider = RecordingProvider(
+            accountToReturn: AccountInfo(userID: "one", nickname: "旧账号"),
+            holdAccountInfo: true
+        )
+        let state = AppState(provider: provider)
+
+        let restore = Task { await state.restoreLoginState() }
+        await waitUntil("账号确认挂起") { await provider.isAccountInfoHeld() }
+        XCTAssertTrue(state.isLoggedIn, "缓存账号应先把登录态立起来")
+
+        await state.performLogout()
+
+        await provider.releaseAccountInfo()
+        await restore.value
+
+        XCTAssertFalse(state.isLoggedIn, "迟到的账号确认不得把已退出的会话恢复回来")
+        XCTAssertNil(state.account)
+    }
+
+    /// 同一账号的确认（缓存账号 → `/user/account` 确认是同一个人）不得
+    /// 递增账号代次：`dataContextKey` 一变，iOS 上正在看的快照页会被
+    /// 自己的 onChange 关掉，各页 `.task(id:)` 也白白重启一轮。
+    func testSameAccountConfirmationKeepsDataContext() async {
+        try? KeychainStore.shared.save("MUSIC_U=unit-test", for: .neteaseCookie)
+        defer { try? KeychainStore.shared.delete(for: .neteaseCookie) }
+        let account = AccountInfo(userID: "86080189", nickname: "测试")
+        PersistenceStore.shared.saveCachedAccount(account)
+        defer { PersistenceStore.shared.clearCachedAccount() }
+
+        let provider = RecordingProvider(accountToReturn: account, holdAccountInfo: true)
+        let state = AppState(provider: provider)
+
+        let restore = Task { await state.restoreLoginState() }
+        await waitUntil("账号确认挂起") { await provider.isAccountInfoHeld() }
+        let keyBeforeConfirm = state.dataContextKey
+
+        await provider.releaseAccountInfo()
+        await restore.value
+
+        XCTAssertEqual(
+            state.dataContextKey, keyBeforeConfirm,
+            "同一账号的确认改变了 dataContextKey —— 快照页会被误关"
+        )
+        XCTAssertTrue(state.isLoggedIn)
+    }
+
+    // MARK: - 用户数据磁盘缓存按账号隔离
+
+    /// 直接锁住「键带 owner」这一层：不同账号的收藏 / 歌单缓存互不可见，
+    /// 清除也只清自己那份。
+    func testUserDataCachesAreScopedByOwner() {
+        let a = "scope-owner-a"
+        let b = "scope-owner-b"
+        defer {
+            PersistenceStore.shared.clearCachedLikedSongs(owner: a)
+            PersistenceStore.shared.clearCachedLikedSongs(owner: b)
+            PersistenceStore.shared.clearCachedUserPlaylists(owner: a)
+            PersistenceStore.shared.clearCachedUserPlaylists(owner: b)
+        }
+        let song = Song(id: "s-scope", title: "T", artists: [], source: .netease)
+        PersistenceStore.shared.saveCachedLikedSongs([song], owner: a)
+        PersistenceStore.shared.saveCachedLikedSongIDs(["s-scope"], owner: a)
+        PersistenceStore.shared.saveCachedUserPlaylists(
+            [Playlist(id: "p-scope", name: "P", source: .netease)], owner: a
+        )
+
+        XCTAssertEqual(PersistenceStore.shared.loadCachedLikedSongs(owner: a).map(\.id), ["s-scope"])
+        XCTAssertTrue(PersistenceStore.shared.loadCachedLikedSongs(owner: b).isEmpty)
+        XCTAssertEqual(PersistenceStore.shared.loadCachedLikedSongIDs(owner: a), ["s-scope"])
+        XCTAssertTrue(PersistenceStore.shared.loadCachedLikedSongIDs(owner: b).isEmpty)
+        XCTAssertEqual(PersistenceStore.shared.loadCachedUserPlaylists(owner: a).map(\.id), ["p-scope"])
+        XCTAssertTrue(PersistenceStore.shared.loadCachedUserPlaylists(owner: b).isEmpty)
+
+        PersistenceStore.shared.clearCachedUserPlaylists(owner: a)
+        XCTAssertTrue(PersistenceStore.shared.loadCachedUserPlaylists(owner: a).isEmpty, "清除只影响自己的账号")
+        XCTAssertEqual(
+            PersistenceStore.shared.loadCachedLikedSongs(owner: a).map(\.id), ["s-scope"],
+            "清歌单缓存不该连带清收藏"
+        )
+    }
+
+    /// 会话失效刻意保留磁盘缓存（同一账号重登不必把几百个请求重来一遍），
+    /// 但下一个账号在拉取失败时**绝不能**把上一个账号的缓存当自己的数据显示。
+    ///
+    /// 旧实现用全局键存这些缓存，且 `loadUserPlaylists` 失败时保留「缓存内容」——
+    /// 于是 B 登录（哪怕失败）看到的侧栏/资料库是 A 的歌单。
+    func testOtherAccountCannotSeePreviousAccountsDiskCache() async {
+        let providerA = RecordingProvider()
+        let stateA = AppState(provider: providerA)
+        stateA.didLogin(account: AccountInfo(userID: "disk-owner-one", nickname: "旧账号"))
+        await waitUntil("旧账号歌单落盘") {
+            !PersistenceStore.shared.loadCachedUserPlaylists(owner: "disk-owner-one").isEmpty
+        }
+
+        NotificationCenter.default.post(name: .clearToneSessionExpired, object: nil)
+        await waitUntil("会话失效生效") { stateA.needsReLogin }
+        XCTAssertFalse(
+            PersistenceStore.shared.loadCachedUserPlaylists(owner: "disk-owner-one").isEmpty,
+            "会话失效应保留磁盘缓存（这是刻意设计）"
+        )
+
+        // 新账号登录，但歌单拉取失败
+        let providerB = RecordingProvider(failUserPlaylists: true)
+        let stateB = AppState(provider: providerB)
+        stateB.didLogin(account: AccountInfo(userID: "disk-owner-two", nickname: "新账号"))
+        await waitUntil("新账号歌单请求已发出") { await providerB.playlistCalls >= 1 }
+
+        XCTAssertTrue(
+            stateB.userPlaylists.isEmpty,
+            "新账号拉取失败时显示的必须是空列表，而不是上一个账号的磁盘缓存"
+        )
     }
 
 }

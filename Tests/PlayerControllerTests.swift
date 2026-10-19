@@ -480,4 +480,116 @@ final class PlayerControllerTests: XCTestCase {
             "批量插队被逐首头插反转了"
         )
     }
+
+    // MARK: - 失败后的自动续播必须可被暂停取消
+
+    /// `cancelAutoAdvance()` 只是置位取消标志，而任务里 `try? await Task.sleep`
+    /// 会把 CancellationError 吞掉 —— 旧实现之后只比对 generation，而 `pause()`
+    /// 并不改变 generation，于是「暂停」0.8 秒后它照旧 `beginPlay(autoplay: true)`，
+    /// 音乐自己重新响起来。线控、iOS 中断、拔耳机、睡眠定时全都直连 `pause()`，
+    /// 这是用户最容易碰到「明明按了暂停」的一条路径。
+    func testPauseCancelsPendingAutoAdvanceAfterFailure() async throws {
+        _ = Self.storageIsolated
+        let gate = ManualGate()
+        let provider = GatedProvider(
+            gate: gate,
+            url: URL(fileURLWithPath: "/nonexistent/cleartone-missing.wav")
+        )
+        player.setProvider(provider)
+        player.clearQueue()
+
+        player.play(songs: [makeSong(id: "H")])
+        gate.open()
+
+        guard await pollUntil({ if case .failed = self.player.playbackState { return true }; return false }) else {
+            throw XCTSkip("AVPlayer 未把不存在的文件判为失败，无法构造 .failed 态")
+        }
+        let callsAtFailure = await provider.callCount
+
+        // 模拟线控 / 中断发来的暂停
+        player.pause()
+
+        // 等过同曲重拉（0.8s）与自动切下一首（1.5s）两个窗口
+        try await Task.sleep(nanoseconds: 2_200_000_000)
+
+        let callsAfterWait = await provider.callCount
+        XCTAssertEqual(callsAfterWait, callsAtFailure, "暂停后自动续播任务仍发起了拉流")
+        guard case .failed = player.playbackState else {
+            XCTFail("暂停只该取消续播，不该改变失败态，当前 \(player.playbackState)")
+            return
+        }
+    }
+
+    /// 顺序播放最后一首自然结束（`.idle`）后，`previous()` 必须切到前一首。
+    ///
+    /// 结束态下 item 仍挂在 player 上、currentTime 也大于 3 秒，
+    /// 旧实现因此把「上一首」执行成了 `seek(to: 0)`：提交给 AVPlayer 后
+    /// 一声不响，用户按一次完全没反应，要按第二次才有效。
+    func testPreviousAfterQueueEndGoesToPreviousTrack() async throws {
+        _ = Self.storageIsolated
+        await DemoAudioGenerator.ensureFiles()
+        let fileURL = DemoAudioGenerator.directory().appendingPathComponent("tone_440.wav")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw XCTSkip("测试音频生成失败")
+        }
+
+        player.clearQueue()
+        player.setPlayMode(.sequential)
+        let songA = makeLocalSong(id: "local-A", fileURL: fileURL)
+        let songB = makeLocalSong(id: "local-B", fileURL: fileURL)
+        player.play(songs: [songA, songB], startAt: 1)
+        guard await pollUntil({ self.player.playbackState == .playing(songID: "local-B") }),
+              await pollUntil({ self.player.duration > 25 }) else {
+            throw XCTSkip("AVPlayer 未进入播放态或时长未就绪")
+        }
+
+        // 跳到接近结尾，让最后一首自然结束（顺序模式 → .idle，currentSong 保留）
+        player.commitSeek(to: player.duration - 0.2)
+        guard await pollUntil(timeout: 8, { self.player.playbackState == .idle }) else {
+            throw XCTSkip("未能自然播放到结束")
+        }
+        XCTAssertGreaterThan(player.currentTime, 3, "结束态保留大于 3 秒的进度（构造前提）")
+
+        player.previous()
+
+        let switched = await pollUntil(timeout: 4, { self.player.playbackState.songID == "local-A" })
+        XCTAssertTrue(
+            switched,
+            "结束态按上一首应切歌而不是 seek(0)；当前 \(player.playbackState)"
+        )
+    }
+
+    /// 已经自然播完的歌曲不允许因「改音质」而自动重播。
+    ///
+    /// 结束态的 `pendingAutoplay` 自上一次 beginPlay 起一直为 true，
+    /// 而旧实现只看 `currentSong` 是否匹配 —— 单曲音质覆盖于是被当成播放命令，
+    /// 已经停下的歌自己重新响起来。
+    func testQualityOverrideOnEndedSongDoesNotRestartPlayback() async throws {
+        _ = Self.storageIsolated
+        await DemoAudioGenerator.ensureFiles()
+        let fileURL = DemoAudioGenerator.directory().appendingPathComponent("tone_440.wav")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw XCTSkip("测试音频生成失败")
+        }
+
+        player.clearQueue()
+        player.setPlayMode(.sequential)
+        let songA = makeLocalSong(id: "local-A", fileURL: fileURL)
+        let songB = makeLocalSong(id: "local-B", fileURL: fileURL)
+        player.play(songs: [songA, songB], startAt: 1)
+        guard await pollUntil({ self.player.playbackState == .playing(songID: "local-B") }),
+              await pollUntil({ self.player.duration > 25 }) else {
+            throw XCTSkip("AVPlayer 未进入播放态或时长未就绪")
+        }
+        player.commitSeek(to: player.duration - 0.2)
+        guard await pollUntil(timeout: 8, { self.player.playbackState == .idle }) else {
+            throw XCTSkip("未能自然播放到结束")
+        }
+
+        player.setQualityOverride(.standard, for: "local-B")
+        try await Task.sleep(nanoseconds: 700_000_000)
+
+        XCTAssertEqual(player.playbackState, .idle, "设置音质是偏好而非播放命令，已结束的歌不得自动重播")
+        XCTAssertEqual(player.currentSong?.id, "local-B", "改音质不应清掉当前歌曲")
+    }
 }

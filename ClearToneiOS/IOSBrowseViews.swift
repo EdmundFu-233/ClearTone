@@ -305,7 +305,9 @@ struct IOSCollectionView: View {
         }
         .navigationTitle(session.title).navigationBarTitleDisplayMode(.inline)
         .task(id: "\(kind)-\(appState.dataContextKey)-\(refreshID)") { await session.load(kind) }
-        .refreshable { await session.load(kind) }
+        // 下拉刷新必须绕过响应缓存：否则 300 秒内再拉会由缓存直接作答，
+        // 手势看起来毫无反应（改歌单在别处被增删的典型场景）。
+        .refreshable { await session.load(kind, forceRefresh: true) }
         .onDisappear { session.cancel() }
     }
 }

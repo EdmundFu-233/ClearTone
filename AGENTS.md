@@ -208,13 +208,13 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**57 个测试文件 / 560 项**，全部离线可跑且全绿）：
+当前覆盖（**61 个测试文件 / 591 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
 | 播放队列 | PlayQueueTests / ShuffleHistoryTests / DoubleClickPlaybackTests |
 | **启动恢复** | **PlaybackRestorePolicyTests**（「启动时保留上次播放进度」关闭必须从头播、开启才恢复保存位置、拒绝 NaN/负数）。启动本身**不拉流**（与 Windows 版对齐）：`PlayerController.init` 只恢复 UI 状态，点播放时 `resume()` 才重建播放源 |
-| 播放器异步状态 | PlayerControllerTests（停止作废在途请求、切歌停表、加载期暂停/续播、切音质保进度、**`resume()` 在 `.failed` 下必须重建播放源**：线控/控制中心直连 `resume()`，原先会把状态写成 `.playing` 却一声不响）、SeekTokenTests、PlaybackStateSemanticsTests |
+| 播放器异步状态 | PlayerControllerTests（停止作废在途请求、切歌停表、加载期暂停/续播、切音质保进度、**`resume()` 在 `.failed` 下必须重建播放源**：线控/控制中心直连 `resume()`，原先会把状态写成 `.playing` 却一声不响、**失败后的自动续播任务必须真能被 `pause()` 取消**：`try? await Task.sleep` 会吞掉 CancellationError，只看 generation 是不够的、**顺序播完后 `previous()` 必须切前一首**：结束态 item 还在、进度 >3s，原先被 `seek(0)` 吃掉等于按了没反应、**已结束的歌改音质不得自动重播**：`pendingAutoplay` 残留 + 只比对 `currentSong` 会把它变成播放命令）、SeekTokenTests、PlaybackStateSemanticsTests |
 | 搜索状态机 | SearchSessionTests（分页不读草稿、清空作废在途请求、旧响应丢弃）/ SearchSessionPaginationTests（**四种类型都能翻页**、分页锁、**取消在途页码回滚**、**分页失败保留旧数据但置 `paginationError`**、**失败的查询不得留下旧 `result`**）/ SearchAssistStoreTests（联想节流、历史、**热搜请求被取消后 loading 必须复位**、历史读入即裁剪到 20、`removeHistory` 大小写不敏感） |
 | **会话失效判定** | **SessionExpiryGuardTests**（单次 301/403 不定罪、需 `/user/account` 旁证、探针在途不递归、复位） |
 | **歌手资料页** | **ArtistProfileSessionTests**（换歌手清空、offset 由已加载条数推导、翻页失败保留旧数据、迟到响应丢弃、followed 不被后续页抹掉）/ **ArtistProfileParsingTests**（`cover`/`avatar` 才是头像、MV 的 `artistName`/`imgurl16v9`、eapi 键序与重命名） |
@@ -224,14 +224,15 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | 接口契约 | NeteaseEndpointTests（含 `testEveryRequestCallSiteIsMapped` 扫描调用点、**`testEveryKnownRouteHasAnUpstreamModuleFile`** 反查 `api/module/*.js` 是否存在、`testIOSReachableRoutesAreAdaptedByMobileRoute` 钉死 iOS 适配清单）/ NeteaseEapiTests（eapi 与 Node 逐字节对照，含 module 写死参数的 `constants` 登记、query 值恒为字符串） / `scripts/probes/endpoint-table.js`（拿打包 Node 打桩 module，逐条比对 uri / crypto / 上游是否存在）/ `scripts/probes/log-redaction.js`（**日志出口脱敏**：cookie/`MUSIC_U`/`NMTID` 不得出现在 logger 与 `request.js` 的 `[ERR]` 输出里） |
 | 加解密 | NeteaseCryptoTests / NeteaseEapiTests |
 | 封面 | CoverImageTests / CoverImageRetryTests / CoverImageThreadSafetyTests |
-| 缓存 / 频谱 | **AudioCacheManagerPolicyTests**（容量 LRU、代次防复活、临时文件、正在播放保护、**128kbps 目标码率**、**7 天保留期限**：`cachedAt` 而非 `lastAccessedAt` 计时、时钟回拨不误清、**`isCacheFile` 跟随平台扩展名**：写死 `.caf` 会让 iOS 每次启动清空整个索引且 LRU 失效）/ ResponseCacheLimitsTests / SpectrumProcessorTests |
+| 缓存 / 频谱 | **AudioCacheManagerPolicyTests**（容量 LRU、代次防复活、临时文件、正在播放保护、**128kbps 目标码率**、**7 天保留期限**：`cachedAt` 而非 `lastAccessedAt` 计时、时钟回拨不误清、**`isCacheFile` 跟随平台扩展名**：写死 `.caf` 会让 iOS 每次启动清空整个索引且 LRU 失效）/ **AudioCacheManagerFileTests**（注入临时目录跑真实实现的索引/文件一致性：缺文件剔除索引防容量虚高、**删除失败保留索引**防孤儿文件下次启动拿到新 7 天租约、**`clearAll` 后同曲重入队的「缓存中」标记不被旧任务抹掉**——否则同歌重复下载两遍）/ ResponseCacheLimitsTests / SpectrumProcessorTests |
+| **歌单曲目缓存** | **PlaylistTrackCachePolicyTests**（三档新鲜度：可信窗口内直接用 / 超窗先渲染再静默校准 / 过期整页重载；边界与时钟回拨）。macOS 歌单详情原先 10 分钟内完全不校验，旧清单会一直显示；校准整体替换避免列表先缩后长。iOS 下拉刷新走 `forceRefresh` 绕过响应缓存，否则 300 秒内手势是空操作 |
 | **渲染背压** | **InFlightGateTests**（占位/归还严格配对、**并发计数恰好停在上限**、`release` 不下穿 0）。`AmbientBackgroundRenderer` 需要 MTLDevice + `Bundle.main` shader 且被 `project.yml` 排除，判定逻辑必须抽成 `Rendering/InFlightGate.swift` 才测得到 |
-| **持久化** | **PersistenceWriterTests**（只排队列也落盘、只排 recent 也落盘、**NaN 快照样写出**、**单个 NaN 字段不连累整份 `AppSettings`**、写出失败回补 pending 并限次自动重试） |
+| **持久化** | **PersistenceWriterTests**（只排队列也落盘、只排 recent 也落盘、**NaN 快照样写出**、**单个 NaN 字段不连累整份 `AppSettings`**、写出失败回补 pending 并限次自动重试；`writePending` 靠 `writeInFlight` 门闩串行化——原先 actor 在 await 处可重入，两次落盘并发 rename 到同一路径，旧快照可能后到覆盖新快照） |
 | 菜单命令 | PlaybackCommandTests（播放模式轮转、相对 seek 不越界）/ **SidebarShortcutsTests**（⌘1…⌘0 映射；**第 10 项不得 `Character("10")`**、越界返回 nil） |
 | 凭据与限流 | **NeteaseCookieNormalizerTests**（Set-Cookie 拼接串归一化：**134 段 → 5 段**、丢属性/空值/重名、值含 `=`、**幂等**、**`loadLoginCookie` 不得自我递归**）/ **LikeWriteThrottleTests**（405/524 算限流需冷却、其余错误不冷却、提示要劝阻连点）/ **KeychainStoreTests**（`delete` 必须**双后端都清**、**主动后端失败不继续删另一侧**、**双向迁移：先写目标成功才删源**、凭据文件落在 `storageRoot` 且 **0600**、`storageMode` 缺省 iOS=keychain / macOS=plaintextFile） |
 | 音质默认值 | SongQualityPolicyTests（**VIP→无损 / 非 VIP→极高**、「自动」哨兵值、**显式选择不因 VIP 变化而改动**）/ PlaybackFeaturesTests（缺键=自动、**老用户存下的显式值不被新默认覆盖**） |
 | iOS 直连与移动状态 | NeteaseMobileRouteTests（QR 的 uri/crypto 走登记表、`/search/suggest` 的 `s` 键、`/logout` 恒 eapi 空 body、**`/search/hot` 写死 `type=1111`**、**`/toplist` 空 body**、plain 表单标量拼写）/ NeteaseXeapiTests（Node 逐字节对照、**deviceID 跨启动复用**、**Cookie 覆盖式合并**）/ MobileSessionsTests（取消登录、迟到账号、分页去重、失败重试与分页锁、**总数缺席仍能翻页**） |
-| 其它 | ErrorSanitizationTests（**超时文案按平台分岔**：macOS=本地服务超时 / iOS=请求超时，均离线可测）/ LikedStateTests / DemoAudioGeneratorTests / PlayingSourceInfoTests / **AppStateLoginLoadTests**（`didLogin` 与 `restoreLoginState` 必须**各自**把喜欢的音乐 + 用户歌单拉起来；未登录不发请求；**会话失效后重新登录必须解除 `needsReLogin` 写禁用**、**退出/失效要清掉内存里的用户歌单**，否则下一个账号会看到上一个账号的歌单） |
+| 其它 | ErrorSanitizationTests（**超时文案按平台分岔**：macOS=本地服务超时 / iOS=请求超时，均离线可测）/ LikedStateTests / DemoAudioGeneratorTests / PlayingSourceInfoTests / **AppStateLoginLoadTests**（`didLogin` 与 `restoreLoginState` 必须**各自**把喜欢的音乐 + 用户歌单拉起来；未登录不发请求；**会话失效后重新登录必须解除 `needsReLogin` 写禁用**、**退出/失效要清掉内存里的用户歌单**，否则下一个账号会看到上一个账号的歌单；**迟到的 `/user/account` 不得把已退出的会话恢复回来**；**同一账号的确认不得递增代次**：`dataContextKey` 一变 iOS 快照页会被误关；**用户数据磁盘缓存按账号隔离**：会话失效刻意保留磁盘缓存，换号后拉取失败时不得把上一个账号的歌单当自己数据显示） |
 
 全部用桩 Provider / 录制器，不联网、不写真实用户状态（`PlayerControllerTests` 会把持久化
 重定向到临时目录，`SearchAssistStoreTests` 注入独立 UserDefaults suite）。

@@ -228,8 +228,17 @@ public actor NeteaseProvider: MusicProvider {
     // MARK: - 歌单/专辑
 
     public func fetchPlaylistDetail(id: String) async throws -> PlaylistDetail {
+        try await fetchPlaylistDetail(id: id, forceRefresh: false)
+    }
+
+    /// - Parameter forceRefresh: 绕过响应缓存（缓存校准用）。为 `false` 时
+    ///   300 秒内的相同请求由内存响应缓存直接返回。
+    public func fetchPlaylistDetail(id: String, forceRefresh: Bool) async throws -> PlaylistDetail {
         let cookie = try Self.loadLoginCookie() ?? ""
-        let data = try await request("/playlist/detail", query: ["id": id], cookie: cookie, cacheTTL: 300)
+        let data = try await request(
+            "/playlist/detail", query: ["id": id], cookie: cookie,
+            cacheTTL: forceRefresh ? nil : 300
+        )
         let json = try parseJSON(data)
         guard let playlistDict = json["playlist"] as? [String: Any] else { throw MusicError.invalidResponse }
 
@@ -244,35 +253,55 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchPlaylistTracks(id: String, page: Int, limit: Int) async throws -> [Song] {
+        try await fetchPlaylistTracks(id: id, page: page, limit: limit, forceRefresh: false)
+    }
+
+    /// - Parameter forceRefresh: 绕过响应缓存（缓存校准用）。
+    public func fetchPlaylistTracks(id: String, page: Int, limit: Int, forceRefresh: Bool) async throws -> [Song] {
         let cookie = try Self.loadLoginCookie() ?? ""
         let data = try await request("/playlist/track/all", query: [
             "id": id,
             "limit": String(limit),
             "offset": String((page - 1) * limit),
-        ], cookie: cookie, cacheTTL: 300)
+        ], cookie: cookie, cacheTTL: forceRefresh ? nil : 300)
         let json = try parseJSON(data)
         guard let songs = json["songs"] as? [[String: Any]] else { throw MusicError.invalidResponse }
         return songs.compactMap { Self.mapSong($0) }
     }
 
-    /// 已完整拉取过的歌单曲目：命中则完全不发请求，二次进入歌单瞬时显示
+    /// 已完整拉取过的歌单曲目：命中则瞬时显示，二次进入歌单不阻塞。
+    ///
+    /// 新鲜度分三档（判定见 `PlaylistTrackCachePolicy`）：可信窗口内直接用；
+    /// 超过可信窗口但未过期时先渲染、再由调用方后台校准；过期则视为未命中。
     private var playlistTrackCache: [String: (songs: [Song], cachedAt: Date)] = [:]
 
-    /// 歌单曲目缓存有效期（内存态，避免每次重进都重新请求）
-    private static let playlistTrackCacheTTL: TimeInterval = 600
     /// 歌单整表缓存的条数上限（每个 1000 首歌单约上千个 Song 对象）
     private static let playlistTrackCacheLimit = 8
 
-    public func cachedPlaylistTracks(id: String) -> [Song]? {
-        guard let entry = playlistTrackCache[id],
-              Date().timeIntervalSince(entry.cachedAt) < Self.playlistTrackCacheTTL else {
-            playlistTrackCache[id] = nil
-            return nil
-        }
-        return entry.songs
+    /// 歌单曲目缓存命中结果。
+    public struct PlaylistTrackCacheHit: Sendable {
+        public let songs: [Song]
+        /// `false` 表示已过可信窗口：可以先渲染，但应后台重拉校准。
+        public let isFresh: Bool
     }
 
-    private func storePlaylistTracks(_ songs: [Song], for id: String) {
+    /// 查询歌单曲目缓存。返回 `nil` 表示没有可用缓存（未命中或已过期）。
+    public func cachedPlaylistTracks(id: String) -> PlaylistTrackCacheHit? {
+        guard let entry = playlistTrackCache[id] else { return nil }
+        switch PlaylistTrackCachePolicy.decision(cachedAt: entry.cachedAt) {
+        case .miss:
+            playlistTrackCache[id] = nil
+            return nil
+        case .fresh:
+            return PlaylistTrackCacheHit(songs: entry.songs, isFresh: true)
+        case .stale:
+            return PlaylistTrackCacheHit(songs: entry.songs, isFresh: false)
+        }
+    }
+
+    /// 写入歌单曲目缓存。仅供 `streamPlaylistTracks` 与视图侧的缓存校准使用：
+    /// 写入即刷新 `cachedAt`，让「刚校准过的清单」重新进入可信窗口。
+    func storePlaylistTracks(_ songs: [Song], for id: String) {
         playlistTrackCache[id] = (songs, Date())
         // 硬上限：原实现只在 >16 后按 TTL 过滤，若都未过期则无限增长
         guard playlistTrackCache.count > Self.playlistTrackCacheLimit else { return }
@@ -285,11 +314,13 @@ public actor NeteaseProvider: MusicProvider {
 
     /// 歌单曲目分页并发拉取：最多 maxConcurrent 个请求同时进行，按页序 yield，调用方可边收边渲染。
     /// 原实现串行分页（单页约 2s，1000 首歌单需 20s+），并发后同一数据约 1/4 等待时间。
+    /// - Parameter forceRefresh: 绕过响应缓存（缓存校准用）。
     public func streamPlaylistTracks(
         id: String,
         totalCount: Int,
         pageSize: Int = 100,
-        maxConcurrent: Int = 4
+        maxConcurrent: Int = 4,
+        forceRefresh: Bool = false
     ) -> AsyncThrowingStream<[Song], Error> {
         let pageCount = max(1, Int(ceil(Double(totalCount) / Double(pageSize))))
         return AsyncThrowingStream { continuation in
@@ -306,7 +337,9 @@ public actor NeteaseProvider: MusicProvider {
                         while nextToStart <= pageCount && nextToStart <= maxConcurrent {
                             let page = nextToStart
                             group.addTask {
-                                (page, try await self.fetchPlaylistTracks(id: id, page: page, limit: pageSize))
+                                (page, try await self.fetchPlaylistTracks(
+                                    id: id, page: page, limit: pageSize, forceRefresh: forceRefresh
+                                ))
                             }
                             nextToStart += 1
                         }
@@ -328,7 +361,9 @@ public actor NeteaseProvider: MusicProvider {
                             if nextToStart <= pageCount {
                                 let page = nextToStart
                                 group.addTask {
-                                    (page, try await self.fetchPlaylistTracks(id: id, page: page, limit: pageSize))
+                                    (page, try await self.fetchPlaylistTracks(
+                                        id: id, page: page, limit: pageSize, forceRefresh: forceRefresh
+                                    ))
                                 }
                                 nextToStart += 1
                             }
@@ -345,7 +380,12 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchAlbumDetail(id: String) async throws -> PlaylistDetail {
-        let data = try await request("/album", query: ["id": id], cacheTTL: 600)
+        try await fetchAlbumDetail(id: id, forceRefresh: false)
+    }
+
+    /// - Parameter forceRefresh: 绕过响应缓存（下拉刷新用）。
+    public func fetchAlbumDetail(id: String, forceRefresh: Bool) async throws -> PlaylistDetail {
+        let data = try await request("/album", query: ["id": id], cacheTTL: forceRefresh ? nil : 600)
         let json = try parseJSON(data)
         guard let albumDict = json["album"] as? [String: Any] else { throw MusicError.invalidResponse }
         let album = Self.mapAlbum(albumDict)
@@ -369,10 +409,16 @@ public actor NeteaseProvider: MusicProvider {
     }
 
     public func fetchArtistDetail(id: String) async throws -> ArtistDetail {
+        try await fetchArtistDetail(id: id, forceRefresh: false)
+    }
+
+    /// - Parameter forceRefresh: 绕过响应缓存（下拉刷新用）。
+    public func fetchArtistDetail(id: String, forceRefresh: Bool) async throws -> ArtistDetail {
+        let ttl: TimeInterval? = forceRefresh ? nil : 600
         // 三个接口并发：串行要等 3 个 RTT，而它们互不依赖
-        async let profileData = request("/artist/detail", query: ["id": id], cacheTTL: 600)
-        async let songsData = request("/artist/top/song", query: ["id": id], cacheTTL: 600)
-        async let albumsData = request("/artist/album", query: ["id": id, "limit": "20"], cacheTTL: 600)
+        async let profileData = request("/artist/detail", query: ["id": id], cacheTTL: ttl)
+        async let songsData = request("/artist/top/song", query: ["id": id], cacheTTL: ttl)
+        async let albumsData = request("/artist/album", query: ["id": id, "limit": "20"], cacheTTL: ttl)
 
         let json = try parseJSON(await profileData)
         guard let artistDict = json["data"] as? [String: Any],

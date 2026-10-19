@@ -15,9 +15,15 @@ public protocol MusicProvider: Sendable {
     // MARK: - 内容
     func search(query: String, type: SearchType, page: Int, limit: Int) async throws -> SearchResult
     func fetchPlaylistDetail(id: String) async throws -> PlaylistDetail
+    /// 同上，但可要求绕过响应缓存。下拉刷新与后台校准用 —— 否则 300 秒内
+    /// 的「刷新」会由响应缓存直接作答，手势看起来毫无反应。
+    func fetchPlaylistDetail(id: String, forceRefresh: Bool) async throws -> PlaylistDetail
     func fetchPlaylistTracks(id: String, page: Int, limit: Int) async throws -> [Song]
+    func fetchPlaylistTracks(id: String, page: Int, limit: Int, forceRefresh: Bool) async throws -> [Song]
     func fetchAlbumDetail(id: String) async throws -> PlaylistDetail
+    func fetchAlbumDetail(id: String, forceRefresh: Bool) async throws -> PlaylistDetail
     func fetchArtistDetail(id: String) async throws -> ArtistDetail
+    func fetchArtistDetail(id: String, forceRefresh: Bool) async throws -> ArtistDetail
     func fetchPlayableURL(songID: String, quality: AudioQuality.QualityLevel) async throws -> PlayableURL
     func fetchLyrics(songID: String) async throws -> LyricResult
     func fetchUserPlaylists() async throws -> [Playlist]
@@ -37,6 +43,25 @@ public protocol MusicProvider: Sendable {
 public extension MusicProvider {
     func fetchLikedSongIDs() async throws -> [String] {
         try await fetchLikedSongs().map(\.id)
+    }
+
+    // `forceRefresh` 变体的默认实现直接忽略该参数：桩 Provider 没有缓存，
+    // 两者语义等价。有响应缓存的实现（网易云）各自覆盖为真正绕过缓存。
+
+    func fetchPlaylistDetail(id: String, forceRefresh: Bool) async throws -> PlaylistDetail {
+        try await fetchPlaylistDetail(id: id)
+    }
+
+    func fetchPlaylistTracks(id: String, page: Int, limit: Int, forceRefresh: Bool) async throws -> [Song] {
+        try await fetchPlaylistTracks(id: id, page: page, limit: limit)
+    }
+
+    func fetchAlbumDetail(id: String, forceRefresh: Bool) async throws -> PlaylistDetail {
+        try await fetchAlbumDetail(id: id)
+    }
+
+    func fetchArtistDetail(id: String, forceRefresh: Bool) async throws -> ArtistDetail {
+        try await fetchArtistDetail(id: id)
     }
 }
 
