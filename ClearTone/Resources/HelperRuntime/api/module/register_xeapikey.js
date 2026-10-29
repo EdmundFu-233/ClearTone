@@ -59,8 +59,10 @@ module.exports = async (query, request) => {
   }
 
   const publicKey = encrypt.xeapiDecryptPublicKey(res.data.data.encryptedData)
-  if (!publicKey.sk) {
-    throw new Error('xeapi public key response missing sk')
+  // 带 deviceId 时服务端会附上 sk；没有 deviceId 时只返回 publicKey/version。
+  // 后一种响应同样能完成 xeapi 加密（sk 缺席按空串处理），不能当作失败。
+  if (!publicKey.publicKey || !publicKey.version) {
+    throw new Error('xeapi public key response missing publicKey')
   }
 
   return {

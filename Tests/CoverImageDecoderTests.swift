@@ -38,6 +38,34 @@ final class CoverImageDecoderTests: XCTestCase {
         XCTAssertNil(invalidSize)
     }
 
+    func testUnsupportedImageFormatIsRejected() async throws {
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 32, pixelsHigh: 32,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        let tiff = try XCTUnwrap(rep.representation(using: .tiff, properties: [:]))
+        let result = await CoverImageDecoder.decode(tiff, maxPixelSize: 64)
+        XCTAssertNil(result, "TIFF 不在封面格式白名单里，不应交给 ImageIO 解码")
+    }
+
+    func testSupportedImageFormatStillDecodes() async throws {
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 32, pixelsHigh: 32,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        let jpeg = try XCTUnwrap(rep.representation(using: .jpeg, properties: [:]))
+        let result = await CoverImageDecoder.decode(jpeg, maxPixelSize: 64)
+        XCTAssertNotNil(result)
+    }
+
+    func testOversizedDimensionsAreRejected() async throws {
+        let data = try png(width: 12001, height: 1)
+        let result = await CoverImageDecoder.decode(data, maxPixelSize: 128)
+        XCTAssertNil(result, "超过尺寸上限的图片必须在进入 ImageIO 解码前被拒绝")
+    }
+
     func testExternalImageCacheSeparatesSizes() {
         let url = URL(string: "https://example.com/cover.png")!
         XCTAssertNotEqual(CoverImageDecoder.cacheKey(url: url, pixels: 128),

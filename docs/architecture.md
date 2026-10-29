@@ -31,7 +31,7 @@
               │ Header: X-CT-Token
 ┌─────────────▼───────────────────────┐
 │  HelperRuntime (打包在 .app 内)      │
-│  ├── bin/node (v22.14.0)           │
+│  ├── bin/node (v22.23.4)           │
 │  └── api/ (NeteaseCloudMusicApi)   │
 │      └── 仅监听 127.0.0.1          │
 └─────────────────────────────────────┘
@@ -43,6 +43,9 @@
 - **访问令牌**：每次启动生成 UUID token，通过 `X-CT-Token` header 校验。
 - **凭证传递**：网易云 Cookie 通过 `X-CT-Cookie` header 注入，不出现在 URL/进程参数/日志中。
 - **日志脱敏**：`CTLog.sanitize` 自动过滤 cookie/token/key 等敏感字段。
+- **日志权限**：`helper.log` 及其轮转文件固定为 0600，仅当前用户可读。
+- **环境隔离**：辅助进程只继承白名单环境变量；`NODE_OPTIONS`、`NODE_TLS_REJECT_UNAUTHORIZED`、`DYLD_*`、`LD_PRELOAD` 等注入类变量一律丢弃。
+- **重定向防护**：带 `X-CT-Token` / `Cookie` 的请求拒绝跨源重定向，避免凭据被转到别的 host。
 - **生命周期**：主应用退出时自动停止辅助进程；健康检查失败自动重启。
 - **健康检查**：`/ct_health` 端点验证 token 并返回状态。
 

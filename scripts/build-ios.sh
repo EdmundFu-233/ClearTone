@@ -44,13 +44,15 @@ app = pathlib.Path(sys.argv[1])
 info = plistlib.loads((app / 'Info.plist').read_bytes())
 assert info['CFBundleSupportedPlatforms'][0] in ('iPhoneOS', 'iPhoneSimulator')
 assert info.get('UIBackgroundModes') == ['audio']
+ats = info.get('NSAppTransportSecurity') or {}
+assert ats.get('NSAllowsArbitraryLoads') is False, ats
 assert not (app / 'HelperRuntime').exists()
 assert not list(app.rglob('node_modules'))
 assert not list(app.rglob('*.entitlements'))
 assert not list(app.rglob('*.appex'))
 
 # 版本号必须来自 build setting，而不是 XcodeGen 的 `1.0` 默认值
-assert info.get('CFBundleShortVersionString') == '27.0.1', info.get('CFBundleShortVersionString')
+assert info.get('CFBundleShortVersionString') == '27.0.2', info.get('CFBundleShortVersionString')
 assert info.get('CFBundleVersion') == '1', info.get('CFBundleVersion')
 
 # **iOS 不得申请任何需要付费开发者账号的 entitlement。**

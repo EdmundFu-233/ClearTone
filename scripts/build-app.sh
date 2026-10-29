@@ -49,7 +49,7 @@ fi
 if [ ! -d ClearTone/Resources/HelperRuntime/api/node_modules ]; then
   echo "错误：缺少 HelperRuntime/api/node_modules（约 45MB，不入库）。" >&2
   echo "      执行 ./scripts/setup-helper.sh，会在 api/ 下跑 npm ci" >&2
-  echo "      它是硬依赖：辅助进程启动时会 require axios / crypto-js / node-forge。" >&2
+  echo "      它是硬依赖：辅助进程启动时会 require axios / crypto-js / pac-proxy-agent。" >&2
   exit 1
 fi
 

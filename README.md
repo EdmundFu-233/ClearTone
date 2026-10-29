@@ -28,7 +28,7 @@
 | Node.js / npm | 开发机需有可用的 `npm`，用于安装辅助进程依赖 |
 | 签名 | 本机 Apple Development 证书及对应开发团队 |
 
-应用运行使用随包携带的 Node.js v22.14.0（ARM64），无需用户另行安装 Node.js。构建准备阶段仍需要开发机上的 `npm`：安装脚本只复制运行时的 `node` 二进制，不携带 npm。
+应用运行使用随包携带的 Node.js v22.23.4（ARM64），无需用户另行安装 Node.js。构建准备阶段仍需要开发机上的 `npm`：安装脚本只复制运行时的 `node` 二进制，不携带 npm。
 
 ## 从源码运行
 
@@ -57,7 +57,7 @@ npm --version
 ./scripts/setup-helper.sh
 ```
 
-脚本下载 Node.js v22.14.0，并在缺少 `node_modules` 时运行 `npm ci --omit=dev --ignore-scripts`。
+脚本下载并校验 Node.js v22.23.4（SHA256 对齐 nodejs.org 的 `SHASUMS256.txt`），随后运行 `npm ci --omit=dev --ignore-scripts` 安装锁定的依赖。
 
 - `ClearTone/Resources/HelperRuntime/api/` 已入库，包含基于 NeteaseCloudMusicApiEnhanced 4.40.1 的辅助进程代码。
 - `bin/node` 与 `api/node_modules/` 不入库，首次构建前必须准备好。

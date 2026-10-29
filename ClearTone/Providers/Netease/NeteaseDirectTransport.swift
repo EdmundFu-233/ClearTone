@@ -46,7 +46,12 @@ public actor NeteaseDirectTransport {
         // 凭据一律手动放进 Cookie 头，不依赖 cookie 存储
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
-        self.session = URLSession(configuration: config)
+        // Cookie 在 header 里；跨源重定向会把登录凭据带到别的 host。
+        self.session = URLSession(
+            configuration: config,
+            delegate: RedirectGuard(allowedHostSuffixes: ["music.163.com"]),
+            delegateQueue: nil
+        )
     }
 
     // MARK: - 请求

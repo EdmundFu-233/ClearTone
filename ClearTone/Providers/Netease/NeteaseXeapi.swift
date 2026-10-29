@@ -33,7 +33,11 @@ actor NeteaseXeapi {
         config.timeoutIntervalForResource = 30
         config.httpShouldSetCookies = false
         config.httpCookieStorage = nil
-        session = URLSession(configuration: config)
+        session = URLSession(
+            configuration: config,
+            delegate: RedirectGuard(allowedHostSuffixes: ["music.163.com"]),
+            delegateQueue: nil
+        )
     }
 
     /// 已存的标识合法就原样复用，否则生成一个 32 位十六进制。

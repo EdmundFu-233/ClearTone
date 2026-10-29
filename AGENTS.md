@@ -43,7 +43,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearTone -configuration Debug b
 ```
 
 辅助进程包含：
-- Node.js v22.14.0（ARM64）
+- Node.js v22.23.4（ARM64）
 - NeteaseCloudMusicApiEnhanced 4.40.1
 
 ### 辅助进程安全模型
@@ -208,7 +208,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**61 个测试文件 / 591 项**，全部离线可跑且全绿）：
+当前覆盖（**64 个测试文件 / 603 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
@@ -229,6 +229,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | **渲染背压** | **InFlightGateTests**（占位/归还严格配对、**并发计数恰好停在上限**、`release` 不下穿 0）。`AmbientBackgroundRenderer` 需要 MTLDevice + `Bundle.main` shader 且被 `project.yml` 排除，判定逻辑必须抽成 `Rendering/InFlightGate.swift` 才测得到 |
 | **持久化** | **PersistenceWriterTests**（只排队列也落盘、只排 recent 也落盘、**NaN 快照样写出**、**单个 NaN 字段不连累整份 `AppSettings`**、写出失败回补 pending 并限次自动重试；`writePending` 靠 `writeInFlight` 门闩串行化——原先 actor 在 await 处可重入，两次落盘并发 rename 到同一路径，旧快照可能后到覆盖新快照） |
 | 菜单命令 | PlaybackCommandTests（播放模式轮转、相对 seek 不越界）/ **SidebarShortcutsTests**（⌘1…⌘0 映射；**第 10 项不得 `Character("10")`**、越界返回 nil） |
+| **网络安全加固** | **RedirectGuardTests**（带 Cookie / X-CT-Token 的请求拒绝跨源重定向、拒绝 HTTPS 降级、拒绝 `music.163.com.evil.example` 这类后缀伪装）/ **HelperProcessHardeningTests**（辅助进程环境只保留白名单、丢弃 `NODE_OPTIONS` / `NODE_TLS_REJECT_UNAUTHORIZED` / `DYLD_*` / `LD_PRELOAD`；日志文件与轮转文件固定 0600）/ CoverImageDecoderTests（ImageIO 解码前的格式白名单与尺寸上限） |
 | 凭据与限流 | **NeteaseCookieNormalizerTests**（Set-Cookie 拼接串归一化：**134 段 → 5 段**、丢属性/空值/重名、值含 `=`、**幂等**、**`loadLoginCookie` 不得自我递归**）/ **LikeWriteThrottleTests**（405/524 算限流需冷却、其余错误不冷却、提示要劝阻连点）/ **KeychainStoreTests**（`delete` 必须**双后端都清**、**主动后端失败不继续删另一侧**、**双向迁移：先写目标成功才删源**、凭据文件落在 `storageRoot` 且 **0600**、`storageMode` 缺省 iOS=keychain / macOS=plaintextFile） |
 | 音质默认值 | SongQualityPolicyTests（**VIP→无损 / 非 VIP→极高**、「自动」哨兵值、**显式选择不因 VIP 变化而改动**）/ PlaybackFeaturesTests（缺键=自动、**老用户存下的显式值不被新默认覆盖**） |
 | iOS 直连与移动状态 | NeteaseMobileRouteTests（QR 的 uri/crypto 走登记表、`/search/suggest` 的 `s` 键、`/logout` 恒 eapi 空 body、**`/search/hot` 写死 `type=1111`**、**`/toplist` 空 body**、plain 表单标量拼写）/ NeteaseXeapiTests（Node 逐字节对照、**deviceID 跨启动复用**、**Cookie 覆盖式合并**）/ MobileSessionsTests（取消登录、迟到账号、分页去重、失败重试与分页锁、**总数缺席仍能翻页**） |

@@ -29,7 +29,7 @@ xcodebuild -project ClearTone.xcodeproj -scheme ClearTone -configuration Debug t
 ```bash
 # 安装辅助进程
 ./scripts/setup-helper.sh
-# 结果：✅ Node.js v22.14.0 + api-enhanced 4.40.1 安装成功
+# 结果：✅ Node.js v22.23.4 + api-enhanced 4.40.1 安装成功
 
 # 启动辅助进程（手动测试）
 cd ClearTone/Resources/HelperRuntime/api

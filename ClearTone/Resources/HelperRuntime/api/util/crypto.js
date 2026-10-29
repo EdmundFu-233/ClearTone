@@ -1,6 +1,5 @@
 const CryptoJS = require('crypto-js')
 const crypto = require('crypto')
-const forge = require('node-forge')
 const zlib = require('zlib')
 const iv = '0102030405060708'
 const presetKey = '0CoJUm6Qyw8W8jud'
@@ -56,9 +55,20 @@ const aesDecrypt = (ciphertext, mode, key, iv, format = 'base64') => {
   return bytes
 }
 const rsaEncrypt = (str, key) => {
-  const forgePublicKey = forge.pki.publicKeyFromPem(key)
-  const encrypted = forgePublicKey.encrypt(str, 'NONE')
-  return forge.util.bytesToHex(encrypted)
+  const publicKeyObject = crypto.createPublicKey(key)
+  const modulusBytes = publicKeyObject.asymmetricKeyDetails.modulusLength / 8
+  const message = Buffer.from(str, 'utf8')
+  if (message.length > modulusBytes) {
+    throw new Error('RSA message is longer than the modulus')
+  }
+  const padded = Buffer.alloc(modulusBytes)
+  message.copy(padded, modulusBytes - message.length)
+  return crypto
+    .publicEncrypt(
+      { key: publicKeyObject, padding: crypto.constants.RSA_NO_PADDING },
+      padded,
+    )
+    .toString('hex')
 }
 
 const weapi = (object) => {

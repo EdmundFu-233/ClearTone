@@ -1,7 +1,11 @@
 const fs = require('fs')
 const path = require('path')
 const { register_anonimous } = require('./main')
-const { cookieToJson, generateRandomChineseIP } = require('./util/index')
+const {
+  cookieToJson,
+  generateRandomChineseIP,
+  generateDeviceId,
+} = require('./util/index')
 const { getXeapiPublicKey } = require('./util/xeapiKey')
 const tmpPath = require('os').tmpdir()
 
@@ -29,6 +33,16 @@ async function withRetry(label, fn, attempts = 3) {
 
 async function generateConfig() {
   global.cnIp = generateRandomChineseIP()
+
+  // 公钥注册必须带 deviceId：网易云只有在请求带 deviceId 时才会在
+  // encryptedData 里下发 sk。原先这里直接用 global.deviceId，而它要到
+  // register_anonimous 里才第一次被赋值 —— 冷启动（临时目录被清空）时
+  // 永远是空字符串，响应缺少 sk → 校验失败 → 公钥文件写不出来 →
+  // 匿名 token 又因为「xeapi public key is missing」注册不了 →
+  // 所有走 xeapi 的接口（含 /song/url/v1）全部 404，播放一直转圈。
+  if (!global.deviceId) {
+    global.deviceId = generateDeviceId()
+  }
 
   // 顺序很重要：**先公钥，再匿名 token**。
   //

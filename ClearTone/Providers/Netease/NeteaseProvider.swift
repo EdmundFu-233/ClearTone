@@ -10,6 +10,8 @@ public actor NeteaseProvider: MusicProvider {
     public static let shared = NeteaseProvider()
 
     private let session: URLSession
+    /// 本地辅助进程专用：拒绝一切重定向，避免 X-CT-Cookie / X-CT-Token 被转走。
+    private let helperSession: URLSession
     private let decoder: JSONDecoder
 
     // MARK: - 响应缓存
@@ -32,6 +34,16 @@ public actor NeteaseProvider: MusicProvider {
     private static let responseCacheByteLimit = 32 * 1024 * 1024
 
     public init() {
+        self.session = URLSession(configuration: Self.makeSessionConfiguration())
+        self.helperSession = URLSession(
+            configuration: Self.makeSessionConfiguration(),
+            delegate: RedirectGuard(),
+            delegateQueue: nil
+        )
+        self.decoder = JSONDecoder()
+    }
+
+    private static func makeSessionConfiguration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
@@ -42,8 +54,7 @@ public actor NeteaseProvider: MusicProvider {
         // 顶掉真正的 App 注册，导致 Finder/Dock 显示通用图标。
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
-        self.session = URLSession(configuration: config)
-        self.decoder = JSONDecoder()
+        return config
     }
 
     #if os(macOS)
@@ -842,7 +853,7 @@ public actor NeteaseProvider: MusicProvider {
                 request.setValue(cookie, forHTTPHeaderField: "X-CT-Cookie")
             }
 
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await helperSession.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw MusicError.invalidResponse }
             // 301/403 都不是「会话失效」的证据，只是一个接口在说「我这儿没登录」。
             // 详见 SessionExpiryGuard：这里只抛普通接口错 + 记一次疑似，

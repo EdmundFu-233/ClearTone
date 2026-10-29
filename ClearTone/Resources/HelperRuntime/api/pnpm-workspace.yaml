@@ -7,3 +7,8 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@neteasecloudmusicapienhanced/unblockmusic-utils@0.4.2'
+
+overrides:
+  basic-ftp: ^6.2.3
+  follow-redirects: ^1.16.1
+  ip-address: ^10.7.4

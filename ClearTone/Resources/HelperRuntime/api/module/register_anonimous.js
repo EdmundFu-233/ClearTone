@@ -25,7 +25,9 @@ function cloudmusic_dll_encode_id(some_id) {
 }
 
 module.exports = async (query, request) => {
-  const deviceId = generateDeviceId()
+  // 复用启动阶段为注册 xeapi 公钥生成的 deviceId：
+  // 公钥注册拿到的 sk 与这里的请求都应当来自同一台「设备」，重试时也不能换身份。
+  const deviceId = global.deviceId || generateDeviceId()
   logger.info(`Successfully registered anonimous token, deviceId: ${deviceId}`)
   global.deviceId = deviceId
   const encodedId = CryptoJS.enc.Base64.stringify(

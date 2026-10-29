@@ -89,16 +89,11 @@ public final class HelperProcessManager: ObservableObject {
         // 以 api 目录为工作目录，保证 dotenv/.env 与相对路径配置解析正确
         proc.currentDirectoryURL = runtimeDir.appendingPathComponent("api")
 
-        var env = ProcessInfo.processInfo.environment
-        env["PORT"] = String(port)
-        env["CT_AUTH_TOKEN"] = authToken
-        env["HOST"] = "127.0.0.1"
-        env["NODE_ENV"] = "production"
-        // 清除代理环境变量，避免影响 request 库
-        env["http_proxy"] = ""; env["https_proxy"] = ""
-        env["HTTP_PROXY"] = ""; env["HTTPS_PROXY"] = ""
-        env["no_proxy"] = ""; env["NO_PROXY"] = ""
-        proc.environment = env
+        proc.environment = Self.makeHelperEnvironment(
+            from: ProcessInfo.processInfo.environment,
+            port: port,
+            authToken: authToken
+        )
 
         let logDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Logs/ClearTone")
@@ -183,6 +178,34 @@ public final class HelperProcessManager: ObservableObject {
         CTLog.helper.info("辅助进程已停止")
     }
 
+    /// 辅助进程的环境变量白名单。
+    ///
+    /// 不能继承调用者的整份环境：`NODE_OPTIONS` 可以让 Node 在启动时
+    /// `--require` 任意脚本，`NODE_TLS_REJECT_UNAUTHORIZED=0` 能关掉 TLS
+    /// 校验，`DYLD_INSERT_LIBRARIES` / `LD_PRELOAD` 则直接注入动态库。
+    /// 这些变量一旦从父进程（例如从终端启动 App，或恶意 launcher）带进来，
+    /// 辅助进程就不再是「只能访问网易云的受控网络客户端」。
+    nonisolated static func makeHelperEnvironment(
+        from base: [String: String],
+        port: Int,
+        authToken: String
+    ) -> [String: String] {
+        let allowed = [
+            "HOME", "TMPDIR", "PATH", "USER", "LOGNAME", "SHELL",
+            "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+        ]
+        var env = base.filter { allowed.contains($0.key) }
+        env["PORT"] = String(port)
+        env["CT_AUTH_TOKEN"] = authToken
+        env["HOST"] = "127.0.0.1"
+        env["NODE_ENV"] = "production"
+        // 清除代理环境变量，避免 request 库走用户/系统代理
+        env["http_proxy"] = ""; env["https_proxy"] = ""
+        env["HTTP_PROXY"] = ""; env["HTTPS_PROXY"] = ""
+        env["no_proxy"] = ""; env["NO_PROXY"] = ""
+        return env
+    }
+
     /// 查询串的百分号编码。
     ///
     /// `URLComponents.queryItems` **不会**编码 `+`（它属于 `urlQueryAllowed`），
@@ -249,9 +272,23 @@ public final class HelperProcessManager: ObservableObject {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/ct_health")!)
         request.setValue(authToken, forHTTPHeaderField: "X-CT-Token")
         request.timeoutInterval = 2
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await Self.healthSession.data(for: request)
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
+
+    /// 健康检查请求带着 X-CT-Token；任何重定向都可能把它交给别的进程。
+    private static let healthSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 2
+        config.timeoutIntervalForResource = 4
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        return URLSession(
+            configuration: config,
+            delegate: RedirectGuard(),
+            delegateQueue: nil
+        )
+    }()
 
     private func startHealthMonitoring() {
         healthCheckTask?.cancel()
@@ -311,7 +348,7 @@ public final class HelperProcessManager: ObservableObject {
     /// 而日志恰恰是排查辅助进程问题的唯一手段。
     ///
     /// 现在显式建文件并 seek 到末尾，保证多次启动之间是追加关系。
-    static func makeLogHandle(at url: URL, maxBytes: Int = 5 * 1024 * 1024) -> FileHandle {
+    nonisolated static func makeLogHandle(at url: URL, maxBytes: Int = 5 * 1024 * 1024) -> FileHandle {
         let fm = FileManager.default
         // 轮转：Node 对每个请求都打 INFO（含 ANSI 色码），崩溃重启循环还会不断
         // 重开句柄，无人清理时可涨到百 MB 级。
@@ -320,26 +357,40 @@ public final class HelperProcessManager: ObservableObject {
         if !fm.fileExists(atPath: url.path) {
             // createFile 返回 false 表示已存在或失败；两种情况都继续往下走，
             // 下面的 open 才是真正的判断
-            fm.createFile(atPath: url.path, contents: nil)
+            fm.createFile(
+                atPath: url.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
         }
+        // 旧版本按默认 umask 建出来的是 0644；Node 每个请求都写 INFO，
+        // 日志里可能带接口路径与查询参数，只应当前用户可读。
+        try? fm.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
         guard let handle = try? FileHandle(forWritingTo: url) else {
             // 兜底：open 的语义就是「不存在则创建」，与 forWritingTo 不同
             if let handle = FileHandle(forWritingAtPath: url.path) { return handle }
             return FileHandle.nullDevice
         }
-        try? handle.seekToEnd()
+        _ = try? handle.seekToEnd()
         return handle
     }
 
     /// 超过阈值就把 helper.log 轮转为 helper.log.1，保留最近两份。
     /// 崩溃重启循环会不断重开句柄，没有轮转时文件会单调增长。
-    private static func rotateLogIfNeeded(at url: URL, maxBytes: Int = 5 * 1024 * 1024) {
+    nonisolated private static func rotateLogIfNeeded(at url: URL, maxBytes: Int = 5 * 1024 * 1024) {
         let fm = FileManager.default
         let rotated = url.appendingPathExtension("1")
         let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
         guard size > maxBytes else { return }
         try? fm.removeItem(at: rotated)
         try? fm.moveItem(at: url, to: rotated)
+        try? fm.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: rotated.path
+        )
     }
 }
 

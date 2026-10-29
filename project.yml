@@ -35,10 +35,13 @@ targets:
               public.filename-extension: [cleartonesong]
         # **版本号必须指向 build setting，不能写字面量。**
         # XcodeGen 不写这两项时会自己填 `1.0` / `1`，于是 Info.plist 里的
-        # 值与 `MARKETING_VERSION: 27.0.1` 永远对不上 —— 关于"装的是哪个版本"
+        # 值与 `MARKETING_VERSION: 27.0.2` 永远对不上 —— 关于"装的是哪个版本"
         # 的结论只能靠猜。
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # 显式钉住默认 ATS 语义（禁止明文 HTTP），避免以后误加全局例外。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.app
@@ -68,7 +71,7 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 ClearTone"
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.music"
         CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: 27.0.1
+        MARKETING_VERSION: 27.0.2
         SWIFT_STRICT_CONCURRENCY: complete
         ENABLE_USER_SCRIPT_SANDBOXING: NO
       configs:
@@ -104,9 +107,12 @@ targets:
       path: ClearToneiOS/Info.plist
       properties:
         # 与 macOS 同理：不显式声明的话 XcodeGen 会填 `1.0` / `1`，
-        # 与 `MARKETING_VERSION: 27.0.1` 对不上。
+        # 与 `MARKETING_VERSION: 27.0.2` 对不上。
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # 与 macOS 一致：不引入任何 ATS 全局例外。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
         CFBundleDisplayName: 澄音
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
@@ -130,7 +136,7 @@ targets:
         DEVELOPMENT_TEAM: ""
         GENERATE_INFOPLIST_FILE: YES
         CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: 27.0.1
+        MARKETING_VERSION: 27.0.2
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO

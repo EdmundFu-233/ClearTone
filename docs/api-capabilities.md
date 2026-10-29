@@ -8,7 +8,7 @@
 - macOS 27.0 (Build 26A428)
 - Xcode 27.0, Swift 6.4
 - Apple M3 Pro, 18 GB RAM
-- Node.js v22.14.0（打包在 HelperRuntime 中）
+- Node.js v22.23.4（打包在 HelperRuntime 中）
 
 ## 已验证接口
 
