@@ -9,10 +9,10 @@ namespace ct {
 QString StoragePaths::root()
 {
     static const QString resolved = [] {
-        const QByteArray testDir = qgetenv("CLEARTONE_TEST_STORAGE_DIR");
-        if (!testDir.isEmpty()) return QDir(QString::fromUtf8(testDir)).absolutePath();
-        const QByteArray overrideDir = qgetenv("CLEARTONE_STORAGE_DIR");
-        if (!overrideDir.isEmpty()) return QDir(QString::fromUtf8(overrideDir)).absolutePath();
+        const QString testDir = qEnvironmentVariable("CLEARTONE_TEST_STORAGE_DIR");
+        if (!testDir.isEmpty()) return QDir(testDir).absolutePath();
+        const QString overrideDir = qEnvironmentVariable("CLEARTONE_STORAGE_DIR");
+        if (!overrideDir.isEmpty()) return QDir(overrideDir).absolutePath();
 
 #ifdef Q_OS_WIN
         return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("data"));

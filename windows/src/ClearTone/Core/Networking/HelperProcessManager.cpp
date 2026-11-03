@@ -82,8 +82,8 @@ Task<void> HelperProcessManager::restartAfterFailure(bool resumeMonitoring)
 
 QString HelperProcessManager::runtimeRoot()
 {
-    const QByteArray overrideRoot = qgetenv("CLEARTONE_HELPER_ROOT");
-    if (!overrideRoot.isEmpty()) return QString::fromUtf8(overrideRoot);
+    const QString overrideRoot = qEnvironmentVariable("CLEARTONE_HELPER_ROOT");
+    if (!overrideRoot.isEmpty()) return overrideRoot;
     return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("helper"));
 }
 
@@ -104,9 +104,9 @@ QString HelperProcessManager::resolveRuntimeDirectory()
 
 QString HelperProcessManager::resolveNodeBinary(const QString& runtimeDir)
 {
-    const QByteArray nodeOverride = qgetenv("CLEARTONE_HELPER_NODE");
+    const QString nodeOverride = qEnvironmentVariable("CLEARTONE_HELPER_NODE");
     if (!nodeOverride.isEmpty()) {
-        const QString candidate = QString::fromUtf8(nodeOverride);
+        const QString candidate = nodeOverride;
         if (QFile::exists(candidate)) return candidate;
     }
 
@@ -127,9 +127,9 @@ QString HelperProcessManager::resolveNodeBinary(const QString& runtimeDir)
 
 QString HelperProcessManager::resolveRustBinary(const QString& runtimeDir)
 {
-    const QByteArray overrideBinary = qgetenv("CLEARTONE_HELPER_BINARY");
-    if (!overrideBinary.isEmpty() && QFile::exists(QString::fromUtf8(overrideBinary)))
-        return QString::fromUtf8(overrideBinary);
+    const QString overrideBinary = qEnvironmentVariable("CLEARTONE_HELPER_BINARY");
+    if (!overrideBinary.isEmpty() && QFile::exists(overrideBinary))
+        return overrideBinary;
     const QString bundled = QDir(runtimeDir).filePath(QStringLiteral("cleartone-helper.exe"));
     if (QFile::exists(bundled)) return bundled;
 
