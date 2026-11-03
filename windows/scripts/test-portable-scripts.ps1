@@ -10,6 +10,16 @@ try {
     [IO.File]::WriteAllText((Join-Path $taskApp 'data-sentinel'), 'keep')
     $env:CT_PORTABLE_ROOT = $taskApp
     $env:CT_TEST_PROGRAMS = $taskPrograms
+    $probeShell = New-Object -ComObject WScript.Shell
+    foreach ($probeName in @('plain', 'with space', '测试', 'with &', "with '", 'with [x]', 'with !', 'with %')) {
+        $probeDirectory = Join-Path $taskRoot $probeName
+        [IO.Directory]::CreateDirectory($probeDirectory) | Out-Null
+        $probeExe = Join-Path $probeDirectory 'ClearTone.exe'
+        Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $probeExe
+        $probeLink = $probeShell.CreateShortcut((Join-Path $taskPrograms 'probe.lnk'))
+        try { $probeLink.TargetPath = $probeExe; Write-Host "TargetPath probe [$probeName]: passed" }
+        catch { Write-Host "TargetPath probe [$probeName]: $($_.Exception.Message)" }
+    }
 
     function Invoke-PortableScript {
         param([string]$Name, [int]$ExpectedExit = 0)
@@ -26,6 +36,7 @@ try {
         $body = $body.Replace($lookup, '$env:CT_TEST_PROGRAMS')
         $body = $body.Replace('Write-Host $_ -ForegroundColor Red', 'Write-Host $_.Exception.ToString(); Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor Red')
         $body = '$ProgressPreference = ''SilentlyContinue''; ' + $body.Replace(';', ";`n")
+        $body = $body.Replace('$link.TargetPath = $exe', 'Write-Host (''Setting target: '' + $exe); $link.TargetPath = $exe')
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
         & powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand $encoded
         if ($LASTEXITCODE -ne $ExpectedExit) { throw "$Name returned $LASTEXITCODE, expected $ExpectedExit" }
