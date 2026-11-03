@@ -21,10 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 便携版开始菜单脚本（隔离目录）
-        shell: pwsh
-        run: ./windows/scripts/test-portable-scripts.ps1
-
       - name: 安装 Qt（${{ env.QT_VERSION }} MinGW 13.1）
         shell: pwsh
         run: |
@@ -59,6 +55,10 @@ jobs:
 
       - name: 构建（Release）
         run: cmake --build windows/build-ci -j
+
+      - name: 便携版开始菜单脚本（隔离目录）
+        shell: pwsh
+        run: ./windows/scripts/test-portable-scripts.ps1 -AppPath (Resolve-Path 'windows/build-ci/ClearTone.exe').Path
 
       - name: 离线单测
         shell: pwsh

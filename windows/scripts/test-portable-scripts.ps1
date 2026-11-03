@@ -1,67 +1,38 @@
+param([Parameter(Mandatory = $true)][string]$AppPath)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Join-Path ([IO.Path]::GetTempPath()) ("cleartone-shortcut-test-" + [guid]::NewGuid())
 $taskApp = Join-Path $taskRoot "portable 测试 & ' [x] ! %"
-$taskPrograms = Join-Path $taskRoot 'Programs'
-$previousRoot = $env:CT_PORTABLE_ROOT
-$previousPrograms = $env:CT_TEST_PROGRAMS
+$taskPrograms = Join-Path $taskRoot 'Programs 测试'
+$previousPrograms = $env:CLEARTONE_TEST_START_MENU_DIR
 try {
-    New-Item -ItemType Directory -Path $taskApp, $taskPrograms | Out-Null
-    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination (Join-Path $taskApp 'ClearTone.exe')
-    [IO.File]::WriteAllText((Join-Path $taskApp 'data-sentinel'), 'keep')
-    $env:CT_PORTABLE_ROOT = $taskApp
-    $env:CT_TEST_PROGRAMS = $taskPrograms
-    $probeShell = New-Object -ComObject WScript.Shell
-    foreach ($probeName in @('plain', 'with space', '测试', 'with &', "with '", 'with [x]', 'with !', 'with %')) {
-        $probeDirectory = Join-Path $taskRoot $probeName
-        [IO.Directory]::CreateDirectory($probeDirectory) | Out-Null
-        $probeExe = Join-Path $probeDirectory 'ClearTone.exe'
-        Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $probeExe
-        $probeLink = $probeShell.CreateShortcut((Join-Path $taskPrograms 'probe.lnk'))
-        try { $probeLink.TargetPath = $probeExe; Write-Host "TargetPath probe [$probeName]: passed" }
-        catch { Write-Host "TargetPath probe [$probeName]: $($_.Exception.Message)" }
+    [IO.Directory]::CreateDirectory($taskApp) | Out-Null
+    [IO.Directory]::CreateDirectory($taskPrograms) | Out-Null
+    Copy-Item -LiteralPath $AppPath -Destination (Join-Path $taskApp 'ClearTone.exe')
+    foreach ($name in @('Add-to-Start-Menu.bat', 'Remove-from-Start-Menu.bat')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "portable\$name") -Destination $taskApp
     }
-
+    [IO.File]::WriteAllText((Join-Path $taskApp 'data-sentinel'), 'keep')
+    $env:CLEARTONE_TEST_START_MENU_DIR = $taskPrograms
     function Invoke-PortableScript {
         param([string]$Name, [int]$ExpectedExit = 0)
-        $lines = Get-Content -LiteralPath (Join-Path $PSScriptRoot "portable\$Name")
-        $command = $lines | Where-Object { $_ -match '^powershell.exe .* -Command "(.*)"$' }
-        if (-not $command -or $command -notmatch ' -Command "(.*)"$') { throw "Missing PowerShell command in $Name" }
-        $body = $Matches[1]
-        $tokens = $null
-        $errors = $null
-        [Management.Automation.Language.Parser]::ParseInput($body, [ref]$tokens, [ref]$errors) | Out-Null
-        if ($errors) { throw "$Name contains a PowerShell syntax error: $errors" }
-        $lookup = "[Environment]::GetFolderPath('Programs')"
-        if (-not $body.Contains($lookup)) { throw "$Name no longer uses the expected current-user folder lookup" }
-        $body = $body.Replace($lookup, '$env:CT_TEST_PROGRAMS')
-        $body = $body.Replace('Write-Host $_ -ForegroundColor Red', 'Write-Host $_.Exception.ToString(); Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor Red')
-        $body = '$ProgressPreference = ''SilentlyContinue''; ' + $body.Replace(';', ";`n")
-        $body = $body.Replace('$link.TargetPath = $exe', 'Write-Host (''Setting target: '' + $exe); $link.TargetPath = $exe')
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
-        & powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand $encoded
-        if ($LASTEXITCODE -ne $ExpectedExit) { throw "$Name returned $LASTEXITCODE, expected $ExpectedExit" }
+        $bat = Join-Path $taskApp $Name
+        $arguments = '/d /s /c ""' + $bat + '" --quiet"'
+        $process = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru -Wait
+        if ($process.ExitCode -ne $ExpectedExit) { throw "$Name returned $($process.ExitCode), expected $ExpectedExit" }
     }
-
     Invoke-PortableScript 'Add-to-Start-Menu.bat'
     Invoke-PortableScript 'Add-to-Start-Menu.bat'
     $path = Join-Path $taskPrograms 'ClearTone.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut($path)
-    if ($link.TargetPath -ne (Join-Path $taskApp 'ClearTone.exe') -or
-        $link.WorkingDirectory.TrimEnd('\') -ne $taskApp -or
-        $link.IconLocation -ne ((Join-Path $taskApp 'ClearTone.exe') + ',0')) {
-        throw 'Shortcut target, working directory or icon is incorrect'
-    }
+    if (-not (Test-Path -LiteralPath $path)) { throw 'Shortcut was not created in the isolated Programs directory' }
     Invoke-PortableScript 'Remove-from-Start-Menu.bat'
     Invoke-PortableScript 'Remove-from-Start-Menu.bat'
     if (Test-Path -LiteralPath $path) { throw 'Shortcut was not removed' }
     if (-not (Test-Path -LiteralPath (Join-Path $taskApp 'data-sentinel'))) { throw 'Data was removed' }
-    $env:CT_PORTABLE_ROOT = $taskRoot
+    Remove-Item -LiteralPath (Join-Path $taskApp 'ClearTone.exe')
     Invoke-PortableScript 'Add-to-Start-Menu.bat' -ExpectedExit 1
-    Write-Host 'Portable shortcut scripts passed (isolated Programs directory).'
+    Write-Host 'Portable BAT scripts passed (Unicode paths and isolated Programs directory).'
 } finally {
-    $env:CT_PORTABLE_ROOT = $previousRoot
-    $env:CT_TEST_PROGRAMS = $previousPrograms
+    $env:CLEARTONE_TEST_START_MENU_DIR = $previousPrograms
     $resolvedRoot = [IO.Path]::GetFullPath($taskRoot)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
     if ([IO.Path]::GetDirectoryName($resolvedRoot) -eq $tempRoot -and

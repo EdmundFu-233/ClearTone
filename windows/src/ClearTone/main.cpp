@@ -2,6 +2,7 @@
 #include "Core/Logging/CTLog.h"
 #include "Core/Networking/HelperProcessManager.h"
 #include "Core/Persistence/StoragePaths.h"
+#include "Core/Platform/WindowsShortcuts.h"
 #include "MainWindow.h"
 #include "DesignSystem/SmoothMenuStyle.h"
 #include "Playback/PlayerController.h"
@@ -16,6 +17,7 @@
 
 int main(int argc, char** argv)
 {
+    if (const auto exitCode = ct::windowsShortcuts::runCommandLine(argc, argv)) return *exitCode;
 #ifdef Q_OS_WIN
     // DirectWrite maps the entire installed font collection on first text paint
     // (~135MB private + ~300MB mapped on machines with many CJK fonts), while GDI

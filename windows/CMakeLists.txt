@@ -83,7 +83,7 @@ if(Qt6Multimedia_FOUND)
 endif()
 
 if(WIN32)
-    target_link_libraries(cleartone_lib PRIVATE crypt32)
+    target_link_libraries(cleartone_lib PRIVATE crypt32 ole32 shell32 uuid)
     # C++/WinRT is supplied by the Windows SDK, not by the MinGW Qt kit.
     file(GLOB CT_CPPWINRT_CANDIDATES "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
     list(SORT CT_CPPWINRT_CANDIDATES COMPARE NATURAL ORDER DESCENDING)

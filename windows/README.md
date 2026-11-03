@@ -114,7 +114,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Tests
 powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1
 ```
 
-26 个 Qt Test 可执行（包含界面布局、封面解码、启动静音、媒体键、便携存储、添加歌单与更新解析回归），全部离线（桩 provider / 桩音频引擎），
+27 个 Qt Test 可执行（包含界面布局、封面解码、启动静音、媒体键、便携存储、Unicode 快捷方式、添加歌单与更新解析回归），全部离线（桩 provider / 桩音频引擎），
 持久化由 CTest 逐用例重定向到临时目录。离线测试只能证明本地实现与接口约定一致，
 真实账号登录、在线播放与上游接口可用性需要实机验证。
 
