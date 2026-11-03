@@ -6,7 +6,7 @@ $previousRoot = $env:CT_PORTABLE_ROOT
 $previousPrograms = $env:CT_TEST_PROGRAMS
 try {
     New-Item -ItemType Directory -Path $taskApp, $taskPrograms | Out-Null
-    [IO.File]::WriteAllText((Join-Path $taskApp 'ClearTone.exe'), 'test application sentinel')
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination (Join-Path $taskApp 'ClearTone.exe')
     [IO.File]::WriteAllText((Join-Path $taskApp 'data-sentinel'), 'keep')
     $env:CT_PORTABLE_ROOT = $taskApp
     $env:CT_TEST_PROGRAMS = $taskPrograms
@@ -24,6 +24,8 @@ try {
         $lookup = "[Environment]::GetFolderPath('Programs')"
         if (-not $body.Contains($lookup)) { throw "$Name no longer uses the expected current-user folder lookup" }
         $body = $body.Replace($lookup, '$env:CT_TEST_PROGRAMS')
+        $body = $body.Replace('Write-Host $_ -ForegroundColor Red', 'Write-Host $_.Exception.ToString(); Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor Red')
+        $body = '$ProgressPreference = ''SilentlyContinue''; ' + $body.Replace(';', ";`n")
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
         & powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand $encoded
         if ($LASTEXITCODE -ne $ExpectedExit) { throw "$Name returned $LASTEXITCODE, expected $ExpectedExit" }

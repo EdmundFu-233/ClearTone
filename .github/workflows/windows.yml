@@ -21,6 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 便携版开始菜单脚本（隔离目录）
+        shell: pwsh
+        run: ./windows/scripts/test-portable-scripts.ps1
+
       - name: 安装 Qt（${{ env.QT_VERSION }} MinGW 13.1）
         shell: pwsh
         run: |
@@ -46,10 +50,6 @@ jobs:
           rustup target add x86_64-pc-windows-gnu
           cargo test --manifest-path windows/helper/Cargo.toml --locked --target x86_64-pc-windows-gnu
           cargo build --manifest-path windows/helper/Cargo.toml --release --locked --target x86_64-pc-windows-gnu
-
-      - name: 便携版开始菜单脚本（隔离目录）
-        shell: pwsh
-        run: ./windows/scripts/test-portable-scripts.ps1
 
       - name: CMake 配置
         shell: pwsh
