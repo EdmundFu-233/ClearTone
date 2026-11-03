@@ -198,6 +198,19 @@ DiscoverView::DiscoverView(QWidget* parent)
     connect(m_dailyPlayAll, &QPushButton::clicked, this, [this] {
         if (!m_dailySongs.isEmpty()) PlayerController::shared().playSongs(m_dailySongs, 0);
     });
+    m_dailyListToggle = ui::ghostButton(QStringLiteral("以列表呈现"));
+    m_dailyListToggle->setObjectName(QStringLiteral("ctDailyListToggle"));
+    m_dailyListToggle->setCheckable(true);
+    connect(m_dailyListToggle, &QPushButton::toggled, this, [this](bool checked) {
+        m_dailyListToggle->setText(checked ? QStringLiteral("以卡片呈现") : QStringLiteral("以列表呈现"));
+        renderDaily();
+    });
+    auto* dailyActions = new QWidget();
+    auto* dailyActionsLayout = new QHBoxLayout(dailyActions);
+    dailyActionsLayout->setContentsMargins(0, 0, 0, 0);
+    dailyActionsLayout->setSpacing(CTSpacing::Sm);
+    dailyActionsLayout->addWidget(m_dailyListToggle);
+    dailyActionsLayout->addWidget(m_dailyPlayAll);
 
     auto makeHost = [](QWidget*& host, QVBoxLayout*& layout) {
         host = new QWidget();
@@ -224,7 +237,7 @@ DiscoverView::DiscoverView(QWidget* parent)
     bodyLayout->setContentsMargins(CTSpacing::Xl, CTSpacing::Sm, CTSpacing::Xl, CTSpacing::Xl);
     bodyLayout->setSpacing(CTSpacing::Lg);
     bodyLayout->addWidget(header);
-    bodyLayout->addWidget(buildSection(QStringLiteral("每日推荐"), m_dailyHost, m_dailyPlayAll));
+    bodyLayout->addWidget(buildSection(QStringLiteral("每日推荐"), m_dailyHost, dailyActions));
     bodyLayout->addWidget(
         buildSection(QStringLiteral("每日推荐歌单"), m_dailyPlaylistsHost, nullptr));
     bodyLayout->addWidget(buildSection(QStringLiteral("推荐电台"), m_radiosHost, nullptr));
@@ -434,6 +447,7 @@ void DiscoverView::renderDaily()
 {
     m_dailyHost->parentWidget()->layout()->itemAt(0)->widget()->setVisible(AppState::shared().isLoggedIn());
     m_dailyPlayAll->setVisible(AppState::shared().isLoggedIn());
+    m_dailyListToggle->setVisible(AppState::shared().isLoggedIn());
     m_dailyPlayAll->setEnabled(!m_dailySongs.isEmpty());
     m_dailyPlayAll->setText(m_dailySongs.isEmpty()
             ? QStringLiteral("播放全部")
@@ -473,7 +487,15 @@ void DiscoverView::renderDaily()
         setHost(m_dailyLayout, ui::statusPanel(QStringLiteral("暂无每日推荐"), false));
         return;
     }
-    setHost(m_dailyLayout, buildSongStrip(m_dailySongs, true));
+    if (m_dailyListToggle->isChecked()) {
+        auto* list = new SongListView();
+        list->setObjectName(QStringLiteral("ctDailySongList"));
+        list->setSongs(m_dailySongs);
+        list->setFixedHeight(list->contentHeight());
+        setHost(m_dailyLayout, list);
+    } else {
+        setHost(m_dailyLayout, buildSongStrip(m_dailySongs, true));
+    }
 }
 
 void DiscoverView::renderDailyPlaylists()

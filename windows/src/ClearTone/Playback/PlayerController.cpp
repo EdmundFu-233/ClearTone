@@ -84,7 +84,7 @@ float PlayerController::resolveRestoredPlaybackRate(float value)
 
 PlayerController::PlayerController()
 {
-    // 默认接入网易云（与 C# 版 `_provider = NeteaseProvider.Shared` 一致）；
+    // 默认接入网易云；
     // AppState 构造时会用注入的 provider 覆盖。
     m_provider = &NeteaseProvider::shared();
     m_recentlyPlayed = PersistenceStore::shared().loadRecentSongs();

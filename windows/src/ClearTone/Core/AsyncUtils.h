@@ -10,7 +10,7 @@
 
 namespace ct {
 
-// 组合两个取消令牌：任一取消时合成令牌取消（对应 C# CreateLinkedTokenSource）。
+// 组合两个取消令牌：任一取消时合成令牌取消。
 // 调用方用 shared_ptr 持有它保证在途协程存活期间回调不失效。
 class LinkedCancellation {
 public:
@@ -45,8 +45,7 @@ private:
     int m_secondId = 0;
 };
 
-// 把顶层协程挂到主循环再启动（对应 C# 的 `_ = Task.Run(...)`）：
-// 同步方法返回时协程尚未跑，状态与 C# 的调度时机一致。
+// 把顶层协程挂到主循环再启动，同步方法返回后才开始执行协程。
 template <typename T>
 void startOnLoop(Task<T> task)
 {

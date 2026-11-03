@@ -10,6 +10,7 @@
 #include "DesignSystem/L10n.h"
 #include "Features/Shared/PageFactory.h"
 #include "Features/Shared/UIComponents.h"
+#include "Features/Shared/AddToPlaylistDialog.h"
 #include "Playback/PlayerController.h"
 #include "Playback/SongQuality.h"
 #include "Providers/Netease/LRCParser.h"
@@ -300,6 +301,16 @@ QWidget* NowPlayingView::buildLeftColumn()
     m_likeButton = makeGlyphButton(QStringLiteral("\uE0F5"), secondaryText(), 20, titleRow);
     m_likeButton->setToolTip(QStringLiteral("收藏到喜欢的音乐"));
     titleLayout->addWidget(m_likeButton);
+    m_addToPlaylistButton = makeGlyphButton(QStringLiteral("\uE140"), secondaryText(), 20, titleRow);
+    m_addToPlaylistButton->setToolTip(QStringLiteral("添加到歌单"));
+    m_addToPlaylistButton->setAccessibleName(QStringLiteral("添加到歌单"));
+    m_addToPlaylistButton->setObjectName(QStringLiteral("ctNowPlayingAddToPlaylist"));
+    titleLayout->addWidget(m_addToPlaylistButton);
+    connect(m_addToPlaylistButton, &QPushButton::clicked, this, [this] {
+        const auto song = PlayerController::shared().currentSong();
+        if (song && song->source == SongSource::Netease && AppState::shared().canPerformWrite())
+            (new AddToPlaylistDialog(*song, this))->open();
+    });
     layout->addWidget(titleRow);
 
     m_artistButton = new QPushButton(QStringLiteral("未知艺术家"), left);
@@ -679,6 +690,7 @@ void NowPlayingView::refresh()
     m_likeButton->setText(liked ? QStringLiteral("\uE0F5") : QStringLiteral("\uE0F5"));
     m_likeButton->setStyleSheet(glyphStyle(liked ? accentText() : secondaryText(), 20));
     m_likeButton->setEnabled(isNetease && AppState::shared().isLoggedIn());
+    m_addToPlaylistButton->setEnabled(isNetease && AppState::shared().canPerformWrite());
     m_likeButton->setToolTip(liked ? QStringLiteral("取消收藏")
                                    : QStringLiteral("收藏到喜欢的音乐"));
 

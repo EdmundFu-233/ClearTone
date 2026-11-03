@@ -77,6 +77,7 @@ function Test-ClearToneMinGWKit {
 }
 
 function Initialize-ClearToneRustTools {
+    param([switch]$MinGW)
     if (-not (Get-Command cargo.exe -ErrorAction SilentlyContinue) -or
         -not (Get-Command rustup.exe -ErrorAction SilentlyContinue)) {
         $cargoBin = Join-Path $HOME '.cargo\bin'
@@ -87,5 +88,14 @@ function Initialize-ClearToneRustTools {
     if (-not (Get-Command cargo.exe -ErrorAction SilentlyContinue) -or
         -not (Get-Command rustup.exe -ErrorAction SilentlyContinue)) {
         throw '缺少 Rust（cargo / rustup）。请安装 rustup，或将 ~/.cargo/bin 加入 PATH。'
+    }
+    if ($MinGW) {
+        $toolchain = 'stable-x86_64-pc-windows-gnu'
+        $installed = & rustup toolchain list
+        if (-not ($installed | Where-Object { $_ -match "^$toolchain(\s|$)" })) {
+            & rustup toolchain install $toolchain --profile minimal
+            if ($LASTEXITCODE -ne 0) { throw '安装 Rust GNU host 工具链失败' }
+        }
+        $env:RUSTUP_TOOLCHAIN = $toolchain
     }
 }

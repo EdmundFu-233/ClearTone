@@ -53,6 +53,7 @@ private:
     QWidget* m_radiosHost = nullptr;
     QVBoxLayout* m_radiosLayout = nullptr;
     QPushButton* m_dailyPlayAll = nullptr;
+    QPushButton* m_dailyListToggle = nullptr;
 
     QList<Song> m_dailySongs;
     QSet<QString> m_dailyDislikesInFlight;

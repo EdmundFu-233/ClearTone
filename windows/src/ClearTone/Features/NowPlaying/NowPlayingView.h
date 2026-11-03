@@ -85,6 +85,7 @@ private:
     CoverImage* m_cover = nullptr;
     ui::ElidedLabel* m_titleText = nullptr;
     QPushButton* m_likeButton = nullptr;
+    QPushButton* m_addToPlaylistButton = nullptr;
     QPushButton* m_artistButton = nullptr;
     QLabel* m_sourceText = nullptr;
     QPushButton* m_modeButton = nullptr;

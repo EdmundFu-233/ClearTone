@@ -9,7 +9,7 @@ class QWidget;
 
 namespace ct {
 
-// 系统托盘（对应 C# App/TrayIconManager.cs）。托盘不可用时静默降级。
+// 系统托盘；托盘不可用时静默降级。
 class TrayIconManager {
 public:
     static TrayIconManager& shared();

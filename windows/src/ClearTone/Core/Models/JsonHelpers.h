@@ -10,7 +10,7 @@
 
 namespace ct::json {
 
-// 对应 C# JsonHelpers：容忍缺失 / null / 类型不符，全部返回 optional。
+// 容忍缺失 / null / 类型不符的 JSON 解析，全部返回 optional。
 inline QJsonValue prop(const QJsonValue& value, const QString& name)
 {
     if (!value.isObject()) return QJsonValue(QJsonValue::Undefined);
@@ -140,7 +140,7 @@ inline QJsonValue fromOptionalDouble(const std::optional<double>& value)
     return value ? QJsonValue(*value) : QJsonValue(QJsonValue::Null);
 }
 
-// System.Text.Json 的 ISO 8601（含最多 7 位小数）；Qt 只吸收到毫秒，多余的截断。
+// 持久化 ISO 8601 时间最多含 7 位小数；Qt 只吸收到毫秒，多余的截断。
 inline std::optional<QDateTime> parseDateTime(const QJsonValue& value)
 {
     if (value.isDouble()) return QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(value.toDouble()));

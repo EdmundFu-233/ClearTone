@@ -11,7 +11,7 @@
 
 namespace ct {
 
-// 带圆角与异步加载的封面控件（对应 C# Controls/CoverImage）。
+// 带圆角与异步加载的封面控件。
 class CoverImage : public QWidget {
     Q_OBJECT
 

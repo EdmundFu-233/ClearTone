@@ -27,7 +27,7 @@ namespace ct {
 
 class CoverImage;
 
-// 主窗口（对应 C# MainWindow.axaml + MainWindow.axaml.cs）。
+// 主窗口。
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -125,6 +125,7 @@ private:
     QPushButton* m_expandButton = nullptr;
     QPushButton* m_titleButton = nullptr;
     QPushButton* m_likeButton = nullptr;
+    QPushButton* m_addToPlaylistButton = nullptr;
     QPushButton* m_prevButton = nullptr;
     QPushButton* m_playPauseButton = nullptr;
     QPushButton* m_nextButton = nullptr;

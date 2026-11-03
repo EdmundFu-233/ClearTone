@@ -1,12 +1,16 @@
 #include "App/TrayIconManager.h"
 #include "Core/Logging/CTLog.h"
 #include "Core/Networking/HelperProcessManager.h"
+#include "Core/Persistence/StoragePaths.h"
 #include "MainWindow.h"
 #include "DesignSystem/SmoothMenuStyle.h"
 #include "Playback/PlayerController.h"
 
 #include <QApplication>
+#include <QDir>
+#include <QMessageBox>
 #include <QPixmapCache>
+#include <QTemporaryFile>
 #include <QStyleFactory>
 #include <QTimer>
 
@@ -25,6 +29,18 @@ int main(int argc, char** argv)
     QApplication::setApplicationName(QStringLiteral("ClearTone"));
     QApplication::setApplicationVersion(QStringLiteral(CT_APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("ClearTone"));
+    QApplication::setWindowIcon(ct::TrayIconManager::applicationIcon());
+#ifdef Q_OS_WIN
+    const QString storageRoot = ct::StoragePaths::root();
+    QTemporaryFile storageProbe(QDir(storageRoot).filePath(QStringLiteral(".write-test-XXXXXX")));
+    if (!QDir().mkpath(storageRoot) || !storageProbe.open()) {
+        QMessageBox::critical(nullptr, QStringLiteral("澄音 ClearTone"),
+            QStringLiteral("无法写入便携版数据目录：\n%1\n\n请将应用解压到有写入权限的文件夹后再运行。")
+                .arg(QDir::toNativeSeparators(storageRoot)));
+        return 1;
+    }
+    storageProbe.remove();
+#endif
     QApplication::setStyle(new ct::ui::SmoothMenuStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
     QPixmapCache::setCacheLimit(2048);
 

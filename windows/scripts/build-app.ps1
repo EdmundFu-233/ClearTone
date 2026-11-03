@@ -155,7 +155,7 @@ function Build-One {
     $publishDir = Join-Path $WindowsDir "publish\win-$TargetArch"
 
     Write-Host "=== [$TargetArch] 1/5 编译 Rust 辅助进程 ==="
-    Initialize-ClearToneRustTools
+    Initialize-ClearToneRustTools -MinGW:$isMinGW
     $rustTarget = if ($TargetArch -eq 'arm64') { 'aarch64-pc-windows-msvc' } elseif ($isMinGW) { 'x86_64-pc-windows-gnu' } else { 'x86_64-pc-windows-msvc' }
     & rustup target add $rustTarget
     if ($LASTEXITCODE -ne 0) { throw "rustup target add $rustTarget failed" }
@@ -189,7 +189,18 @@ function Build-One {
     if ($LASTEXITCODE -ne 0) { throw "Qt 客户端构建失败：$TargetArch" }
 
     Write-Host "=== [$TargetArch] 4/5 windeployqt 与辅助进程 ==="
-    if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
+    if (Test-Path $publishDir) {
+        $publishRoot = [IO.Path]::GetFullPath((Join-Path $WindowsDir 'publish'))
+        $resolvedPublish = (Resolve-Path -LiteralPath $publishDir).Path
+        if ([IO.Path]::GetDirectoryName($resolvedPublish) -ne $publishRoot -or
+            [IO.Path]::GetFileName($resolvedPublish) -ne "win-$TargetArch") {
+            throw "拒绝清理非预期发布目录：$resolvedPublish"
+        }
+        if (Test-Path -LiteralPath (Join-Path $resolvedPublish 'data')) {
+            throw "发布目录包含便携版用户数据，请先将整个运行目录移到其他位置：$resolvedPublish"
+        }
+        Remove-Item -LiteralPath $resolvedPublish -Recurse -Force
+    }
     New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
     $exe = if ($isNinja) {
         Join-Path $buildDir 'ClearTone.exe'
@@ -223,6 +234,9 @@ function Build-One {
     $helperDir = Join-Path $publishDir 'helper'
     New-Item -ItemType Directory -Force -Path $helperDir | Out-Null
     Copy-Item $helperExe (Join-Path $helperDir 'cleartone-helper.exe') -Force
+    foreach ($name in @('Add-to-Start-Menu.bat', 'Remove-from-Start-Menu.bat', 'README.txt')) {
+        Copy-Item -LiteralPath (Join-Path $ScriptDir "portable\$name") -Destination $publishDir -Force
+    }
 
     if ($VlcRoot) {
         $vlcOut = Join-Path $publishDir 'libvlc'

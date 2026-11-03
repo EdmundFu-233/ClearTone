@@ -47,6 +47,10 @@ jobs:
           cargo test --manifest-path windows/helper/Cargo.toml --locked --target x86_64-pc-windows-gnu
           cargo build --manifest-path windows/helper/Cargo.toml --release --locked --target x86_64-pc-windows-gnu
 
+      - name: 便携版开始菜单脚本（隔离目录）
+        shell: pwsh
+        run: ./windows/scripts/test-portable-scripts.ps1
+
       - name: CMake 配置
         shell: pwsh
         run: >
@@ -85,11 +89,12 @@ jobs:
         run: |
           $env:CLEARTONE_HELPER_BINARY = (Resolve-Path 'windows/helper/target/x86_64-pc-windows-gnu/release/cleartone-helper.exe').Path
           $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:CLEARTONE_TEST_STORAGE_DIR = Join-Path $env:RUNNER_TEMP 'ct-build-smoke'
           # GUI 子系统进程必须用 Start-Process -Wait，`&` 不等它结束也拿不到退出码
           $proc = Start-Process -FilePath 'windows/build-ci/ClearTone.exe' `
             -ArgumentList '--smoke-test', '20' -PassThru -Wait
           if ($proc.ExitCode -ne 0) {
-            Get-Content "$env:LOCALAPPDATA\ClearTone\ClearTone\logs\cleartone.log" -Tail 60 -ErrorAction SilentlyContinue
+            Get-Content "$env:CLEARTONE_TEST_STORAGE_DIR\logs\cleartone.log" -Tail 60 -ErrorAction SilentlyContinue
             throw "冒烟测试失败：退出码 $($proc.ExitCode)"
           }
 
@@ -125,8 +130,15 @@ jobs:
           $proc = Start-Process -FilePath 'windows/publish/win-x64/ClearTone.exe' `
             -ArgumentList '--smoke-test', '20' -PassThru -Wait
           if ($proc.ExitCode -ne 0) {
-            Get-Content "$env:LOCALAPPDATA\ClearTone\ClearTone\logs\cleartone.log" -Tail 60 -ErrorAction SilentlyContinue
+            Get-Content 'windows/publish/win-x64/data/logs/cleartone.log' -Tail 60 -ErrorAction SilentlyContinue
             throw "发布包冒烟失败：退出码 $($proc.ExitCode)"
+          }
+          foreach ($relative in @('data\settings.json', 'data\logs\cleartone.log',
+                                  'data\rust-helper-device-id', 'Add-to-Start-Menu.bat',
+                                  'Remove-from-Start-Menu.bat')) {
+            if (-not (Test-Path -LiteralPath (Join-Path 'windows/publish/win-x64' $relative))) {
+              throw "便携版缺少预期文件：$relative"
+            }
           }
 
       - name: 列出产物内容
@@ -197,11 +209,15 @@ jobs:
         run: |
           Expand-Archive artifact/ClearTone-win-arm64.zip -DestinationPath app
           # The standalone zip ships qwindows (not qoffscreen); exercise the real platform plugin.
-          $env:CLEARTONE_TEST_STORAGE_DIR = Join-Path $env:RUNNER_TEMP 'ct-arm64-smoke'
-          New-Item -ItemType Directory -Force $env:CLEARTONE_TEST_STORAGE_DIR | Out-Null
           $proc = Start-Process -FilePath (Resolve-Path 'app/ClearTone.exe').Path `
             -ArgumentList '--smoke-test', '20' -PassThru -Wait
           if ($proc.ExitCode -ne 0) { throw "ARM64 发布包冒烟失败：$($proc.ExitCode)" }
+          foreach ($relative in @('data\logs\cleartone.log', 'data\rust-helper-device-id',
+                                  'Add-to-Start-Menu.bat', 'Remove-from-Start-Menu.bat')) {
+            if (-not (Test-Path -LiteralPath (Join-Path 'app' $relative))) {
+              throw "ARM64 便携版缺少预期文件：$relative"
+            }
+          }
 
   # Only publish when x64 tests, both packages and ARM64 startup all pass.
   release:
@@ -211,6 +227,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -224,8 +242,21 @@ jobs:
         run: |
           set -euo pipefail
           ls -la artifacts
-          # 该 job 未 checkout，gh 需要显式 -R 指定仓库
-          if ! gh release view "$TAG" -R "$REPO"; then
-            gh release create "$TAG" -R "$REPO" --title "澄音 ClearTone ${TAG#v}" --generate-notes
+          notes_flags=(--generate-notes)
+          notes_file="docs/releases/${TAG#v}.md"
+          if [ -f "$notes_file" ]; then
+            notes_flags=(--notes-file "$notes_file")
           fi
-          gh release upload "$TAG" artifacts/ClearTone-win-x64.zip artifacts/ClearTone-win-arm64.zip -R "$REPO" --clobber
+          latest_flags=()
+          latest_tag="$(gh release view -R "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
+          newest="$(printf '%s\n' "${latest_tag#v}" "${TAG#v}" | sort -V | tail -n 1)"
+          if [ -n "$latest_tag" ] && [ "$newest" != "${TAG#v}" ]; then
+            latest_flags=(--latest=false)
+          fi
+          if ! gh release view "$TAG" -R "$REPO"; then
+            gh release create "$TAG" -R "$REPO" --title "澄音 ClearTone ${TAG#v}" \
+              "${notes_flags[@]}" "${latest_flags[@]}" \
+              artifacts/ClearTone-win-x64.zip artifacts/ClearTone-win-arm64.zip
+          else
+            gh release upload "$TAG" artifacts/ClearTone-win-x64.zip artifacts/ClearTone-win-arm64.zip -R "$REPO" --clobber
+          fi

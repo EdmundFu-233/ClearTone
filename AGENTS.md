@@ -103,8 +103,7 @@ iOS target 已补齐登录、设置与详情页。构建与免费账号签名见
 
 ## Windows 版（windows/）
 
-`windows/` 是 **Qt 6 Widgets + C++20（CMake）** 的桌面移植，功能与 macOS 对齐
-（2026-10 起替换旧的 .NET 8 + Avalonia 实现，旧实现见 git 历史）。
+`windows/` 是 **Qt 6 Widgets + C++20（CMake）** 的 Windows 客户端，功能与 macOS 对齐。
 Windows 侧使用独立 Rust 辅助进程（`windows/helper/`），不再打包 Node；macOS
 仍使用 `ClearTone/Resources/HelperRuntime/api`。差异：音频输出默认 libVLC
 （C API；无 SDK 时回退 Qt Multimedia），凭据用 DPAPI
@@ -135,8 +134,8 @@ powershell -ExecutionPolicy Bypass -File windows\scripts\build-app.ps1 -Arch x64
 异步统一 `ct::Task<T>`（`Core/Async.h`）+ `co_await`，事件用 `ct::Event<>`
 （`Core/Event.h`）多播；**顶层协程必须写命名函数，禁止协程 lambda**
 （lambda 的捕获留在栈上、不进协程帧，恢复时读到被覆写的内存会随机闪退，
-详见 `windows/CONVENTIONS.md` 的「异步」）；C# → C++ 的逐条映射见
-`windows/CONVENTIONS.md`。`windows/runtime/`、`build*/`、`publish/`、`vendor/` 均不入库。
+详见 `windows/CONVENTIONS.md` 的「异步」）；完整开发约定见
+`windows/CONVENTIONS.md`。`build*/`、`publish/`、`vendor/` 均不入库。
 
 ## 架构决策
 

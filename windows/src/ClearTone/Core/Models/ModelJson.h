@@ -10,8 +10,8 @@
 
 namespace ct {
 
-// 与 C# System.Text.Json（camelCase、null 忽略、枚举 camelCase 字符串）一致的
-// 模型序列化，用于持久化队列 / 设置缓存等需要跨版本读取的数据。
+// 模型序列化保持 camelCase、忽略 null、枚举使用 camelCase 字符串，
+// 用于持久化队列 / 设置缓存等需要跨版本读取的数据。
 
 QString qualityLevelToJson(QualityLevel level);
 QualityLevel qualityLevelFromJson(const QJsonValue& value, QualityLevel fallback = QualityLevel::Unknown);

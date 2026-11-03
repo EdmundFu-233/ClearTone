@@ -11,12 +11,12 @@ namespace ct {
 class AppState;
 class PlayerController;
 
-// 播放栏派生显示（对应 C# App/PlayerBarModel.cs），纯逻辑、无 QObject。
+// 播放栏派生显示，纯逻辑、无 QObject。
 class PlayerBarModel {
 public:
     PlayerBarModel();
 
-    // 对应 C# INotifyPropertyChanged；由持有方挂钩刷新界面。
+    // 由持有方挂钩刷新界面。
     std::function<void()> onChanged;
 
     PlayerController& player() const;

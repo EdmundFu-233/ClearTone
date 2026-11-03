@@ -1,6 +1,6 @@
 #pragma once
 
-// 测试公共设施（对应 C# 版的 TestStorage / TestSupport / Stub*Provider）。
+// 测试公共设施：手动等待点、内存存储与桩 Provider。
 // 头文件形式以便 tests/CMakeLists.txt 只编译 tst_*.cpp。
 
 #include "Core/Async.h"
@@ -20,7 +20,7 @@
 
 namespace ct::tests {
 
-// C# TestGate：手动放行的等待点。
+// 手动放行的等待点。
 class TestGate {
 public:
     bool await_ready() const { return m_opened; }

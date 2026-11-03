@@ -16,7 +16,7 @@ class CoverImage;
 class PlayerController;
 struct AppSettings;
 
-// 独立置顶迷你播放器（对应 C# App/MiniPlayerWindow.cs）。
+// 独立置顶迷你播放器。
 class MiniPlayerWindow : public QWidget {
     Q_OBJECT
 

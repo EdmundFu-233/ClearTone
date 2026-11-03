@@ -1,6 +1,7 @@
 #include "Core/Persistence/StoragePaths.h"
 
 #include <QDir>
+#include <QCoreApplication>
 #include <QStandardPaths>
 
 namespace ct {
@@ -8,13 +9,17 @@ namespace ct {
 QString StoragePaths::root()
 {
     static const QString resolved = [] {
-        const QByteArray overrideDir = qgetenv("CLEARTONE_STORAGE_DIR");
-        if (!overrideDir.isEmpty()) return QString::fromUtf8(overrideDir);
         const QByteArray testDir = qgetenv("CLEARTONE_TEST_STORAGE_DIR");
-        if (!testDir.isEmpty()) return QString::fromUtf8(testDir);
+        if (!testDir.isEmpty()) return QDir(QString::fromUtf8(testDir)).absolutePath();
+        const QByteArray overrideDir = qgetenv("CLEARTONE_STORAGE_DIR");
+        if (!overrideDir.isEmpty()) return QDir(QString::fromUtf8(overrideDir)).absolutePath();
 
+#ifdef Q_OS_WIN
+        return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("data"));
+#else
         const QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         return QDir(base).filePath(QStringLiteral("ClearTone"));
+#endif
     }();
     return resolved;
 }

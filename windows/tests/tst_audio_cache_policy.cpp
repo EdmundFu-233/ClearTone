@@ -81,7 +81,7 @@ bool triggerCacheCommit(AudioCacheManager& manager, const QString& songID)
     return manager.cachedSongIDs().contains(songID);
 }
 
-// C# 测试里的 Store 复刻：sweep 的过期选择用生产策略，保护分支在这里复刻
+// 测试存储：sweep 的过期选择用生产策略，保护分支在这里复刻
 // （真实的 purgeExpired 只在构造与下载完成时触发，构造时还无法设置当前播放）。
 struct SweepReplica {
     QHash<QString, QDateTime> index;

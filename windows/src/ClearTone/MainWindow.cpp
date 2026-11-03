@@ -17,6 +17,7 @@
 #include "DesignSystem/L10n.h"
 #include "DesignSystem/SmoothNavigationDelegate.h"
 #include "Features/Shared/PageFactory.h"
+#include "Features/Shared/AddToPlaylistDialog.h"
 #include "Features/Shared/UIComponents.h"
 #include "Playback/PlayerController.h"
 #include "Playback/SongQuality.h"
@@ -237,6 +238,7 @@ void MainWindow::resetUiPointers()
     m_expandButton = nullptr;
     m_titleButton = nullptr;
     m_likeButton = nullptr;
+    m_addToPlaylistButton = nullptr;
     m_prevButton = nullptr;
     m_playPauseButton = nullptr;
     m_nextButton = nullptr;
@@ -714,6 +716,14 @@ QWidget* MainWindow::buildPlayerBar(QWidget* parent)
     m_likeButton = makeGlyphButton(QStringLiteral("\uE0F5"), QStringLiteral("喜欢"), 16, left);
     QObject::connect(m_likeButton, &QPushButton::clicked, this, [this] { toggleCurrentLike(false); });
     leftLayout->addWidget(m_likeButton);
+    m_addToPlaylistButton = makeGlyphButton(QStringLiteral("\uE140"), QStringLiteral("添加到歌单"), 16, left);
+    m_addToPlaylistButton->setObjectName(QStringLiteral("ctPlayerAddToPlaylist"));
+    QObject::connect(m_addToPlaylistButton, &QPushButton::clicked, this, [this] {
+        const auto song = PlayerController::shared().currentSong();
+        if (song && song->source == SongSource::Netease && AppState::shared().canPerformWrite())
+            (new AddToPlaylistDialog(*song, this))->open();
+    });
+    leftLayout->addWidget(m_addToPlaylistButton);
     left->setMinimumWidth(190);
 
     auto* center = new QWidget(bar);
@@ -1343,6 +1353,9 @@ void MainWindow::updateBarSong()
     m_barCover->setCoverURL(m_bar.coverUrl(), 92);
     m_barTitle->setFullText(m_bar.title());
     m_barArtist->setFullText(m_bar.artist());
+    const auto song = PlayerController::shared().currentSong();
+    m_addToPlaylistButton->setEnabled(song && song->source == SongSource::Netease
+        && AppState::shared().canPerformWrite());
     m_likeButton->setText(m_bar.likeGlyph());
     m_likeButton->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none; color: %1; font-size: 16px;"

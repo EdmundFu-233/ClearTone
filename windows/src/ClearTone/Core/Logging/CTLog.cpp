@@ -1,11 +1,11 @@
 #include "Core/Logging/CTLog.h"
+#include "Core/Persistence/StoragePaths.h"
 
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QMutex>
 #include <QRegularExpression>
-#include <QStandardPaths>
 #include <QTextStream>
 
 namespace ct {
@@ -49,7 +49,7 @@ const QVector<QPair<QRegularExpression, QString>>& sanitizeRules()
 QString logFilePath()
 {
     static const QString path = [] {
-        const QString root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+        const QString root = StoragePaths::root();
         if (root.isEmpty()) return QString();
         QDir dir(root);
         dir.mkpath(QStringLiteral("logs"));

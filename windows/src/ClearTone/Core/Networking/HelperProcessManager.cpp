@@ -1,6 +1,7 @@
 #include "Core/Networking/HelperProcessManager.h"
 
 #include "Core/Logging/CTLog.h"
+#include "Core/Persistence/StoragePaths.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -8,7 +9,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRandomGenerator>
-#include <QStandardPaths>
 #include <QUuid>
 
 #include <algorithm>
@@ -19,7 +19,7 @@ namespace {
 
 QString helperLogPath()
 {
-    const QString root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString root = StoragePaths::root();
     if (root.isEmpty()) return {};
     QDir dir(root);
     dir.mkpath(QStringLiteral("logs"));
@@ -189,7 +189,7 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
 #else
     if (!QDir(runtimeDir).exists()) {
         const QString message =
-            QStringLiteral("辅助进程运行时未找到: %1。请先运行 scripts/setup-helper.sh 或 windows/scripts/fetch-node-win.sh")
+            QStringLiteral("辅助进程运行时未找到: %1。请先运行 scripts/setup-helper.sh")
                 .arg(runtimeDir);
         setState({HelperState::Kind::Failed, 0, message});
         m_lastError = message;
@@ -222,6 +222,7 @@ Task<void> HelperProcessManager::performStart(CancellationToken ct)
     environment.insert(QStringLiteral("HOST"), QStringLiteral("127.0.0.1"));
     environment.insert(QStringLiteral("NODE_ENV"), QStringLiteral("production"));
     environment.insert(QStringLiteral("CT_PARENT_PID"), QString::number(QCoreApplication::applicationPid()));
+    environment.insert(QStringLiteral("CT_STORAGE_DIR"), StoragePaths::root());
     for (const char* key : {"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"}) {
         environment.insert(QString::fromLatin1(key), QString());
     }

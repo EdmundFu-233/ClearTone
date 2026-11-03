@@ -64,7 +64,7 @@ if (-not $BuildDir) {
 
 function Prepare-Helper {
     if ($SkipHelper) { return }
-    Initialize-ClearToneRustTools
+    Initialize-ClearToneRustTools -MinGW:$isMinGW
     Write-Host '=== [1/4] 编译 Rust 辅助进程 ===' -ForegroundColor Cyan
     $target = if ($Arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } elseif ($isMinGW) { 'x86_64-pc-windows-gnu' } else { 'x86_64-pc-windows-msvc' }
     & rustup target add $target

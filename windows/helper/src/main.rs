@@ -61,12 +61,24 @@ fn format_cookies(jar: &HashMap<String, String>) -> String {
         .join("; ")
 }
 
-fn device_id() -> String {
-    let path = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("ClearTone")
-        .join("rust-helper-device-id");
+fn storage_root() -> std::path::PathBuf {
+    for key in ["CT_STORAGE_DIR", "CLEARTONE_TEST_STORAGE_DIR", "CLEARTONE_STORAGE_DIR"] {
+        if let Some(path) = std::env::var_os(key).filter(|value| !value.is_empty()) {
+            return path.into();
+        }
+    }
+    let executable = std::env::current_exe().expect("cannot locate helper executable");
+    let directory = executable.parent().expect("helper executable has no directory");
+    let root = if directory.file_name().is_some_and(|name| name == "helper") {
+        directory.parent().unwrap_or(directory)
+    } else {
+        directory
+    };
+    root.join("data")
+}
+
+fn device_id_at(root: &std::path::Path) -> String {
+    let path = root.join("rust-helper-device-id");
     if let Ok(id) = std::fs::read_to_string(&path) {
         if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return id;
@@ -517,7 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Arc::new(App {
         token,
         client,
-        device_id: device_id(),
+        device_id: device_id_at(&storage_root()),
         public_key: tokio::sync::Mutex::new(None),
         anonymous: tokio::sync::Mutex::new(None),
     });
@@ -533,6 +545,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_id_persists_in_selected_storage_root() {
+        let root = std::env::temp_dir().join(format!(
+            "cleartone-device-test-{}-{}", std::process::id(), now_ms()
+        ));
+        assert!(!root.exists());
+        let first = device_id_at(&root);
+        assert_eq!(first.len(), 32);
+        assert_eq!(device_id_at(&root), first);
+        let path = root.join("rust-helper-device-id");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+        std::fs::write(&path, "invalid-id").unwrap();
+        let replacement = device_id_at(&root);
+        assert_eq!(replacement.len(), 32);
+        assert!(replacement.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(device_id_at(&root), replacement);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn cookies_drop_attributes() {
         let jar = cookies("MUSIC_U=abc==; Path=/; HttpOnly; os=pc");

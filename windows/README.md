@@ -14,10 +14,26 @@ Windows 网易云接入由 **Rust 辅助进程**（`windows/helper/`）提供，
 使用随机端口与一次性 `X-CT-Token`；Cookie 通过 `X-CT-Cookie` 传入，进程随客户端退出。
 macOS 版仍使用原有的 Node 辅助进程，未受影响。
 
-> 旧版 .NET 8 + Avalonia 实现已于 2026-10 整体替换（旧实现见 git 历史）；
-> C# → C++ 的逐条映射约定见 [CONVENTIONS.md](CONVENTIONS.md)。
+开发约定见 [CONVENTIONS.md](CONVENTIONS.md)。
 
 ## 一键编译
+
+Windows 以 **portable ZIP** 发布：完整解压后运行 `ClearTone.exe`，设置、登录凭据、
+队列、历史、音频/封面缓存、日志和 Rust 辅助进程设备 ID 统一保存在 EXE 旁的 `data/`。
+存储位置不受启动时工作目录影响；目录不可写会提示错误并退出。移动或备份时复制整个目录，
+更新时退出程序并覆盖应用文件，保留 `data/`。旧版 AppData 数据不会自动迁移；
+凭据仍受 Windows DPAPI 保护，换电脑或 Windows 用户后需重新登录。
+
+ZIP 自带 `Add-to-Start-Menu.bat` 与 `Remove-from-Start-Menu.bat`，分别添加/删除当前
+用户的开始菜单快捷方式，无需管理员权限。移动应用后重新运行添加脚本即可更新路径。
+脚本仅操作快捷方式；EXE、窗口、托盘与快捷方式均使用澄音图标。
+
+日推区域可通过「以列表呈现」切换为与歌单相同的歌曲列表，再切回横排卡片。
+播放底栏和展开的正在播放页均可通过「添加到歌单」选择自己的歌单；本地歌曲和未登录时禁用。
+
+`CLEARTONE_STORAGE_DIR` 可供开发者重定向数据；离线测试使用优先级更高的
+`CLEARTONE_TEST_STORAGE_DIR`。发布脚本遇到含 `data/` 的旧 staging 目录会停止，
+防止删除用户数据或将其打进 ZIP；重新打包前请将该运行目录移到其他位置。
 
 ### Windows
 
@@ -98,7 +114,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Tests
 powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1
 ```
 
-24 个 Qt Test 可执行（包含界面布局、封面解码、启动静音、媒体键与更新解析回归），全部离线（桩 provider / 桩音频引擎），
+26 个 Qt Test 可执行（包含界面布局、封面解码、启动静音、媒体键、便携存储、添加歌单与更新解析回归），全部离线（桩 provider / 桩音频引擎），
 持久化由 CTest 逐用例重定向到临时目录。离线测试只能证明本地实现与接口约定一致，
 真实账号登录、在线播放与上游接口可用性需要实机验证。
 
@@ -130,7 +146,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch x64 `
 - `publish\ClearTone-win-<arch>.zip`：可直接分发，解压后运行 `ClearTone.exe`。
 
 发布工作流先跑 x64 离线测试，再分别打包 x64 与 ARM64，并在 ARM64 runner 上
-校验 ARM64 包的架构和启动冒烟；两个包验证通过后才会创建 `v26.1` Release。
+校验 ARM64 包的架构和启动冒烟；两个包验证通过后才会创建 Release。当前 Windows 版本为 `26.2`。
 
 说明：
 
@@ -143,10 +159,11 @@ powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch x64 `
 
 | 内容 | 位置 |
 | --- | --- |
-| 设置 / 队列 / 最近播放 / 账号缓存 | `%APPDATA%\ClearTone` |
-| 凭据（DPAPI 加密） | `%APPDATA%\ClearTone\credentials.json` |
-| 音频缓存 / 封面缓存 | `%APPDATA%\ClearTone\AudioCache`、`CoverCache` |
-| 辅助进程日志 | `%LOCALAPPDATA%\ClearTone\logs\helper.log` |
+| 设置 / 队列 / 最近播放 / 账号缓存 | `ClearTone.exe` 旁的 `data/` |
+| 凭据（DPAPI 加密） | `data/credentials.json` |
+| 音频缓存 / 封面缓存 | `data/AudioCache`、`data/CoverCache` |
+| 主程序 / 辅助进程日志 | `data/logs/cleartone.log`、`data/logs/helper.log` |
+| 辅助进程设备 ID | `data/rust-helper-device-id` |
 
 环境变量：
 
@@ -156,7 +173,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1 -Arch x64 `
 
 ## 辅助进程启动排查
 
-优先看 `%LOCALAPPDATA%\ClearTone\logs\helper.log`。常见原因：
+优先看运行目录下的 `data/logs/helper.log`。常见原因：
 
 - 缺少 `helper\cleartone-helper.exe` —— 运行 `windows\build.ps1` 或重新打包；
 - 杀毒软件拦截本地回环监听 —— 将安装目录加入白名单。
@@ -173,7 +190,7 @@ Rust 后端目前覆盖 Windows 客户端的搜索、推荐、登录、歌曲/�
 windows/
   CMakeLists.txt        # cleartone_lib（OBJECT 库）+ ClearTone 可执行 + tests
   build.ps1 / build.sh  # 一键编译
-  CONVENTIONS.md        # C# → C++ 移植约定（命名/异步/JSON/网络/日志）
+  CONVENTIONS.md        # Qt/C++ 开发约定（命名/异步/JSON/网络/日志）
    helper/               # Rust 本地服务、加密协议与接口路由
    scripts/              # run-tests / build-app
   src/ClearTone/

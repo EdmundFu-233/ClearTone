@@ -4,7 +4,7 @@
 //
 // 约定：所有异步工作都跑在主线程（QNetworkAccessManager / libVLC 事件统一 marshal
 // 回主线程），Task 的生命周期由 promise 自身持有，调用方丢弃 Task 对象不会销毁
-// 在途协程（与 C# 中丢弃 Task 的行为一致）。
+// 在途协程。
 //
 //   ct::Task<T>            惰性协程，co_await 或 start() 后开始执行
 //   ct::Result<T>          成功值或 MusicException
