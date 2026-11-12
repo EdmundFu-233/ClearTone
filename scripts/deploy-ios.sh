@@ -38,7 +38,10 @@ if [ -z "$TEAM" ]; then
   echo "没能确定 DEVELOPMENT_TEAM，请显式指定：IOS_DEVELOPMENT_TEAM=XXXXXXXXXX $0" >&2
   exit 2
 fi
-# 已注册的 App ID（复用现有的免费 profile，见文件头说明）
+# 已注册的 App ID（复用现有的免费 profile，见文件头说明）。
+# Widget 扩展的 bundle ID 在 project.yml 里由 `$(CT_APP_BUNDLE_ID).widget` 推导，
+# 因此这里覆盖的是变量本身，而不是某个 target 的 PRODUCT_BUNDLE_IDENTIFIER ——
+# 否则扩展会拿到和宿主相同的 ID，嵌入校验直接失败。
 BUNDLE="${IOS_BUNDLE_ID:-com.cleartone.app.ios}"
 
 OUTPUT="$PWD/build/iOS"
@@ -56,7 +59,7 @@ xcodegen generate >/dev/null
 if ! xcodebuild -project ClearTone.xcodeproj -scheme ClearToneiOS \
   -configuration Debug -destination "id=$DEVICE" -derivedDataPath "$DERIVED" \
   -allowProvisioningUpdates \
-  DEVELOPMENT_TEAM="$TEAM" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE" \
+  DEVELOPMENT_TEAM="$TEAM" CT_APP_BUNDLE_ID="$BUNDLE" \
   build > "$LOG" 2>&1; then
   tail -80 "$LOG" >&2
   echo "完整日志：$LOG" >&2
@@ -73,27 +76,32 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 
 # 签名里不得出现超出「免费 Personal Team 一定拿得到」的那几项 —— 与
 # build-ios.sh 的检查同一条规则，这里针对的是**签名后**的产物。
+# 宿主与 Widget 扩展各自的签名都要过一遍；App Group / Keychain Sharing
+# 这类会出现在扩展上的能力，也不能靠「只查宿主」漏过去。
 python3 - "$APP" <<'PY'
-import plistlib, re, subprocess, sys
+import pathlib, plistlib, re, subprocess, sys
 
-app = sys.argv[1]
-result = subprocess.run(['codesign', '-d', '--entitlements', ':-', app],
-                        capture_output=True, text=True)
-blob = result.stdout
-keys = set(re.findall(r'<key>([^<]+)</key>', blob))
-if not keys and blob.lstrip().startswith('bplist'):
-    try:
-        keys = set(plistlib.loads(blob.encode()).keys())
-    except Exception:
-        keys = set()
+app = pathlib.Path(sys.argv[1])
+appexes = sorted(app.rglob('*.appex'))
+assert [p.name for p in appexes] == ['ClearToneWidget.appex'], [p.name for p in appexes]
 ALLOWED = {
     'application-identifier', 'com.apple.application-identifier',
     'team-identifier', 'com.apple.developer.team-identifier',
     'com.apple.security.get-task-allow', 'get-task-allow',
 }
-bad = sorted(k for k in keys if k not in ALLOWED)
-assert not bad, f'签名里出现了不该有的 entitlement: {bad}'
-print(f'签名 entitlement 检查通过：{sorted(keys)}')
+for binary in [app] + appexes:
+    result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(binary)],
+                            capture_output=True, text=True)
+    blob = result.stdout
+    keys = set(re.findall(r'<key>([^<]+)</key>', blob))
+    if not keys and blob.lstrip().startswith('bplist'):
+        try:
+            keys = set(plistlib.loads(blob.encode()).keys())
+        except Exception:
+            keys = set()
+    bad = sorted(k for k in keys if k not in ALLOWED)
+    assert not bad, f'{binary.name} 签名里出现了不该有的 entitlement: {bad}'
+    print(f'{binary.name} 签名 entitlement 检查通过：{sorted(keys)}')
 PY
 
 xcrun devicectl device install app --device "$DEVICE" "$APP"

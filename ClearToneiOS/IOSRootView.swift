@@ -1,22 +1,42 @@
 import SwiftUI
 import UIKit
 
+private enum IOSTab: Hashable {
+    case discover
+    case search
+    case library
+    case settings
+}
+
 struct IOSRootView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var player: PlayerController
+    @State private var selection: IOSTab = .discover
     @State private var showPlayer = false
     var body: some View {
-        TabView {
-            tab { IOSDiscoverView() }.tabItem { Label("发现", systemImage: "sparkles") }
-            tab { IOSSearchView() }.tabItem { Label("搜索", systemImage: "magnifyingglass") }
-            tab { IOSLibraryView() }.tabItem { Label("资料库", systemImage: "music.note.list") }
-            tab { IOSSettingsView() }.tabItem { Label("设置", systemImage: "gearshape") }
+        TabView(selection: $selection) {
+            tab { IOSDiscoverView() }.tabItem { Label("发现", systemImage: "sparkles") }.tag(IOSTab.discover)
+            tab { IOSSearchView() }.tabItem { Label("搜索", systemImage: "magnifyingglass") }.tag(IOSTab.search)
+            tab { IOSLibraryView() }.tabItem { Label("资料库", systemImage: "music.note.list") }.tag(IOSTab.library)
+            tab { IOSSettingsView() }.tabItem { Label("设置", systemImage: "gearshape") }.tag(IOSTab.settings)
         }
         .modifier(IOSPlayerPresentation(isPresented: $showPlayer))
         .sheet(isPresented: $appState.isLoginPresented) { IOSLoginView().presentationDragIndicator(.visible) }
         .alert("操作失败", isPresented: Binding(get: { appState.lastWriteError != nil }, set: { if !$0 { appState.clearWriteError() } })) {
             Button("好") { appState.clearWriteError() }
         } message: { Text(appState.lastWriteError ?? "") }
+        .onOpenURL(perform: handleDeepLink)
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard let link = ClearToneDeepLink(url: url) else { return }
+        switch link {
+        case .discover: selection = .discover
+        case .search: selection = .search
+        case .library: selection = .library
+        case .settings: selection = .settings
+        case .nowPlaying: showPlayer = true
+        }
     }
 
     private func tab<Content: View>(@ViewBuilder content: () -> Content) -> some View {

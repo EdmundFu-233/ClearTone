@@ -83,6 +83,7 @@ ClearTone/
   Resources/
     HelperRuntime/     # Node.js + api-enhanced（构建时打包）
     Assets.xcassets/
+ClearToneiOSWidget/    # iOS 桌面快捷入口 Widget（无 App Group，只做 deep link）
 Tests/                 # 单元测试（XCTest）
 docs/                  # 文档
 scripts/               # 构建与测试脚本
@@ -100,6 +101,9 @@ iOS target 已补齐登录、设置与详情页。构建与免费账号签名见
 当前无 iOS 自定义 entitlement / SystemCapabilities，团队 ID 留空供用户选 Personal Team。
 后台音频仅使用 Info.plist 的 `UIBackgroundModes: [audio]` 与 AVAudioSession；
 默认钥匙串不启用 Keychain Sharing。
+唯一的 App Extension 是 `ClearToneiOSWidget`：它**不建 App Group**（免费 Personal
+Team 不支持），因此不读主 App 的数据，只提供 `cleartone://` 快捷入口；所有内容在
+扩展内静态渲染。
 
 ## Windows 版（windows/）
 
@@ -207,7 +211,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 签名阶段会报 "resource fork, Finder information, or similar detritus not allowed"，
 用 `xattr -cr` 清掉再 ad-hoc 签一次即可（`run-tests.sh` 已经做了）。
 
-当前覆盖（**64 个测试文件 / 603 项**，全部离线可跑且全绿）：
+当前覆盖（**65 个测试文件 / 610 项**，全部离线可跑且全绿）：
 
 | 关注点 | 测试 |
 |---|---|
@@ -232,6 +236,7 @@ xcodebuild -project ClearTone.xcodeproj -target ClearToneTests -configuration De
 | 凭据与限流 | **NeteaseCookieNormalizerTests**（Set-Cookie 拼接串归一化：**134 段 → 5 段**、丢属性/空值/重名、值含 `=`、**幂等**、**`loadLoginCookie` 不得自我递归**）/ **LikeWriteThrottleTests**（405/524 算限流需冷却、其余错误不冷却、提示要劝阻连点）/ **KeychainStoreTests**（`delete` 必须**双后端都清**、**主动后端失败不继续删另一侧**、**双向迁移：先写目标成功才删源**、凭据文件落在 `storageRoot` 且 **0600**、`storageMode` 缺省 iOS=keychain / macOS=plaintextFile） |
 | 音质默认值 | SongQualityPolicyTests（**VIP→无损 / 非 VIP→极高**、「自动」哨兵值、**显式选择不因 VIP 变化而改动**）/ PlaybackFeaturesTests（缺键=自动、**老用户存下的显式值不被新默认覆盖**） |
 | iOS 直连与移动状态 | NeteaseMobileRouteTests（QR 的 uri/crypto 走登记表、`/search/suggest` 的 `s` 键、`/logout` 恒 eapi 空 body、**`/search/hot` 写死 `type=1111`**、**`/toplist` 空 body**、plain 表单标量拼写）/ NeteaseXeapiTests（Node 逐字节对照、**deviceID 跨启动复用**、**Cookie 覆盖式合并**）/ MobileSessionsTests（取消登录、迟到账号、分页去重、失败重试与分页锁、**总数缺席仍能翻页**） |
+| **Widget deep link** | **ClearToneDeepLinkTests**（每个入口的 URL 往返、`cleartone:///x` 形式、拒绝外部 scheme/未知目标、`now-playing` 的连字符写法）。Widget 与主 App 只靠 URL scheme 通信，拼错一个字符就是「点了没反应」 |
 | 其它 | ErrorSanitizationTests（**超时文案按平台分岔**：macOS=本地服务超时 / iOS=请求超时，均离线可测）/ LikedStateTests / DemoAudioGeneratorTests / PlayingSourceInfoTests / **AppStateLoginLoadTests**（`didLogin` 与 `restoreLoginState` 必须**各自**把喜欢的音乐 + 用户歌单拉起来；未登录不发请求；**会话失效后重新登录必须解除 `needsReLogin` 写禁用**、**退出/失效要清掉内存里的用户歌单**，否则下一个账号会看到上一个账号的歌单；**迟到的 `/user/account` 不得把已退出的会话恢复回来**；**同一账号的确认不得递增代次**：`dataContextKey` 一变 iOS 快照页会被误关；**用户数据磁盘缓存按账号隔离**：会话失效刻意保留磁盘缓存，换号后拉取失败时不得把上一个账号的歌单当自己数据显示） |
 
 全部用桩 Provider / 录制器，不联网、不写真实用户状态（`PlayerControllerTests` 会把持久化

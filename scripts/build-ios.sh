@@ -49,7 +49,14 @@ assert ats.get('NSAllowsArbitraryLoads') is False, ats
 assert not (app / 'HelperRuntime').exists()
 assert not list(app.rglob('node_modules'))
 assert not list(app.rglob('*.entitlements'))
-assert not list(app.rglob('*.appex'))
+
+# Widget 是唯一允许的扩展；它不建 App Group、不申请任何额外 entitlement，
+# 只靠主 App 的 URL scheme 做跳转。多出任何其它 .appex 都视为打包事故。
+appexes = sorted(p.relative_to(app).as_posix() for p in app.rglob('*.appex'))
+assert appexes == ['PlugIns/ClearToneWidget.appex'], appexes
+widget_info = plistlib.loads((app / 'PlugIns/ClearToneWidget.appex/Info.plist').read_bytes())
+assert widget_info['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.widgetkit-extension'
+assert not list((app / 'PlugIns/ClearToneWidget.appex').rglob('node_modules'))
 
 # 版本号必须来自 build setting，而不是 XcodeGen 的 `1.0` 默认值
 assert info.get('CFBundleShortVersionString') == '27.0.2', info.get('CFBundleShortVersionString')
@@ -88,5 +95,5 @@ else:
     assert not bad, f'iOS 申请了不该有的 entitlement: {bad}\n实际: {sorted(keys)}'
     print(f'iOS entitlement 检查通过：{sorted(keys)}')
 
-print('iOS 包检查通过：无 Node、无扩展、后台模式仅 audio。')
+print('iOS 包检查通过：无 Node、仅 Widget 扩展、后台模式仅 audio。')
 PY

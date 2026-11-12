@@ -28,9 +28,11 @@ IPA 输出到 `build/iOS/ClearTone-unsigned.ipa`。该文件本身不能直接�
 
 真机安装沿用的是**已注册的 App ID `com.cleartone.app.ios`**（免费 Personal Team 的 profile 里已经包含这台设备），而 `project.yml` 里写的是 `com.cleartone.ios`。两者不一致是历史原因：设备上先装的是前者。按 `project.yml` 装会变成「第二个 App」—— 原 App 的数据看不到，还会多占一个 App ID 名额（免费账号一共只有 10 个）。`deploy-ios.sh` 默认显式覆盖成前者；要换 App ID 用 `IOS_BUNDLE_ID=`。
 
+Widget 扩展的 bundle ID 由同一个值推导（`$(CT_APP_BUNDLE_ID).widget`）。首次用免费账号真机部署时，Xcode 会自动注册 `com.cleartone.app.ios.widget` 这个新 App ID —— 它也会占用 10 个名额中的一个；如果名额已满，先在开发者账号里清理不用的 App ID。
+
 ## 签名与能力边界
 
-- **没有 iOS 自定义 entitlement 文件，没有额外 SystemCapabilities，也没有 App Extension。**
+- **没有 iOS 自定义 entitlement 文件，没有额外 SystemCapabilities。** 唯一的 App Extension 是桌面快捷入口 Widget（`ClearToneiOSWidget`）：**不建 App Group**、不读主 App 数据，只通过 `cleartone://` deep link 打开对应页面。
 - 不启用 App Groups、iCloud、Push Notifications、Sign in with Apple、Associated Domains、Network Extensions、Keychain Sharing 等需要申请或额外配置的服务。
 - Cookie 使用应用默认的系统钥匙串；不设置 `kSecAttrAccessGroup`，不跨应用共享，不同步 iCloud。标准应用身份由 Xcode/侧载工具签名时生成。
 - 后台音乐仅在 Info.plist 写 `UIBackgroundModes: [audio]`，配合 `AVAudioSession(.playback)`、`MPNowPlayingInfoCenter` 与 `MPRemoteCommandCenter`，不需要申请额外 entitlement。[Apple 后台模式说明](https://developer.apple.com/documentation/xcode/configuring-background-execution-modes)
@@ -47,6 +49,7 @@ IPA 输出到 `build/iOS/ClearTone-unsigned.ipa`。该文件本身不能直接�
 - 播放：队列、排序与移除、播放模式、进度、音质、倍速、睡眠定时、LRC/YRC 歌词与翻译、锁屏/耳机媒体控制、来电中断与耳机断开处理。
 - 评论：推荐 / 热度 / 最新排序、分页、点赞和失败回滚。
 - 设置：账号、音质、恢复位置、自动缓存与清缓存。
+- 桌面 Widget：小/中/大三档快捷入口，一键打开发现、搜索、资料库与正在播放；不申请 App Group，因此不显示账号或播放数据。
 
 iOS 缓存采用系统 `AVAssetExportPresetAppleM4A` 输出 AAC，码率显示实测值；不能冒称与 macOS 的 128 kbps OPUS 相同。缓存上限约 1.5 GB、最长保留 7 天，试听不缓存。
 

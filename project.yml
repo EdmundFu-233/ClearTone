@@ -6,6 +6,13 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+settings:
+  base:
+    # iOS App 与 Widget 扩展必须共享同一个前缀（扩展的 bundle ID 必须是
+    # `<宿主 bundle ID>.<后缀>`）。deploy-ios.sh 会覆盖这个变量来复用设备上
+    # 已注册的 App ID，因此两处都要从同一个值推导，不能各写一份字面量。
+    CT_APP_BUNDLE_ID: com.cleartone.ios
+
 targets:
   ClearTone:
     type: application
@@ -114,6 +121,11 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
         CFBundleDisplayName: 澄音
+        # 桌面 Widget 的快捷入口通过自定义 scheme 打开 App 到对应页面。
+        # 只是 URL scheme，不需要任何 entitlement 或付费能力。
+        CFBundleURLTypes:
+          - CFBundleURLName: com.cleartone.deeplink
+            CFBundleURLSchemes: [cleartone]
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
@@ -124,7 +136,7 @@ targets:
             UTTypeConformsTo: [public.data]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cleartone.ios
+        PRODUCT_BUNDLE_IDENTIFIER: $(CT_APP_BUNDLE_ID)
         PRODUCT_NAME: ClearToneiOS
         PRODUCT_MODULE_NAME: ClearTone
         SWIFT_VERSION: "6.0"
@@ -140,6 +152,47 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    dependencies:
+      - target: ClearToneiOSWidget
+        embed: true
+
+  # 桌面快捷入口 Widget。
+  #
+  # **刻意不建 App Group。** 免费 Personal Team 不支持 App Group，而本仓库的
+  # iOS 构建/部署流程默认用免费账号。因此这个扩展不读主 App 的任何数据，
+  # 只提供「点一下打开对应页面」的 deep link 入口；所有内容在扩展内静态渲染。
+  ClearToneiOSWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ClearToneiOSWidget
+      # deep link 定义必须与主 App 共用同一份，避免 scheme / host 两边各写一套。
+      - path: ClearTone/Core/DeepLink/ClearToneDeepLink.swift
+    info:
+      path: ClearToneiOSWidget/Info.plist
+      properties:
+        CFBundleDisplayName: 澄音
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CT_APP_BUNDLE_ID).widget
+        PRODUCT_NAME: ClearToneWidget
+        PRODUCT_MODULE_NAME: ClearToneWidget
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 27.0.2
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
 
   # ==========================================================
   # 单元测试（macOS host）
@@ -206,6 +259,7 @@ schemes:
     build:
       targets:
         ClearToneiOS: all
+        ClearToneiOSWidget: all
     run:
       config: Debug
     archive:
